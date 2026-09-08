@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "Spiritual Homeo Staff",
+    "slug": "spiritual-homeo-staff",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/app_icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/sh_logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "notification": {
+      "icon": "./assets/noti_icon.png"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.spiritualhomeo.staff",
+      "googleServicesFile": "./GoogleService-Info.plist"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/noti_icon.png",
+        "backgroundColor": "#0f172a"
+      },
+      "package": "com.spiritualhomeo.staff",
+      "googleServicesFile": "./google-services.json"
+    },
+    "web": {
+      "favicon": "./assets/sh_logo.png"
+    }
+  }
+}

@@ -1,0 +1,172 @@
+:root {
+  --primary-blue: #258ec8;
+  --accent-green: #a8ce3a;
+  --bg-main: #f8fafc;
+  --bg-card: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+  --radius-lg: 12px;
+  --radius-md: 6px;
+  --shadow-card: 0 8px 24px -5px rgba(37, 142, 200, 0.08), 0 3px 10px rgba(0, 0, 0, 0.03);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+  background-color: var(--bg-main);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(37, 142, 200, 0.06) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(168, 206, 58, 0.08) 0px, transparent 50%);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-size: 11.5px !important; /* Ultra-compact micro text size */
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  font-size: 11.5px !important;
+}
+
+/* Ultra Compact Typography Scale */
+h1 { font-size: 17px !important; font-weight: 800; }
+h2 { font-size: 15px !important; font-weight: 700; }
+h3 { font-size: 13px !important; font-weight: 700; }
+h4 { font-size: 12px !important; font-weight: 600; }
+p, span, label, td, th { font-size: 11.5px !important; }
+input, select, textarea, button { font-size: 11.5px !important; }
+
+.white-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  box-shadow: var(--shadow-card);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.white-card:hover {
+  box-shadow: 0 10px 30px -5px rgba(37, 142, 200, 0.12), 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.brand-gradient-text {
+  background: linear-gradient(135deg, var(--primary-blue), #1d72a3);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.btn-primary-blue {
+  background: var(--primary-blue);
+  color: #ffffff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  font-size: 11.5px !important;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-shadow: 0 2px 8px rgba(37, 142, 200, 0.25);
+  transition: all 0.2s ease;
+}
+
+.btn-primary-blue:hover {
+  background: #1e7bb0;
+  transform: translateY(-1px);
+}
+
+.btn-accent-green {
+  background: var(--accent-green);
+  color: #ffffff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  font-size: 11.5px !important;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-shadow: 0 2px 8px rgba(168, 206, 58, 0.3);
+  transition: all 0.2s ease;
+}
+
+.btn-accent-green:hover {
+  background: #96b931;
+  transform: translateY(-1px);
+}
+
+.input-field-light {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #0f172a;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  outline: none;
+  font-size: 11.5px !important;
+  width: 100%;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-field-light:focus {
+  border-color: var(--primary-blue);
+  box-shadow: 0 0 0 3px rgba(37, 142, 200, 0.15);
+}
+
+.badge-green {
+  background: rgba(168, 206, 58, 0.18);
+  color: #638012;
+  border: 1px solid rgba(168, 206, 58, 0.4);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10.5px !important;
+  font-weight: 700;
+}
+
+.badge-blue {
+  background: rgba(37, 142, 200, 0.12);
+  color: var(--primary-blue);
+  border: 1px solid rgba(37, 142, 200, 0.3);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10.5px !important;
+  font-weight: 700;
+}
+
+/* Custom Dropdown Scrollbar with Tall Max Height */
+.custom-dropdown-scroll {
+  max-height: 340px !important;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: #258ec8 #f1f5f9;
+}
+
+.custom-dropdown-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-dropdown-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 8px;
+}
+
+.custom-dropdown-scroll::-webkit-scrollbar-thumb {
+  background: #258ec8;
+  border-radius: 8px;
+}
+
+.custom-dropdown-scroll::-webkit-scrollbar-thumb:hover {
+  background: #2563eb;
+}

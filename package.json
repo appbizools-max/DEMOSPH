@@ -1,0 +1,22 @@
+{
+  "name": "fresh-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cross-Platform Monorepo for iOS, Android, and Web with Firebase & Firestore",
+  "workspaces": [
+    "apps/*",
+    "APPS/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace=apps/web run dev",
+    "build:web": "npm --workspace=apps/web run build",
+    "start:mobile": "npm --workspace=apps/mobile run start",
+    "android": "npm --workspace=apps/mobile run android",
+    "ios": "npm --workspace=apps/mobile run ios",
+    "build:shared": "npm --workspace=packages/shared run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

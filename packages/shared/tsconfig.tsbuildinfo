@@ -1,0 +1,1 @@
+{"root":["./src/index.ts","./src/firebase/config.ts","./src/firebase/firestore.ts","./src/firebase/persistence.native.ts","./src/firebase/persistence.ts","./src/firebase/persistence.web.ts","./src/types/index.ts"],"version":"5.9.3"}
