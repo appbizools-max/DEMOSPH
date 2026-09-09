@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "fresh-monorepo",
+    "slug": "fresh-monorepo",
+    "version": "1.0.0",
+    "description": "Cross-Platform Monorepo for iOS, Android, and Web with Firebase & Firestore",
+    "sdkVersion": "51.0.0",
+    "platforms": [
+      "ios",
+      "android"
+    ]
+  }
+}

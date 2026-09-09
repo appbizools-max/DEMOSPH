@@ -58,12 +58,16 @@ export default function App() {
 
   // Navigation Stack Helper
   const navigateToTab = (newTab: string, patientData?: any) => {
+    let target = newTab;
+    if (target === 'Dashboard' || target === 'dashboard' || target === 'reception') {
+      target = userRole === 'admin' ? 'admin' : userRole === 'doctor' ? 'doctor' : userRole === 'staff' ? 'staff' : 'reception_dashboard';
+    }
     if (patientData) {
       setSelectedPatient(patientData);
     }
-    if (newTab === activeTab && !patientData) return;
+    if (target === activeTab && !patientData) return;
     setTabHistory(prev => [...prev, activeTab]);
-    setActiveTab(newTab);
+    setActiveTab(target);
   };
 
   const handleGoBack = (): boolean => {
@@ -226,7 +230,7 @@ export default function App() {
       case 'reception_patients':
         return <AllPatientsScreen />;
       case 'reception_followups':
-        return <FollowUpsScreen />;
+        return <FollowUpsScreen onNavigate={navigateToTab} currentBranch={branchName} />;
       case 'reception_billing':
         return <ProductBillingScreen />;
       case 'reception_noshow':
@@ -237,7 +241,7 @@ export default function App() {
         return <CleaningPhotosScreen />;
 
       default:
-        return <AuthScreen onLoginSuccess={handleLoginSuccess} />;
+        return <ReceptionDashboardScreen currentBranch={branchName} onNavigate={navigateToTab} />;
     }
   };
 
@@ -333,68 +337,68 @@ export default function App() {
       {/* Top Main Dashboard Header Bar */}
       {!isAuthScreen && userRole !== 'doctor' && (activeTab === 'reception_dashboard' || activeTab === 'reception' || activeTab === 'admin' || activeTab === 'analytics') && (
         <View style={styles.topHeader}>
-            {/* Left Side: Hamburger Menu + Avatar Circle + Branch/User Info */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <TouchableOpacity style={styles.menuDrawerBtn} onPress={() => setDrawerOpen(true)}>
-                <Ionicons name="menu-outline" size={24} color="#0f172a" />
-              </TouchableOpacity>
+          {/* Left Side: Hamburger Menu + Avatar Circle + Branch/User Info */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <TouchableOpacity style={styles.menuDrawerBtn} onPress={() => setDrawerOpen(true)}>
+              <Ionicons name="menu-outline" size={24} color="#0f172a" />
+            </TouchableOpacity>
 
-              <View style={styles.avatarCircle}>
-                <Ionicons name="person" size={20} color="#258ec8" />
+            <View style={styles.avatarCircle}>
+              <Ionicons name="person" size={20} color="#258ec8" />
+            </View>
+
+            {userRole === 'admin' ? (
+              <View>
+                <Text style={styles.branchTitle}>Spiritual Homeo</Text>
+                <View style={styles.tagRow}>
+                  <View style={styles.roleBadge}>
+                    <Text style={styles.roleBadgeText}>ADMIN</Text>
+                  </View>
+                </View>
               </View>
-
-              {userRole === 'admin' ? (
-                <View>
-                  <Text style={styles.branchTitle}>Spiritual Homeo</Text>
-                  <View style={styles.tagRow}>
-                    <View style={styles.roleBadge}>
-                      <Text style={styles.roleBadgeText}>ADMIN</Text>
-                    </View>
+            ) : (userRole as string) === 'doctor' ? (
+              <View>
+                <Text style={styles.branchTitle}>{resolveDoctorName(branchPhone, userName)}</Text>
+                <Text style={styles.phoneSub}>{branchPhone}</Text>
+                <View style={styles.tagRow}>
+                  <View style={styles.roleBadge}>
+                    <Text style={styles.roleBadgeText}>DOCTOR</Text>
+                  </View>
+                  <View style={styles.locBadge}>
+                    <Ionicons name="location-outline" size={10} color="#64748b" style={{ marginRight: 2 }} />
+                    <Text style={styles.locBadgeText}>{branchName || 'Medical Center'}</Text>
                   </View>
                 </View>
-              ) : (userRole as string) === 'doctor' ? (
-                <View>
-                  <Text style={styles.branchTitle}>{resolveDoctorName(branchPhone, userName)}</Text>
-                  <Text style={styles.phoneSub}>{branchPhone}</Text>
-                  <View style={styles.tagRow}>
-                    <View style={styles.roleBadge}>
-                      <Text style={styles.roleBadgeText}>DOCTOR</Text>
-                    </View>
-                    <View style={styles.locBadge}>
-                      <Ionicons name="location-outline" size={10} color="#64748b" style={{ marginRight: 2 }} />
-                      <Text style={styles.locBadgeText}>{branchName || 'Medical Center'}</Text>
-                    </View>
+              </View>
+            ) : (
+              <View>
+                <Text style={styles.branchTitle}>{userName || branchName}</Text>
+                <Text style={styles.phoneSub}>{branchPhone}</Text>
+                <View style={styles.tagRow}>
+                  <View style={styles.roleBadge}>
+                    <Text style={styles.roleBadgeText}>{(userRole || 'reception').toUpperCase()}</Text>
+                  </View>
+                  <View style={styles.locBadge}>
+                    <Ionicons name="location-outline" size={10} color="#64748b" style={{ marginRight: 2 }} />
+                    <Text style={styles.locBadgeText}>{branchName}</Text>
                   </View>
                 </View>
-              ) : (
-                <View>
-                  <Text style={styles.branchTitle}>{userName || branchName}</Text>
-                  <Text style={styles.phoneSub}>{branchPhone}</Text>
-                  <View style={styles.tagRow}>
-                    <View style={styles.roleBadge}>
-                      <Text style={styles.roleBadgeText}>{(userRole || 'reception').toUpperCase()}</Text>
-                    </View>
-                    <View style={styles.locBadge}>
-                      <Ionicons name="location-outline" size={10} color="#64748b" style={{ marginRight: 2 }} />
-                      <Text style={styles.locBadgeText}>{branchName}</Text>
-                    </View>
-                  </View>
-                </View>
-              )}
-            </View>
-
-            {/* Right Side: Notification Bell + Red Logout Button */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <TouchableOpacity style={styles.bellBtn}>
-                <Ionicons name="notifications-outline" size={18} color="#1e293b" />
-                <View style={styles.redDot} />
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.signOutBtnCircle} onPress={handleSignOut}>
-                <Ionicons name="log-out-outline" size={18} color="#ef4444" />
-              </TouchableOpacity>
-            </View>
+              </View>
+            )}
           </View>
+
+          {/* Right Side: Notification Bell + Red Logout Button */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity style={styles.bellBtn}>
+              <Ionicons name="notifications-outline" size={18} color="#1e293b" />
+              <View style={styles.redDot} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.signOutBtnCircle} onPress={handleSignOut}>
+              <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
 
       {/* Sub-Page Professional Navigation Header with Back Arrow < and Page Title */}
@@ -436,7 +440,7 @@ export default function App() {
       {!isAuthScreen && userRole !== 'doctor' && (
         <View style={styles.fullBottomNavContainer}>
           {bottomNavItems.map((item) => {
-            const isActive = activeTab === item.id || 
+            const isActive = activeTab === item.id ||
               (item.id === 'reception_dashboard' && activeTab === 'reception') ||
               (item.id === 'admin' && (activeTab === 'admin' || activeTab === 'analytics' || activeTab === 'branches' || activeTab === 'doctors' || activeTab === 'staff'));
             const isLogout = item.id === 'logout';

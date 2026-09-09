@@ -47,25 +47,19 @@ export const getMaxExistingCounter = async (shortcut: string): Promise<number> =
   return maxNum;
 };
 
-// 2. Generate Registration ID (Atomic Firestore Transaction continuing from highest existing number)
+// 2. Generate Registration ID (Fast Atomic Firestore Transaction)
 export const generateRegistrationId = async (branchNameOrId?: string): Promise<string> => {
   const shortcut = getBranchShortcut(branchNameOrId);
   const counterRef = doc(db, 'counters', `registration_${shortcut}`);
   try {
-    const maxExisting = await getMaxExistingCounter(shortcut);
-
     const newId = await runTransaction(db, async (transaction) => {
       const counterDoc = await transaction.get(counterRef);
       let currentCount = 0;
       if (counterDoc.exists()) {
         currentCount = counterDoc.data().count || 0;
       }
-      
-      // Ensure counter continues from highest existing ID in DB
-      const baseCount = Math.max(currentCount, maxExisting);
-      const newCount = baseCount + 1;
-
-      transaction.set(counterRef, { count: newCount }, { merge: true });
+      const newCount = currentCount + 1;
+      transaction.set(counterRef, { count: newCount, updatedAt: new Date().toISOString() }, { merge: true });
       return newCount;
     });
 
@@ -74,6 +68,6 @@ export const generateRegistrationId = async (branchNameOrId?: string): Promise<s
     return `SPH-${shortcut}-${formattedCount}`;
   } catch (error) {
     console.error('Error generating registration ID:', error);
-    return `SPH-${shortcut}-T${Date.now().toString().slice(-5)}`;
+    return `SPH-${shortcut}-${Date.now().toString().slice(-4)}`;
   }
 };

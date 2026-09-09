@@ -200,8 +200,28 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
       const patPhone = activeConsultPatient.phone || activeConsultPatient.phoneNumber || '';
       const patBranch = activeConsultPatient.branch || 'KPHB Branch';
 
-      // 1. Update status to 'completed'
-      await handleUpdateStatus(activeConsultPatient.id, activeConsultPatient.collectionName, 'completed');
+      // 1. Update status to 'collect_fee' for Reception Billing Checkout
+      const mFee = Number(medicineFeeRequested) || 0;
+      const cFee = mFee > 0 ? 0 : (Number(consultationFee) || 0);
+      const targetVal = mFee > 0 ? mFee : (Number(consultationFee) || 500);
+
+      const feePayload = {
+        status: 'collect_fee',
+        feeCollectionNeeded: true,
+        paymentStatus: 'pending',
+        consultationFee: cFee,
+        medicineFee: mFee,
+        pharmacyFee: mFee,
+        medicineFeeRequested: mFee,
+        targetAmount: targetVal,
+        updatedAt: new Date().toISOString()
+      };
+      const appId = activeConsultPatient.id;
+      const targetCol = activeConsultPatient.collectionName || 'appointments';
+      await updateDoc(doc(db, targetCol, appId), feePayload).catch(() => {});
+      await updateDoc(doc(db, 'appointments', appId), feePayload).catch(() => {});
+      await updateDoc(doc(db, 'allpatients', appId), feePayload).catch(() => {});
+      await updateDoc(doc(db, 'patients', appId), feePayload).catch(() => {});
 
       // 2. Create record in `medicine_requests`
       await addDoc(collection(db, 'medicine_requests'), {
@@ -419,13 +439,15 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
 
               {/* Follow-up & Fees */}
               <Text style={{ fontSize: 12, fontWeight: '800', color: '#334155', marginBottom: 6 }}>FOLLOW-UP INTERVAL</Text>
-              <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12 }}>
-                {['15 Days', '1 Month', '2 Months'].map(opt => (
-                  <TouchableOpacity key={opt} onPress={() => setFollowUpInterval(opt)} style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: followUpInterval === opt ? '#258ec8' : '#f1f5f9' }}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: followUpInterval === opt ? '#fff' : '#475569' }}>{opt}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  {['15 Days', '1 Month', '2 Months', '3 Months', '4 Months', '5 Months', '6 Months'].map(opt => (
+                    <TouchableOpacity key={opt} onPress={() => setFollowUpInterval(opt)} style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: followUpInterval === opt ? '#258ec8' : '#f1f5f9' }}>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: followUpInterval === opt ? '#fff' : '#475569' }}>{opt}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
 
               <Text style={{ fontSize: 12, fontWeight: '800', color: '#334155', marginBottom: 6 }}>FEES FOR RECEPTION</Text>
               <View style={{ flexDirection: 'row', gap: 12, marginBottom: 20 }}>

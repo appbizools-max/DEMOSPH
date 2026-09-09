@@ -13,9 +13,8 @@ import {
 } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { collection, onSnapshot, doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification } from '@app/shared';
 import { DEFAULT_DOCTORS_SEED } from '../screens/Reception/BookAppointment/BookAppointmentScreen';
-
 export interface PatientAppointmentRecord {
   id: string;
   name: string;
@@ -29,13 +28,11 @@ export interface PatientAppointmentRecord {
   mode?: string;
   queueOrder?: number;
 }
-
 interface AppointmentsQueueUIProps {
   patients?: PatientAppointmentRecord[];
   onSelectPatient?: (patient: PatientAppointmentRecord) => void;
   onViewPatientFile?: (patient: PatientAppointmentRecord) => void;
 }
-
 export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
   patients = [],
   onSelectPatient,
@@ -50,7 +47,6 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
     const y = today.getFullYear();
     return `${d}-${m}-${y}`;
   };
-
   const getTomorrowDateStr = () => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -59,7 +55,6 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
     const y = tomorrow.getFullYear();
     return `${d}-${m}-${y}`;
   };
-
   // Reschedule Modal States
   const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false);
   const [selectedRescheduleAppt, setSelectedRescheduleAppt] = useState<PatientAppointmentRecord | null>(null);
@@ -70,7 +65,6 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
   const [rescheduleCalMonth, setRescheduleCalMonth] = useState<Date>(new Date());
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
   const [liveDoctorsData, setLiveDoctorsData] = useState<any[]>(DEFAULT_DOCTORS_SEED);
-
   // Subscribe to real-time Firestore doctors collection
   useEffect(() => {
     try {
@@ -92,7 +86,6 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
             });
           });
         }
-
         DEFAULT_DOCTORS_SEED.forEach((seed) => {
           if (!list.some(d => d.name === seed.name || d.id === seed.id)) {
             list.push(seed);
@@ -293,6 +286,17 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
       try {
         await updateDoc(doc(db, 'allpatients', docId), payload);
       } catch (e) {}
+
+      // Trigger Leonas WhatsApp Reschedule Notification
+      sendRescheduleWhatsAppNotification({
+        patientName: selectedRescheduleAppt.name || selectedRescheduleAppt.patientName || 'Patient',
+        phone: selectedRescheduleAppt.phone || selectedRescheduleAppt.phoneNumber || '',
+        date: rescheduleDate,
+        time: rescheduleTime,
+        doctorName: rescheduleDoctor,
+        branch: selectedRescheduleAppt.branch || 'KPHB'
+      }).catch(err => console.error('WhatsApp reschedule notification error:', err));
+
       Alert.alert('Rescheduled', `Appointment for ${selectedRescheduleAppt.name} rescheduled to ${rescheduleDate} at ${rescheduleTime}.`);
       setRescheduleModalOpen(false);
     } catch (err) {
@@ -365,6 +369,18 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
           style: 'destructive',
           onPress: async () => {
             try {
+              const targetApp = patients.find(p => p.id === patientId);
+              if (targetApp) {
+                sendCancellationWhatsAppNotification({
+                  patientName: targetApp.name || 'Patient',
+                  phone: targetApp.phone || '',
+                  date: targetApp.date || '',
+                  time: targetApp.time || '10:00 AM',
+                  doctorName: targetApp.doctor,
+                  branch: targetApp.branch || 'KPHB'
+                }).catch(err => console.error('Cancellation WhatsApp notification error:', err));
+              }
+
               try {
                 await deleteDoc(doc(db, 'appointments', patientId));
               } catch (e) {}
@@ -397,6 +413,24 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
           updatedAt: new Date().toISOString(),
         });
       }
+
+      if (newStatus === 'completed') {
+        const targetApp = patients.find(p => p.id === docId);
+        if (targetApp) {
+          // Trigger Invoice Receipt Template (invoice_recpt)
+          sendInvoiceReceiptWhatsAppNotification({
+            patientName: targetApp.name || 'Patient',
+            phone: targetApp.phone || '',
+          }).catch(e => console.error('WhatsApp invoice_recpt error:', e));
+
+          // Trigger Patient Experience Feedback Template (experience)
+          sendExperienceWhatsAppNotification({
+            patientName: targetApp.name || 'Patient',
+            phone: targetApp.phone || '',
+          }).catch(e => console.error('WhatsApp experience template error:', e));
+        }
+      }
+
       Alert.alert('Status Updated', `Patient appointment marked as ${newStatus}.`);
     } catch (err) {
       console.error('Error updating status:', err);

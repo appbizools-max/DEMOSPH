@@ -84,7 +84,7 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
         : 'Nallagandla Branch';
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
+    <Modal visible={visible} transparent animationType="none">
       <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose}>
         <View style={styles.drawerContainer} onStartShouldSetResponder={() => true}>
 

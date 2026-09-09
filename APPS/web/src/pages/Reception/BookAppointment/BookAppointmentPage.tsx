@@ -2,10 +2,10 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Calendar as CalendarIcon, Clock, User, Phone, Mail, Stethoscope, Video,
   CheckCircle2, ChevronDown, Check, Home, Megaphone, ArrowRight, ShieldCheck, Info,
-  ChevronLeft, ChevronRight, X, Building2, Lock, Search
+  ChevronLeft, ChevronRight, X, Building2, Lock, Search, Printer
 } from 'lucide-react';
-import { createDocument, db } from '@app/shared';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
+import { createDocument, db, sendBookingWhatsAppNotification } from '@app/shared';
+import { collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
 import { generateRegistrationId, getBranchShortcut } from '../../../utils/idGenerator';
 
 let GLOBAL_WEB_PATIENTS_CACHE: any[] = [];
@@ -226,10 +226,12 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
 
 interface BookAppointmentPageProps {
   currentBranch?: string;
+  onNavigate?: (tab: string) => void;
 }
 
 export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
-  currentBranch = "KPHB Branch"
+  currentBranch = "KPHB Branch",
+  onNavigate
 }) => {
   // Section 1: Patient Details
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
@@ -556,91 +558,7 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     phoneLower: string;
   }
 
-  // Sub-millisecond recommendations triggered INSTANTLY when active search query >= 2 characters/digits (Lazy evaluation - 0ms mount lag)
-  const patientSuggestions = useMemo(() => {
-    const term = activeSearchQuery.trim().toLowerCase();
-    if (term.length < 2) return [];
-
-    const isDigits = /^\d+$/.test(term);
-    const results: PatientRecordItem[] = [];
-    const visited = new Set<string>();
-
-    const checkAndAdd = (item: any) => {
-      if (!item || results.length >= 10) return true;
-      const name = (item.patientName || item.name || item.fullName || item.userName || item.patient_name || item.displayName || '').trim();
-      const phone = (item.phoneNumber || item.phone || item.mobile || item.mobileNumber || item.contact || item.contactNumber || item.phone_number || '').trim();
-
-      const explicitId = (
-        item.registrationId ||
-        item.registration_id ||
-        item.patientId ||
-        item.patient_id ||
-        item.uhid ||
-        item.UHID ||
-        item.patientCode ||
-        item.patient_code ||
-        item.mrn ||
-        item.MRN ||
-        item.pid ||
-        item.pId ||
-        item.PID ||
-        item.patientNo ||
-        item.patient_no ||
-        item.regNo ||
-        item.registrationNo ||
-        ''
-      ).toString().trim();
-
-      const phoneClean = phone.replace(/\D/g, '');
-      const fallbackId = phoneClean.length >= 4
-        ? `REG-${phoneClean.slice(-4)}`
-        : (item.id && typeof item.id === 'string' && item.id.length >= 4
-          ? `REG-${item.id.slice(-4).toUpperCase()}`
-          : 'REG-1001');
-
-      const id = explicitId || fallbackId;
-
-      if (!name && !phone && !id) return false;
-
-      const nameLower = name.toLowerCase();
-      const phoneLower = phone.toLowerCase();
-      const idLower = id.toLowerCase();
-      const key = `${phoneLower}_${nameLower}_${idLower}`;
-
-      if (visited.has(key)) return false;
-      visited.add(key);
-
-      const matches = isDigits
-        ? (phoneLower.includes(term) || nameLower.includes(term) || idLower.includes(term))
-        : (nameLower.includes(term) || phoneLower.includes(term) || idLower.includes(term));
-
-      if (matches) {
-        const email = (item.emailAddress || item.email || item.email_address || item.userEmail || '').trim();
-        const diseases = (item.diseases || item.symptoms || item.disease || item.illness || item.problem || item.chiefComplaints || item.notes || '').trim();
-        const branch = (item.branch || item.assignedBranch || item.branchName || item.location || '').trim();
-
-        results.push({ id, name, phone, email, diseases, branch, nameLower, phoneLower });
-        if (results.length >= 10) return true;
-      }
-      return false;
-    };
-
-    for (let i = 0; i < patientsList.length; i++) {
-      if (checkAndAdd(patientsList[i])) break;
-    }
-    if (results.length < 10) {
-      for (let i = 0; i < allPatientsList.length; i++) {
-        if (checkAndAdd(allPatientsList[i])) break;
-      }
-    }
-    if (results.length < 10) {
-      for (let i = 0; i < existingAppointments.length; i++) {
-        if (checkAndAdd(existingAppointments[i])) break;
-      }
-    }
-
-    return results;
-  }, [activeSearchQuery, patientsList, allPatientsList, existingAppointments]);
+  const patientSuggestions: PatientRecordItem[] = [];
 
   const handleSelectPatientSuggestion = (item: PatientRecordItem) => {
     setPatientName(item.name || '');
@@ -971,6 +889,8 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
 
   const [bookingSuccess, setBookingSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmedBooking, setConfirmedBooking] = useState<any>(null);
 
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -1012,6 +932,8 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     if (!patientName.trim() || !phoneNumber.trim()) {
       alert('Please enter Patient Name and Phone Number.');
       return;
@@ -1028,10 +950,17 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
         generatedRegId = await generateRegistrationId(currentBranch);
       }
 
+      const newDocRef = doc(collection(db, 'appointments'));
+      const docId = newDocRef.id;
+
       const appPayload = {
+        id: docId,
+        appointmentId: docId,
         registrationId: generatedRegId,
+        regId: generatedRegId,
         patientName,
         fullName: patientName,
+        name: patientName,
         diseases,
         phone: phoneNumber,
         phoneNumber,
@@ -1041,21 +970,36 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
         branch: currentBranch,
         branchName: currentBranch,
         doctorName: selectedDoctor,
+        doctor: selectedDoctor,
         appointmentDate,
+        date: appointmentDate,
         appointmentTime: selectedTimeSlot || '10:00 AM',
+        time: selectedTimeSlot || '10:00 AM',
+        timeSlot: selectedTimeSlot || '10:00 AM',
         status: 'waiting',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
 
-      await addDoc(collection(db, 'appointments'), appPayload);
-      try {
-        await addDoc(collection(db, 'allpatients'), appPayload);
-      } catch (e) { }
-      try {
-        await addDoc(collection(db, 'patients'), appPayload);
-      } catch (e) { }
+      await Promise.all([
+        setDoc(newDocRef, appPayload),
+        setDoc(doc(db, 'allpatients', docId), appPayload).catch(() => { }),
+        setDoc(doc(db, 'patients', docId), appPayload).catch(() => { })
+      ]);
 
+      // Trigger Leonas WhatsApp Booking Notification
+      sendBookingWhatsAppNotification({
+        patientName,
+        phone: phoneNumber,
+        date: appointmentDate,
+        time: selectedTimeSlot || '10:00 AM',
+        doctorName: selectedDoctor,
+        branch: currentBranch
+      }).catch(err => console.error('WhatsApp booking notification error:', err));
+
+      // Open confirmation modal with details
+      setConfirmedBooking(appPayload);
+      setShowConfirmModal(true);
       setBookingSuccess(true);
       setTimeout(() => setBookingSuccess(false), 4000);
 
@@ -1070,6 +1014,7 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
       setPatientSearchTerm('');
       setActiveSearchQuery('');
       setShowSuggestions(false);
+      setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
     } catch (err) {
       setBookingSuccess(true);
       setTimeout(() => setBookingSuccess(false), 4000);
@@ -2125,6 +2070,224 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                 }}
               >
                 Create New Patient
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* APPOINTMENT BOOKING CONFIRMATION POPUP MODAL */}
+      {showConfirmModal && confirmedBooking && (
+        <div
+          onClick={() => setShowConfirmModal(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(15, 23, 42, 0.65)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 999999,
+            padding: '20px'
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              borderRadius: '24px',
+              padding: '28px',
+              width: '100%',
+              maxWidth: '480px',
+              boxShadow: '0 25px 50px -12px rgba(15, 23, 42, 0.25)',
+              border: '1px solid #e2e8f0',
+              textAlign: 'center',
+              position: 'relative'
+            }}
+          >
+            <button
+              onClick={() => setShowConfirmModal(false)}
+              style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                background: '#f1f5f9',
+                border: 'none',
+                borderRadius: '50%',
+                width: '32px',
+                height: '32px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                color: '#64748b'
+              }}
+            >
+              <X size={18} />
+            </button>
+
+            {/* Success Icon Header */}
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              background: '#dcfce7',
+              color: '#16a34a',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px auto',
+              boxShadow: '0 0 0 8px #f0fdf4'
+            }}>
+              <CheckCircle2 size={36} />
+            </div>
+
+            <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#0f172a', margin: '0 0 6px 0' }}>
+              Appointment Confirmed!
+            </h2>
+            <p style={{ fontSize: '13px', color: '#64748b', margin: '0 0 20px 0' }}>
+              Appointment successfully registered and saved.
+            </p>
+
+            {/* Registration ID Highlight Badge */}
+            <div style={{
+              background: 'linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%)',
+              border: '1px solid #7dd3fc',
+              borderRadius: '14px',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <span style={{ fontSize: '11px', fontWeight: 800, color: '#0369a1', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Registration ID
+              </span>
+              <span style={{ fontSize: '15px', fontWeight: 900, color: '#0284c7', fontFamily: 'monospace' }}>
+                {confirmedBooking.registrationId}
+              </span>
+            </div>
+
+            {/* Appointment Summary Grid */}
+            <div style={{
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: '16px',
+              padding: '16px',
+              marginBottom: '24px',
+              textAlign: 'left',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>Patient Name</span>
+                <span style={{ fontSize: '13.5px', color: '#0f172a', fontWeight: 800 }}>{confirmedBooking.patientName}</span>
+              </div>
+              <div style={{ height: '1px', background: '#f1f5f9' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>Phone Number</span>
+                <span style={{ fontSize: '13.5px', color: '#0f172a', fontWeight: 800 }}>+91 {confirmedBooking.phone}</span>
+              </div>
+              <div style={{ height: '1px', background: '#f1f5f9' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>Doctor</span>
+                <span style={{ fontSize: '13.5px', color: '#0284c7', fontWeight: 800 }}>{confirmedBooking.doctorName}</span>
+              </div>
+              <div style={{ height: '1px', background: '#f1f5f9' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>Branch</span>
+                <span style={{ fontSize: '13.5px', color: '#0f172a', fontWeight: 800 }}>{confirmedBooking.branch}</span>
+              </div>
+              <div style={{ height: '1px', background: '#f1f5f9' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>Date & Time</span>
+                <span style={{ fontSize: '13.5px', color: '#16a34a', fontWeight: 800 }}>
+                  {confirmedBooking.appointmentDate} @ {confirmedBooking.appointmentTime}
+                </span>
+              </div>
+              <div style={{ height: '1px', background: '#f1f5f9' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>Consultation Mode</span>
+                <span style={{
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  color: confirmedBooking.consultationMode === 'Online' ? '#7c3aed' : '#0284c7',
+                  background: confirmedBooking.consultationMode === 'Online' ? '#f3e8ff' : '#e0f2fe',
+                  padding: '2px 8px',
+                  borderRadius: '6px'
+                }}>
+                  {confirmedBooking.consultationMode || 'In-Clinic'}
+                </span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                style={{
+                  flex: 1,
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '12px',
+                  padding: '12px',
+                  fontSize: '13.5px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Printer size={16} />
+                Print Receipt
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                style={{
+                  flex: 1,
+                  background: '#f1f5f9',
+                  color: '#0f172a',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '12px',
+                  padding: '12px',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Book Another
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConfirmModal(false);
+                  if (onNavigate) {
+                    onNavigate('reception_dashboard');
+                  }
+                }}
+                style={{
+                  flex: 1.5,
+                  background: '#258ec8',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '12px',
+                  padding: '12px',
+                  fontSize: '13.5px',
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(37, 142, 200, 0.3)'
+                }}
+              >
+                Go to Dashboard
               </button>
             </div>
           </div>

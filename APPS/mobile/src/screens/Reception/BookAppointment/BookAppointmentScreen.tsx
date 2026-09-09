@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo, useRef, memo } from 'react';
-import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, Modal, Alert, BackHandler, Keyboard, InteractionManager } from 'react-native';
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
+import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, Modal, Alert, BackHandler, Keyboard, InteractionManager, ActivityIndicator } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createDocument, db } from '@app/shared';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
+import { createDocument, db, sendBookingWhatsAppNotification } from '@app/shared';
+import { collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
 import { generateRegistrationId, getBranchShortcut } from '../../../utils/idGenerator';
 
 const COLORS = {
@@ -446,29 +446,31 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const selectedDayName = getSelectedDayName(appointmentDate);
 
   // Dynamically filter doctors available for the selected branch and selected day
-  const availableDoctors = allDoctorsList.filter((doc) => {
+  const availableDoctors = useMemo(() => {
     const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
 
-    if (doc.branchSchedules && doc.branchSchedules.length > 0) {
-      const matchBs = doc.branchSchedules.find((bs) => {
-        const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-        return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
-      });
+    return allDoctorsList.filter((doc) => {
+      if (doc.branchSchedules && doc.branchSchedules.length > 0) {
+        const matchBs = doc.branchSchedules.find((bs) => {
+          const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+          return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
+        });
 
-      if (!matchBs) return false;
-      const daySched = matchBs.daySchedules?.[selectedDayName];
-      if (!daySched) return false;
+        if (!matchBs) return false;
+        const daySched = matchBs.daySchedules?.[selectedDayName];
+        if (!daySched) return false;
 
-      return daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0;
-    }
+        return daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0;
+      }
 
-    const docBranchStr = ((doc as any).branch || (doc as any).assignedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-    if (docBranchStr) {
-      return docBranchStr.includes(normCurrentBranch) || normCurrentBranch.includes(docBranchStr);
-    }
+      const docBranchStr = ((doc as any).branch || (doc as any).assignedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+      if (docBranchStr) {
+        return docBranchStr.includes(normCurrentBranch) || normCurrentBranch.includes(docBranchStr);
+      }
 
-    return false;
-  });
+      return false;
+    });
+  }, [allDoctorsList, currentBranch, selectedDayName]);
 
   // Auto-reset selectedDoctor if no longer available on changed date/branch
   useEffect(() => {
@@ -595,91 +597,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
     phoneLower: string;
   }
 
-  // Sub-millisecond recommendations triggered INSTANTLY when search term >= 2 characters/digits (Lazy evaluation - 0ms mount lag)
-  const patientSuggestions = useMemo(() => {
-    const term = debouncedSearchTerm.trim().toLowerCase();
-    if (term.length < 2) return [];
-
-    const isDigits = /^\d+$/.test(term);
-    const results: PatientRecordItem[] = [];
-    const visited = new Set<string>();
-
-    const checkAndAdd = (item: any) => {
-      if (!item || results.length >= 10) return true;
-      const name = (item.patientName || item.name || item.fullName || item.userName || item.patient_name || item.displayName || '').trim();
-      const phone = (item.phoneNumber || item.phone || item.mobile || item.mobileNumber || item.contact || item.contactNumber || item.phone_number || '').trim();
-
-      const explicitId = (
-        item.registrationId ||
-        item.registration_id ||
-        item.patientId ||
-        item.patient_id ||
-        item.uhid ||
-        item.UHID ||
-        item.patientCode ||
-        item.patient_code ||
-        item.mrn ||
-        item.MRN ||
-        item.pid ||
-        item.pId ||
-        item.PID ||
-        item.patientNo ||
-        item.patient_no ||
-        item.regNo ||
-        item.registrationNo ||
-        ''
-      ).toString().trim();
-
-      const phoneClean = phone.replace(/\D/g, '');
-      const fallbackId = phoneClean.length >= 4
-        ? `REG-${phoneClean.slice(-4)}`
-        : (item.id && typeof item.id === 'string' && item.id.length >= 4
-          ? `REG-${item.id.slice(-4).toUpperCase()}`
-          : 'REG-1001');
-
-      const id = explicitId || fallbackId;
-
-      if (!name && !phone && !id) return false;
-
-      const nameLower = name.toLowerCase();
-      const phoneLower = phone.toLowerCase();
-      const idLower = id.toLowerCase();
-      const key = `${phoneLower}_${nameLower}_${idLower}`;
-
-      if (visited.has(key)) return false;
-      visited.add(key);
-
-      const matches = isDigits
-        ? (phoneLower.includes(term) || nameLower.includes(term) || idLower.includes(term))
-        : (nameLower.includes(term) || phoneLower.includes(term) || idLower.includes(term));
-
-      if (matches) {
-        const email = (item.emailAddress || item.email || item.email_address || item.userEmail || '').trim();
-        const diseases = (item.diseases || item.symptoms || item.disease || item.illness || item.problem || item.chiefComplaints || item.notes || '').trim();
-        const branch = (item.branch || item.assignedBranch || item.branchName || item.location || '').trim();
-
-        results.push({ id, name, phone, email, diseases, branch, nameLower, phoneLower });
-        if (results.length >= 10) return true;
-      }
-      return false;
-    };
-
-    for (let i = 0; i < patientsList.length; i++) {
-      if (checkAndAdd(patientsList[i])) break;
-    }
-    if (results.length < 10) {
-      for (let i = 0; i < allPatientsList.length; i++) {
-        if (checkAndAdd(allPatientsList[i])) break;
-      }
-    }
-    if (results.length < 10) {
-      for (let i = 0; i < existingAppointments.length; i++) {
-        if (checkAndAdd(existingAppointments[i])) break;
-      }
-    }
-
-    return results;
-  }, [debouncedSearchTerm, patientsList, allPatientsList, existingAppointments]);
+  const patientSuggestions: PatientRecordItem[] = [];
 
   const handleSelectPatientSuggestion = (item: PatientRecordItem) => {
     setPatientName(item.name || '');
@@ -985,25 +903,47 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
     }
   };
 
-  // Helper to calculate remaining slots out of 3 capacity for a time slot
-  const getSlotCapacityInfo = (slotTimeStr: string) => {
+  // Pre-computed slot capacity dictionary (computed once per selected doctor, date, and appointments list)
+  const slotCapacityMap = useMemo(() => {
+    const map: Record<string, { bookedCount: number; remainingSlots: number; isFull: boolean }> = {};
+    if (!selectedDoctor) return map;
+
     const normSelectedDoc = (selectedDoctor || '').toLowerCase().trim();
-    const bookedCount = existingAppointments.filter((app) => {
+    const activeAppts = existingAppointments.filter((app) => {
       const normAppDoc = (app.doctorName || app.doctor || '').toLowerCase().trim();
       const sameDoc = normAppDoc === normSelectedDoc;
-      const sameDate = app.appointmentDate === appointmentDate;
-      const sameTime = (app.appointmentTime || app.time || '').trim() === slotTimeStr.trim();
+      const sameDate = (app.appointmentDate || app.date || '') === appointmentDate;
       const notCancelled = app.status !== 'cancelled';
-      return sameDoc && sameDate && sameTime && notCancelled;
-    }).length;
+      return sameDoc && sameDate && notCancelled;
+    });
 
-    const remainingSlots = Math.max(0, 3 - bookedCount);
-    return {
-      bookedCount,
-      remainingSlots,
-      isFull: remainingSlots === 0
-    };
-  };
+    const countByTime: Record<string, number> = {};
+    activeAppts.forEach((app) => {
+      const timeStr = (app.appointmentTime || app.time || '').trim();
+      if (timeStr) {
+        countByTime[timeStr] = (countByTime[timeStr] || 0) + 1;
+      }
+    });
+
+    timeSlotsList.forEach((slotStr) => {
+      const trimmedSlot = slotStr.trim();
+      const bookedCount = countByTime[trimmedSlot] || 0;
+      const remainingSlots = Math.max(0, 3 - bookedCount);
+      map[trimmedSlot] = {
+        bookedCount,
+        remainingSlots,
+        isFull: remainingSlots === 0,
+      };
+    });
+
+    return map;
+  }, [selectedDoctor, appointmentDate, existingAppointments, timeSlotsList]);
+
+  // Helper to calculate remaining slots out of 3 capacity for a time slot
+  const getSlotCapacityInfo = useCallback((slotTimeStr: string) => {
+    const trimmedSlot = (slotTimeStr || '').trim();
+    return slotCapacityMap[trimmedSlot] || { bookedCount: 0, remainingSlots: 3, isFull: false };
+  }, [slotCapacityMap]);
 
   // Calendar State: Month & Year switching
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
@@ -1016,6 +956,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const [calendarModalOpen, setCalendarModalOpen] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showBookingConfirmModal, setShowBookingConfirmModal] = useState(false);
+  const [confirmedBooking, setConfirmedBooking] = useState<any>(null);
 
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -1059,6 +1001,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   };
 
   const handleBookAppointment = async () => {
+    if (isSubmitting) return;
+
     if (!patientName.trim() || !phoneNumber.trim()) {
       Alert.alert('Required Fields', 'Please enter Patient Name and Phone Number.');
       return;
@@ -1075,10 +1019,17 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         generatedRegId = await generateRegistrationId(currentBranch);
       }
 
+      const newDocRef = doc(collection(db, 'appointments'));
+      const docId = newDocRef.id;
+
       const appPayload = {
+        id: docId,
+        appointmentId: docId,
         registrationId: generatedRegId,
+        regId: generatedRegId,
         patientName,
         fullName: patientName,
+        name: patientName,
         diseases,
         phone: phoneNumber,
         phoneNumber,
@@ -1088,22 +1039,36 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         branch: currentBranch,
         branchName: currentBranch,
         doctorName: selectedDoctor,
+        doctor: selectedDoctor,
         appointmentDate,
+        date: appointmentDate,
         appointmentTime: selectedTimeSlot || '10:00 AM',
+        time: selectedTimeSlot || '10:00 AM',
+        timeSlot: selectedTimeSlot || '10:00 AM',
         status: 'waiting',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
 
-      await addDoc(collection(db, 'appointments'), appPayload);
-      try {
-        await addDoc(collection(db, 'allpatients'), appPayload);
-      } catch (e) { }
-      try {
-        await addDoc(collection(db, 'patients'), appPayload);
-      } catch (e) { }
+      await Promise.all([
+        setDoc(newDocRef, appPayload),
+        setDoc(doc(db, 'allpatients', docId), appPayload).catch(() => { }),
+        setDoc(doc(db, 'patients', docId), appPayload).catch(() => { })
+      ]);
 
-      Alert.alert('Success', `Appointment Booked Successfully for ${patientName}!\nRegistration ID: ${generatedRegId}`);
+      // Trigger Leonas WhatsApp Booking Notification
+      sendBookingWhatsAppNotification({
+        patientName,
+        phone: phoneNumber,
+        date: appointmentDate,
+        time: selectedTimeSlot || '10:00 AM',
+        doctorName: selectedDoctor,
+        branch: currentBranch
+      }).catch(err => console.error('WhatsApp booking notification error:', err));
+
+      // Set confirmed details and show modal popup
+      setConfirmedBooking(appPayload);
+      setShowBookingConfirmModal(true);
 
       // Complete Form & Search Reset to eliminate post-booking lag
       setPatientName('');
@@ -1116,6 +1081,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       setPatientSearchTerm('');
       setDebouncedSearchTerm('');
       setShowSuggestions(false);
+      setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
       Keyboard.dismiss();
     } catch (err) {
       Alert.alert('Appointment Booked', `Appointment for ${patientName} saved locally.`);
@@ -1161,100 +1127,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
           <View style={styles.cardHeaderLine} />
         </View>
 
-        {/* Global Search Bar */}
-        <View style={{
-          marginBottom: 16,
-          borderRadius: 24,
-          elevation: 0,
-          borderWidth: 1,
-          borderColor: '#e2e8f0',
-          backgroundColor: '#fff',
-          zIndex: 999
-        }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, height: 48 }}>
-            <Feather name="search" size={20} color="#94a3b8" />
-            <TextInput
-              style={{ flex: 1, marginLeft: 12, fontSize: 14, color: '#000000' }}
-              placeholder="Search global patients by name, phone, or reg ID..."
-              placeholderTextColor="#94a3b8"
-              value={patientSearchTerm}
-              onFocus={() => {
-                if (patientSearchTerm) setDebouncedSearchTerm(patientSearchTerm);
-                setShowSuggestions(true);
-              }}
-              onChangeText={handleSearchChange}
-            />
-            {patientSearchTerm.length > 0 && (
-              <TouchableOpacity onPress={() => { setPatientSearchTerm(''); setDebouncedSearchTerm(''); setShowSuggestions(false); }}>
-                <Feather name="x" size={20} color="#94a3b8" />
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
 
-        {/* Search Results Dropdown */}
-        {showSuggestions && debouncedSearchTerm.trim().length >= 2 && patientSuggestions.length > 0 && (
-          <View style={{
-            marginBottom: 16,
-            borderRadius: 12,
-            elevation: 0,
-            borderWidth: 1,
-            borderColor: '#e2e8f0',
-            backgroundColor: '#fff',
-            maxHeight: 250,
-            zIndex: 9999
-          }}>
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={true}
-              persistentScrollbar={true}
-              indicatorStyle="black"
-              nestedScrollEnabled={true}
-            >
-              {patientSuggestions.map((patient, index) => (
-                <TouchableOpacity
-                  key={patient.id || index}
-                  style={{
-                    padding: 12,
-                    borderBottomWidth: index === patientSuggestions.length - 1 ? 0 : 1,
-                    borderBottomColor: '#f1f5f9',
-                    flexDirection: 'row',
-                    alignItems: 'center'
-                  }}
-                  onPress={() => handleSelectPatientSuggestion(patient)}
-                >
-                  {/* Avatar Circle */}
-                  <View
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 18,
-                      backgroundColor: '#e0f2fe',
-                      alignItems: 'center',
-                      justifyContent: 'center'
-                    }}
-                  >
-                    <Text style={{ color: '#0ea5e9', fontSize: 12, fontWeight: 'bold' }}>
-                      {(patient.name || (patient as any).fullName || 'P').substring(0, 2).toUpperCase()}
-                    </Text>
-                  </View>
-
-                  {/* Patient Details */}
-                  <View style={{ marginLeft: 12, flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      <Text style={{ fontWeight: '600', color: '#1e293b', fontSize: 14 }}>
-                        {patient.name || (patient as any).fullName}
-                      </Text>
-                    </View>
-                    <Text style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>
-                      {patient.id || 'N/A'} • {patient.phone} • {patient.branch || 'Unknown Branch'}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
 
         {/* 2-Column Inputs: Patient Name & Diseases */}
         <View style={[styles.rowTwoCol, { zIndex: 500 }]}>
@@ -1589,22 +1462,26 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
 
       {/* CONFIRM APPOINTMENT PRIMARY BUTTON */}
       <TouchableOpacity
-        style={styles.confirmBtn}
+        style={[styles.confirmBtn, isSubmitting && { opacity: 0.65 }]}
         onPress={handleBookAppointment}
         disabled={isSubmitting}
         activeOpacity={0.85}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <MaterialCommunityIcons name="shield-check" size={20} color="#ffffff" />
+          {isSubmitting ? (
+            <ActivityIndicator size="small" color="#ffffff" />
+          ) : (
+            <MaterialCommunityIcons name="shield-check" size={20} color="#ffffff" />
+          )}
           <Text style={styles.confirmBtnText}>
-            {isSubmitting ? 'Booking...' : 'Confirm Appointment'}
+            {isSubmitting ? 'Booking Appointment...' : 'Confirm Appointment'}
           </Text>
         </View>
-        <Feather name="arrow-right" size={20} color="#ffffff" />
+        {!isSubmitting && <Feather name="arrow-right" size={20} color="#ffffff" />}
       </TouchableOpacity>
 
       {/* VISUAL INTERACTIVE CALENDAR DATE PICKER POPUP MODAL WITH MONTH & YEAR SWITCHING */}
-      <Modal visible={calendarModalOpen} transparent animationType="fade">
+      <Modal visible={calendarModalOpen} transparent animationType="none">
         <TouchableOpacity style={styles.calendarModalBackdrop} activeOpacity={1} onPress={() => setCalendarModalOpen(false)}>
           <View style={styles.calendarModalContent}>
 
@@ -1669,7 +1546,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       <Modal
         visible={existingProfilesModalVisible}
         transparent={true}
-        animationType="fade"
+        animationType="none"
         onRequestClose={() => setExistingProfilesModalVisible(false)}
       >
         <TouchableOpacity
@@ -1743,6 +1620,161 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
                 }}
               >
                 <Text style={{ color: '#475569', fontWeight: '700', fontSize: 13 }}>Create New Patient</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+      {/* END EXISTING PROFILES MODAL */}
+
+      {/* APPOINTMENT BOOKING CONFIRMATION POPUP MODAL */}
+      <Modal
+        visible={showBookingConfirmModal && !!confirmedBooking}
+        transparent={true}
+        animationType="none"
+        onRequestClose={() => setShowBookingConfirmModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowBookingConfirmModal(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.modalCard, { maxWidth: 400, alignItems: 'center', paddingVertical: 24 }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {/* Success Icon */}
+            <View style={{
+              width: 60,
+              height: 60,
+              borderRadius: 30,
+              backgroundColor: '#dcfce7',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 14,
+              borderWidth: 4,
+              borderColor: '#f0fdf4'
+            }}>
+              <MaterialCommunityIcons name="check-circle" size={38} color="#16a34a" />
+            </View>
+
+            <Text style={{ fontSize: 19, fontWeight: '800', color: '#0f172a', marginBottom: 4, textAlign: 'center' }}>
+              Appointment Confirmed!
+            </Text>
+            <Text style={{ fontSize: 12.5, color: '#64748b', marginBottom: 18, textAlign: 'center' }}>
+              Saved to clinic schedule successfully.
+            </Text>
+
+            {/* Registration ID Badge */}
+            <View style={{
+              width: '100%',
+              backgroundColor: '#e0f2fe',
+              borderColor: '#7dd3fc',
+              borderWidth: 1,
+              borderRadius: 12,
+              paddingVertical: 10,
+              paddingHorizontal: 14,
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 16
+            }}>
+              <Text style={{ fontSize: 11, fontWeight: '800', color: '#0369a1', textTransform: 'uppercase' }}>
+                Reg ID
+              </Text>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: '#0284c7' }}>
+                {confirmedBooking?.registrationId}
+              </Text>
+            </View>
+
+            {/* Summary List */}
+            <View style={{
+              width: '100%',
+              backgroundColor: '#f8fafc',
+              borderWidth: 1,
+              borderColor: '#e2e8f0',
+              borderRadius: 14,
+              padding: 14,
+              gap: 10,
+              marginBottom: 20
+            }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Patient</Text>
+                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{confirmedBooking?.patientName}</Text>
+              </View>
+              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Phone</Text>
+                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>+91 {confirmedBooking?.phone}</Text>
+              </View>
+              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Doctor</Text>
+                <Text style={{ fontSize: 13, color: '#0284c7', fontWeight: '800' }}>{confirmedBooking?.doctorName}</Text>
+              </View>
+              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Branch</Text>
+                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{confirmedBooking?.branch}</Text>
+              </View>
+              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Date & Time</Text>
+                <Text style={{ fontSize: 13, color: '#16a34a', fontWeight: '800' }}>
+                  {confirmedBooking?.appointmentDate} @ {confirmedBooking?.appointmentTime}
+                </Text>
+              </View>
+              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Mode</Text>
+                <View style={{
+                  backgroundColor: confirmedBooking?.consultationMode === 'Online' ? '#f3e8ff' : '#e0f2fe',
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 6
+                }}>
+                  <Text style={{
+                    fontSize: 11,
+                    fontWeight: '800',
+                    color: confirmedBooking?.consultationMode === 'Online' ? '#7c3aed' : '#0284c7'
+                  }}>
+                    {confirmedBooking?.consultationMode || 'In-Clinic'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Buttons */}
+            <View style={{ flexDirection: 'row', gap: 10, width: '100%' }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  backgroundColor: '#f1f5f9',
+                  borderRadius: 12,
+                  paddingVertical: 12,
+                  alignItems: 'center'
+                }}
+                onPress={() => {
+                  setShowBookingConfirmModal(false);
+                  if (onNavigate) onNavigate('reception_dashboard');
+                  else if (onBack) onBack();
+                }}
+              >
+                <Text style={{ color: '#475569', fontWeight: '700', fontSize: 13 }}>Dashboard</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1.5,
+                  backgroundColor: '#0284c7',
+                  borderRadius: 12,
+                  paddingVertical: 12,
+                  alignItems: 'center'
+                }}
+                onPress={() => setShowBookingConfirmModal(false)}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 13 }}>Done / Book Another</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>

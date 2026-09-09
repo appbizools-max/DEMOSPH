@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, getDocs } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: process.env.VITE_FIREBASE_API_KEY || process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "YOUR_FIREBASE_API_KEY",
+  apiKey: "AIzaSyAohSNLyeS6bYtnk2QvB4HGo0LbHDw9b6Q",
   authDomain: "spiritual-homeopathy-3b552.firebaseapp.com",
   databaseURL: "https://spiritual-homeopathy-3b552-default-rtdb.firebaseio.com",
   projectId: "spiritual-homeopathy-3b552",

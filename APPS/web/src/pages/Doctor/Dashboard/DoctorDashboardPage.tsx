@@ -123,7 +123,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
 
       const uniqueMap = new Map<string, any>();
       filtered.forEach((item) => {
-        const key = `${item.phone || item.id}_${item.patientName || item.name}`;
+        const key = item.id || `${item.phone || ''}_${item.patientName || item.name || ''}_${item.appointmentDate || item.date || ''}_${item.appointmentTime || item.time || ''}`;
         if (!uniqueMap.has(key)) {
           uniqueMap.set(key, item);
         }
@@ -292,8 +292,28 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
       const patPhone = activeConsultPatient.phone || activeConsultPatient.phoneNumber || '';
       const patBranch = activeConsultPatient.branch || 'KPHB Branch';
 
-      // 1. Update status to 'completed'
-      await handleUpdateStatus(activeConsultPatient.id, activeConsultPatient.collectionName, 'completed');
+      // 1. Update status to 'collect_fee' for Reception Billing Checkout
+      const mFee = Number(medicineFeeRequested) || 0;
+      const cFee = mFee > 0 ? 0 : (Number(consultationFee) || 0);
+      const targetVal = mFee > 0 ? mFee : (Number(consultationFee) || 500);
+
+      const feePayload = {
+        status: 'collect_fee',
+        feeCollectionNeeded: true,
+        paymentStatus: 'pending',
+        consultationFee: cFee,
+        medicineFee: mFee,
+        pharmacyFee: mFee,
+        medicineFeeRequested: mFee,
+        targetAmount: targetVal,
+        updatedAt: new Date().toISOString()
+      };
+      const appId = activeConsultPatient.id;
+      const targetCol = activeConsultPatient.collectionName || 'appointments';
+      await updateDoc(doc(db, targetCol, appId), feePayload).catch(() => {});
+      await updateDoc(doc(db, 'appointments', appId), feePayload).catch(() => {});
+      await updateDoc(doc(db, 'allpatients', appId), feePayload).catch(() => {});
+      await updateDoc(doc(db, 'patients', appId), feePayload).catch(() => {});
 
       // 2. Create record in `medicine_requests`
       await addDoc(collection(db, 'medicine_requests'), {

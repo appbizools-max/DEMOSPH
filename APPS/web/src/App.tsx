@@ -134,11 +134,11 @@ export default function App() {
       case 'reception_patient_file':
         return <PatientFilePage initialPatient={selectedPatientForFile} onBack={() => setActiveTab('reception_dashboard')} />;
       case 'reception_book':
-        return <BookAppointmentPage currentBranch={branchName} />;
+        return <BookAppointmentPage currentBranch={branchName} onNavigate={setActiveTab} />;
       case 'reception_patients':
         return <AllPatientsPage />;
       case 'reception_followups':
-        return <FollowUpsPage />;
+        return <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} />;
       case 'reception_medicines':
         return <MedicineRequestsPage />;
       case 'reception_billing':

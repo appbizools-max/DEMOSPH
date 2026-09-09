@@ -10,13 +10,13 @@ function getEnvVar(key: string): string | undefined {
     if (typeof process !== 'undefined' && process.env && process.env[key]) {
       return process.env[key];
     }
-  } catch (e) {}
+  } catch (e) { }
   return undefined;
 }
 
 // Live Firebase Configuration for Spiritual Homeo
 const defaultConfig: FirebaseConfigOptions & { databaseURL?: string } = {
-  apiKey: getEnvVar('EXPO_PUBLIC_FIREBASE_API_KEY') || getEnvVar('VITE_FIREBASE_API_KEY') || "YOUR_FIREBASE_API_KEY",
+  apiKey: getEnvVar('EXPO_PUBLIC_FIREBASE_API_KEY') || getEnvVar('VITE_FIREBASE_API_KEY') || "AIzaSyAohSNLyeS6bYtnk2QvB4HGo0LbHDw9b6Q",
   authDomain: getEnvVar('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN') || getEnvVar('VITE_FIREBASE_AUTH_DOMAIN') || "spiritual-homeopathy-3b552.firebaseapp.com",
   databaseURL: "https://spiritual-homeopathy-3b552-default-rtdb.firebaseio.com",
   projectId: getEnvVar('EXPO_PUBLIC_FIREBASE_PROJECT_ID') || getEnvVar('VITE_FIREBASE_PROJECT_ID') || "spiritual-homeopathy-3b552",

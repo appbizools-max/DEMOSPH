@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { StyleSheet, Text, View, FlatList, TextInput, TouchableOpacity, Modal, Alert } from 'react-native';
 
 interface PatientItem {
@@ -23,11 +23,15 @@ export const AllPatientsScreen: React.FC = () => {
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
 
-  const filtered = patients.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase()) || 
-    p.phone.includes(search) || 
-    p.id.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    if (!s) return patients;
+    return patients.filter(p => 
+      p.name.toLowerCase().includes(s) || 
+      p.phone.includes(s) || 
+      p.id.toLowerCase().includes(s)
+    );
+  }, [patients, search]);
 
   const handleRegister = () => {
     if (!newName.trim() || !newPhone.trim()) {
