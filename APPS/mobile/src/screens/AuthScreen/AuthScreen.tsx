@@ -1,15 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, Image, SafeAreaView, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { signInWithEmailAndPassword } from 'firebase/auth';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
-import { auth, db, UserRole } from '@app/shared';
+import { getSafeDb, doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from '../../utils/firebaseSafe';
+import { auth, UserRole } from '@app/shared';
+import { sendSmsOtp, generate4DigitOtp, normalizePhoneForSms } from '../../services/smsOtpService';
 
 export interface LoginSuccessData {
   role: UserRole;
   userName?: string;
   branchName: string;
   branchPhone: string;
+  staffId?: string;
 }
 
 interface AuthScreenProps {
@@ -24,90 +26,93 @@ export const AUTHORIZED_RECEPTION_BRANCHES: Record<string, { name: string; phone
   '9553176176': { name: 'Chandanagar', phone: '9553176176' },
 };
 
+export const REGISTERED_CLINIC_STAFF = [
+  { id: '1', name: 'Anil Kumar M', role: 'Front Desk & Operations', branch: 'KPHB', phone: '9030176176' },
+  { id: '2', name: 'Ashwini Begari', role: 'Clinic Coordinator', branch: 'Chandanagar', phone: '9553176176' },
+  { id: '3', name: 'Vaishnavi Peri', role: 'Patient Care & Followup', branch: 'Nallagandla', phone: '9132176176' },
+  { id: '4', name: 'Nandini Gottelli', role: 'Pharmacy & Billing', branch: 'Dilshuknagar', phone: '9804176176' },
+  { id: '5', name: 'Srikanth', role: 'Support Assistant', branch: 'KPHB', phone: '9030176176' },
+  { id: '6', name: 'Arun Kumar', role: 'Lab & General Support', branch: 'Nallagandla', phone: '9132176176' },
+  { id: '7', name: 'Aishwarya . M', role: 'Front Desk & Operations', branch: 'KPHB', phone: '7995532759' },
+];
+
 // Known doctor phone numbers for seed matching
 const KNOWN_DOCTOR_PHONES = ['8125260176', '9903119766', '9490808582', '1111111111'];
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
-  const [loginMethod, setLoginMethod] = useState<'otp' | 'email'>('otp');
+  const [loginMethod, setLoginMethod] = useState<'otp' | 'staff' | 'email'>('otp');
+  const [selectedStaffId, setSelectedStaffId] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [displayedOtp, setDisplayedOtp] = useState('');
+  const [smsNotice, setSmsNotice] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [liveStaffChips, setLiveStaffChips] = useState<any[]>([]);
+
+  useEffect(() => {
+    const activeDb = getSafeDb();
+    if (!activeDb) return;
+    const unsubStaff = onSnapshot(collection(activeDb, 'staff'), (snap) => {
+      const list: any[] = [];
+      snap.forEach(d => {
+        list.push({ id: d.id, ...d.data() });
+      });
+      setLiveStaffChips(list);
+    }, (err) => console.warn('Auth live staff listener notice:', err));
+
+    return () => {
+      unsubStaff();
+    };
+  }, []);
 
   // Helper to dynamically detect Role, User Name, and Branch from input or Firestore
-  const detectRoleAndBranch = async (input: string): Promise<LoginSuccessData> => {
+  const detectRoleAndBranch = async (input: string): Promise<LoginSuccessData | null> => {
     const cleanInput = input.trim();
     const digits = cleanInput.replace(/\D/g, '');
+    const clean10 = digits.length > 10 ? digits.slice(-10) : digits;
     const lower = cleanInput.toLowerCase();
 
-    // 1. Check Receptionist Branch Numbers FIRST
-    if (digits.includes('9030176176') || digits.includes('90301') || lower.includes('kphb')) {
-      return { role: 'reception', userName: 'KPHB Reception', branchName: 'KPHB Branch', branchPhone: '+91 90301 76176' };
-    }
-    if (digits.includes('9132176176') || digits.includes('91321') || lower.includes('nalla')) {
-      return { role: 'reception', userName: 'Nallagandla Reception', branchName: 'Nallagandla Branch', branchPhone: '+91 91321 76176' };
-    }
-    if (digits.includes('9804176176') || digits.includes('98041') || lower.includes('dilshuk')) {
-      return { role: 'reception', userName: 'Dilshuknagar Reception', branchName: 'Dilshuknagar Branch', branchPhone: '+91 98041 76176' };
-    }
-    if (digits.includes('9553176176') || digits.includes('95531') || lower.includes('chanda')) {
-      return { role: 'reception', userName: 'Chandanagar Reception', branchName: 'Chandanagar Branch', branchPhone: '+91 95531 76176' };
-    }
+    const activeDb = getSafeDb();
 
-    // 2. Check Firestore if available
-    if (db && digits.length >= 8) {
-      try {
-        const receptionQuery = query(collection(db, 'reception'), where('phone', '==', digits));
-        const receptionSnap = await getDocs(receptionQuery);
-        if (!receptionSnap.empty) {
-          const data = receptionSnap.docs[0].data();
-          return {
-            role: 'reception',
-            userName: data.name || 'Branch Reception',
-            branchName: data.branch || 'KPHB Branch',
-            branchPhone: digits,
-          };
-        }
-
-        const docQuery = query(collection(db, 'doctors'), where('phone', '==', digits));
-        const docSnap = await getDocs(docQuery);
-        if (!docSnap.empty) {
-          const data = docSnap.docs[0].data();
-          return {
-            role: 'doctor',
-            userName: data.name || 'Dr. Physician',
-            branchName: data.branch || 'Medical Center',
-            branchPhone: digits,
-          };
-        }
-
-        const staffQuery = query(collection(db, 'staff'), where('phone', '==', digits));
-        const staffSnap = await getDocs(staffQuery);
-        if (!staffSnap.empty) {
-          const data = staffSnap.docs[0].data();
-          return {
-            role: 'staff',
-            userName: data.name || 'Staff Member',
-            branchName: data.branch || 'KPHB Branch',
-            branchPhone: digits,
-          };
-        }
-      } catch (e) {
-        console.warn('Firestore user lookup error:', e);
+    // 1. Instant Reception Branch Check (Dedicated desk numbers)
+    for (const [recPhone, recInfo] of Object.entries(AUTHORIZED_RECEPTION_BRANCHES)) {
+      if (
+        (clean10 && clean10 === recPhone) ||
+        (digits && digits.endsWith(recPhone)) ||
+        (lower && lower.includes(recInfo.name.toLowerCase()))
+      ) {
+        return {
+          role: 'reception',
+          userName: `${recInfo.name} Reception`,
+          branchName: `${recInfo.name} Branch`,
+          branchPhone: `+91 ${recPhone}`
+        };
       }
     }
 
-    // 3. Admin / HR
-    if (lower.includes('admin') || digits === '9000000001') {
-      return { role: 'admin', userName: 'Admin Control Hub', branchName: 'HQ Admin Office', branchPhone: '+91 90000 00001' };
-    }
-    if (lower.includes('hr') || digits === '9000000002') {
-      return { role: 'hr', userName: 'HR Department', branchName: 'HQ HR Dept', branchPhone: '+91 90000 00002' };
+    if (lower.includes('reception') || lower.includes('recption')) {
+      return {
+        role: 'reception',
+        userName: 'KPHB Reception',
+        branchName: 'KPHB Branch',
+        branchPhone: '+91 9030176176'
+      };
     }
 
-    // 4. Exact Doctor Seed Matching by Phone or Name Keywords
+    // 2. Instant Admin / HR Check (No network calls needed)
+    if (lower === 'hr@sph.com' || lower.includes('hr') || digits === '9000000002') {
+      const email = cleanInput.includes('@') ? cleanInput : 'hr@sph.com';
+      return { role: 'hr', userName: email, branchName: 'HR Department', branchPhone: '' };
+    }
+    if (lower.includes('admin') || digits === '9000000001') {
+      const email = cleanInput.includes('@') ? cleanInput : 'admin@sph.com';
+      return { role: 'admin', userName: email, branchName: 'Admin Control Hub', branchPhone: '' };
+    }
+
+    // 3. Instant Known Doctor Seed Check
     if (digits.includes('8125260176') || lower.includes('prashanth')) {
       return { role: 'doctor', userName: 'Dr. Prashanth K Vaidya', branchName: 'KPHB Branch', branchPhone: '+91 81252 60176' };
     }
@@ -117,57 +122,396 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
     if (digits.includes('9490808582') || lower.includes('padma')) {
       return { role: 'doctor', userName: 'Dr. Padma Priya', branchName: 'Chandanagar Branch', branchPhone: '+91 94908 08582' };
     }
-    if (digits.includes('1111111111') || lower.includes('chanduri')) {
-      return { role: 'doctor', userName: 'Dr. Ramakrishna Chanduri', branchName: 'Dilshuknagar Branch', branchPhone: '+91 11111 11111' };
-    }
-    if (lower.includes('ramakrishna') || lower.includes('rama krishna')) {
-      return { role: 'doctor', userName: 'Dr. CH. Rama Krishna', branchName: 'Dilshuknagar Branch', branchPhone: '+91 98041 76176' };
+    if (digits.includes('1111111111') || lower.includes('chanduri') || lower.includes('ramakrishna') || lower.includes('rama krishna')) {
+      return { role: 'doctor', userName: 'Dr. Ramakrishna Chanduri', branchName: 'Dilshuknagar Branch', branchPhone: '+91 98041 76176' };
     }
 
-    if (KNOWN_DOCTOR_PHONES.some(p => digits.includes(p)) || lower.includes('doctor') || lower.includes('dr.')) {
-      return {
-        role: 'doctor',
-        userName: 'Dr. Homeopathy Physician',
-        branchName: 'Medical Center',
-        branchPhone: digits || '+91 81252 60176',
-      };
+    // 4. Instant Check In-Memory Live Staff Chips (0ms delay)
+    if (liveStaffChips && liveStaffChips.length > 0) {
+      for (const item of liveStaffChips) {
+        const sPhone = String(item.mobile || item.phone || '').replace(/\D/g, '');
+        const sClean10 = sPhone.length > 10 ? sPhone.slice(-10) : sPhone;
+        const sName = String(item.name || '').toLowerCase();
+
+        if (
+          (cleanInput && item.id === cleanInput) ||
+          (clean10 && sClean10 && clean10 === sClean10) ||
+          (lower && sName && (sName === lower || sName.includes(lower) || lower.includes(sName))) ||
+          (digits && sPhone && digits.length >= 10 && (digits === sPhone || clean10 === sClean10))
+        ) {
+          let detectedRole = item.role || item.category || item.department;
+          if (!detectedRole) {
+            detectedRole = sName.includes('reception') ? 'reception' : 'staff';
+          }
+          return {
+            role: detectedRole as any,
+            userName: item.name || (detectedRole === 'reception' ? 'Reception' : 'Staff Member'),
+            branchName: item.branch ? (item.branch.includes('Branch') ? item.branch : `${item.branch} Branch`) : 'KPHB Branch',
+            branchPhone: item.mobile || item.phone || digits,
+            staffId: item.id
+          };
+        }
+      }
     }
 
-    // 5. Regular Staff fallback
-    if (lower.includes('staff')) {
-      return { role: 'staff', userName: 'Staff Member', branchName: 'KPHB Branch', branchPhone: digits || '+91 90000 00004' };
+    // 4.5. Instant Pre-registered Clinic Staff Check (0ms delay)
+    for (const s of REGISTERED_CLINIC_STAFF) {
+      const sPhone = s.phone.replace(/\D/g, '');
+      const sClean10 = sPhone.length > 10 ? sPhone.slice(-10) : sPhone;
+      const sName = s.name.toLowerCase();
+      if (
+        (clean10 && sClean10 && clean10 === sClean10) ||
+        (cleanInput && (s.id === cleanInput || sName === lower || sName.includes(lower) || lower.includes(sName)))
+      ) {
+        return {
+          role: 'staff',
+          userName: s.name,
+          branchName: `${s.branch} Branch`,
+          branchPhone: `+91 ${s.phone}`,
+          staffId: s.id
+        };
+      }
     }
 
-    return { role: 'reception', userName: 'KPHB Reception', branchName: 'KPHB Branch', branchPhone: digits || '+91 90301 76176' };
+    // 5. Parallel Firestore Lookup as Fallback (Parallelized network call for max speed)
+    if (activeDb) {
+      try {
+        const [staffSnap, docSnap] = await Promise.all([
+          getDocs(collection(activeDb, 'staff')),
+          digits.length >= 8 ? getDocs(collection(activeDb, 'doctors')) : Promise.resolve({ docs: [], empty: true } as any)
+        ]);
+
+        // Check staff results
+        for (const d of staffSnap.docs) {
+          const data = d.data();
+          const sPhone = String(data.mobile || data.phone || '').replace(/\D/g, '');
+          const sClean10 = sPhone.length > 10 ? sPhone.slice(-10) : sPhone;
+          const sName = String(data.name || '').toLowerCase();
+
+          if (sClean10 && AUTHORIZED_RECEPTION_BRANCHES[sClean10]) {
+            const recInfo = AUTHORIZED_RECEPTION_BRANCHES[sClean10];
+            if ((clean10 && clean10 === sClean10) || (digits && sPhone && digits.includes(sClean10))) {
+              return {
+                role: 'reception',
+                userName: `${recInfo.name} Reception`,
+                branchName: `${recInfo.name} Branch`,
+                branchPhone: `+91 ${sClean10}`,
+                staffId: d.id
+              };
+            }
+          }
+
+          if (
+            (cleanInput && d.id === cleanInput) ||
+            (clean10 && sClean10 && clean10 === sClean10) ||
+            (lower && sName && sName === lower) ||
+            (digits && sPhone && digits.length >= 10 && (digits === sPhone || clean10 === sClean10))
+          ) {
+            let detectedRole = data.role || data.category || data.department;
+            if (!detectedRole) {
+              detectedRole = sName.includes('reception') ? 'reception' : 'staff';
+            }
+            return {
+              role: detectedRole as any,
+              userName: data.name || (detectedRole === 'reception' ? 'Reception' : 'Staff Member'),
+              branchName: data.branch ? (data.branch.includes('Branch') ? data.branch : `${data.branch} Branch`) : 'KPHB Branch',
+              branchPhone: data.mobile || data.phone || digits,
+              staffId: d.id
+            };
+          }
+        }
+
+        // Check doctor results
+        if (!docSnap.empty) {
+          for (const d of docSnap.docs) {
+            const data = d.data();
+            const dPhone = String(data.mobile || data.phone || '').replace(/\D/g, '');
+            const dClean10 = dPhone.length > 10 ? dPhone.slice(-10) : dPhone;
+            const dName = String(data.name || '').toLowerCase();
+            if (
+              (clean10 && dClean10 && clean10 === dClean10) ||
+              (digits && dPhone && (digits.includes(dPhone) || dPhone.includes(digits))) ||
+              (cleanInput && d.id === cleanInput) ||
+              (lower && dName && dName === lower)
+            ) {
+              return {
+                role: 'doctor',
+                userName: data.name || 'Dr. Physician',
+                branchName: data.branch || 'Medical Center',
+                branchPhone: digits,
+                staffId: d.id
+              };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Firestore parallel lookup notice:', e);
+      }
+    }
+
+    // Not found / Deleted / Unauthorized
+    return null;
+
+    // Not found / Deleted / Unauthorized
+    return null;
   };
 
+  // SEND 4-DIGIT REAL SMS OTP
   const handleSendOTP = async () => {
-    if (!phoneNumber.trim()) {
-      Alert.alert('Phone Number Required', 'Please enter your mobile number.');
+    const rawInput = phoneNumber.trim();
+    if (!rawInput) {
+      Alert.alert('Phone Number Required', 'Please enter your registered mobile number.');
       return;
     }
     setIsSubmitting(true);
-    const authData = await detectRoleAndBranch(phoneNumber);
-    setIsSubmitting(false);
+    const authData = await detectRoleAndBranch(rawInput);
+    if (!authData) {
+      setIsSubmitting(false);
+      Alert.alert(
+        'Access Denied',
+        'This mobile number is not registered as an active Doctor, Receptionist, or Staff member.\n\nIf your account was removed by Admin or HR, login access has been revoked.'
+      );
+      return;
+    }
 
+    // Generate 4-digit random OTP
+    const generatedOtp = generate4DigitOtp();
+    const { clean10 } = normalizePhoneForSms(rawInput);
+
+    // Save OTP to Firestore in auth_otps with 5-minute expiry
+    const activeDb = getSafeDb();
+    if (activeDb && clean10) {
+      try {
+        await setDoc(doc(activeDb, 'auth_otps', clean10), {
+          phone: clean10,
+          otp: generatedOtp,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+          role: authData.role,
+          staffId: authData.staffId || null,
+          userName: authData.userName || '',
+          branchName: authData.branchName || '',
+          createdAt: new Date().toISOString()
+        });
+      } catch (e) {
+        console.warn('Error saving OTP to Firestore:', e);
+      }
+    }
+
+    // Send real SMS OTP using smslogin.co API and template 1777178867791586062
+    const smsResult = await sendSmsOtp(clean10, generatedOtp);
+    setIsSubmitting(false);
     setOtpSent(true);
-    Alert.alert('OTP Sent', `Verification code sent to +91 ${phoneNumber} (${authData.role.toUpperCase()} Login)`);
+
+    if (smsResult.success) {
+      setDisplayedOtp('');
+      setSmsNotice(`A 4-digit verification code has been dispatched via SMS to +91 ${clean10}.`);
+      Alert.alert(
+        'SMS OTP Sent',
+        `Your 4-digit verification code has been sent via SMS to +91 ${clean10}.\n\nIt is valid for 5 minutes.`
+      );
+    } else {
+      setDisplayedOtp(generatedOtp);
+      if (smsResult.isCredentialsError) {
+        setSmsNotice(`SMS Gateway: Invalid Credentials on smslogin.co account.`);
+        Alert.alert(
+          'SMS Gateway Alert',
+          `The SMS gateway (smslogin.co) returned "Invalid Credentials".\n\nYour account username or API key needs to be configured.\n\nYour login OTP is: ${generatedOtp}`
+        );
+      } else {
+        setSmsNotice(`SMS Delivery Notice: ${smsResult.message}`);
+        Alert.alert(
+          'SMS Delivery Notice',
+          `${smsResult.message}\n\nYour login OTP is: ${generatedOtp}`
+        );
+      }
+    }
   };
 
+  // VERIFY 4-DIGIT REAL SMS OTP
   const handleVerifyOTP = async () => {
-    if (!otpCode.trim()) {
-      Alert.alert('OTP Required', 'Please enter the 6-digit verification code.');
+    const cleanOtp = otpCode.trim();
+    if (!cleanOtp) {
+      Alert.alert('OTP Required', 'Please enter the 4-digit OTP received via SMS.');
       return;
     }
 
     setIsSubmitting(true);
-    const authData = await detectRoleAndBranch(phoneNumber);
+    const rawInput = phoneNumber.trim();
+    const { clean10 } = normalizePhoneForSms(rawInput);
+    const activeDb = getSafeDb();
+
+    let isOtpValid = false;
+    let cachedOtpAuthData: LoginSuccessData | null = null;
+
+    if (activeDb && clean10) {
+      try {
+        const otpSnap = await getDoc(doc(activeDb, 'auth_otps', clean10));
+        if (otpSnap.exists()) {
+          const otpData = otpSnap.data();
+          if (otpData.otp === cleanOtp) {
+            if (Date.now() <= (otpData.expiresAt || 0)) {
+              isOtpValid = true;
+              if (otpData.role && otpData.branchName) {
+                cachedOtpAuthData = {
+                  role: otpData.role,
+                  userName: otpData.userName,
+                  branchName: otpData.branchName,
+                  branchPhone: `+91 ${clean10}`,
+                  staffId: otpData.staffId || undefined
+                };
+              }
+            } else {
+              setIsSubmitting(false);
+              Alert.alert('OTP Expired', 'The OTP has expired (5-minute validity). Please request a new OTP.');
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Error verifying Firestore OTP:', e);
+      }
+    }
+
+    // Testing fallback
+    if (!isOtpValid && cleanOtp === '1234') {
+      isOtpValid = true;
+    }
+
+    if (!isOtpValid) {
+      setIsSubmitting(false);
+      Alert.alert('Invalid OTP', 'The OTP code is incorrect. Please check your SMS message or enter default test OTP 1234.');
+      return;
+    }
+
+    // Re-verify that user has NOT been deleted in the meantime (use cached data if valid, otherwise fallback)
+    const authData = cachedOtpAuthData || (await detectRoleAndBranch(rawInput));
     setIsSubmitting(false);
+
+    if (!authData) {
+      Alert.alert('Access Denied', 'This staff member or account has been deleted by Admin or HR.');
+      return;
+    }
 
     if (onLoginSuccess) {
       onLoginSuccess(authData);
     } else {
-      Alert.alert('Access Granted', `Welcome to ${authData.role.toUpperCase()} Portal`);
+      Alert.alert('Access Granted', `Welcome ${authData.userName} (${authData.role.toUpperCase()})`);
+    }
+  };
+
+  // Helper to resolve staff login directly
+  const handleStaffLogin = async () => {
+    const rawInput = phoneNumber.trim() || selectedStaffId;
+    if (!rawInput) {
+      Alert.alert('Select Staff', 'Please select a staff member or enter your registered mobile number.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      let rawDetected = await detectRoleAndBranch(rawInput);
+
+      // Fallback check against REGISTERED_CLINIC_STAFF if not found or if detected as reception phone number
+      if (!rawDetected || rawDetected.role !== 'staff') {
+        const lower = rawInput.toLowerCase();
+        const foundSeed = REGISTERED_CLINIC_STAFF.find(
+          s => s.id === rawInput || s.phone === rawInput || s.name.toLowerCase().includes(lower) || lower.includes(s.name.toLowerCase())
+        );
+        if (foundSeed) {
+          rawDetected = {
+            role: 'staff',
+            userName: foundSeed.name,
+            branchName: `${foundSeed.branch} Branch`,
+            branchPhone: `+91 ${foundSeed.phone}`,
+            staffId: foundSeed.id
+          };
+        }
+      }
+
+      if (!rawDetected) {
+        setIsSubmitting(false);
+        Alert.alert(
+          'Access Denied',
+          'Staff record not found or access has been revoked by Admin / HR.'
+        );
+        return;
+      }
+
+      const authData: LoginSuccessData = {
+        ...rawDetected,
+        role: 'staff'
+      };
+
+      // If user hasn't requested an SMS OTP yet, generate and send 4-digit OTP
+      if (!otpSent) {
+        const generatedOtp = generate4DigitOtp();
+        const { clean10 } = normalizePhoneForSms(authData.branchPhone || rawInput);
+        const activeDb = getSafeDb();
+
+        if (activeDb && clean10) {
+          try {
+            await setDoc(doc(activeDb, 'auth_otps', clean10), {
+              phone: clean10,
+              otp: generatedOtp,
+              expiresAt: Date.now() + 5 * 60 * 1000,
+              role: 'staff',
+              staffId: authData.staffId || null,
+              userName: authData.userName || '',
+              branchName: authData.branchName || '',
+              createdAt: new Date().toISOString()
+            });
+          } catch (e) {
+            console.warn('Error storing staff OTP:', e);
+          }
+        }
+
+        await sendSmsOtp(clean10, generatedOtp);
+        setIsSubmitting(false);
+        setOtpSent(true);
+        Alert.alert(
+          'SMS OTP Sent',
+          `Your 4-digit OTP has been sent via SMS to +91 ${clean10}.\n\nValid for 5 minutes. (Test OTP: ${generatedOtp})`
+        );
+        return;
+      }
+
+      // If OTP was sent, verify it
+      const cleanOtp = otpCode.trim();
+      let isOtpValid = cleanOtp === '1234';
+
+      if (!isOtpValid) {
+        const { clean10 } = normalizePhoneForSms(authData.branchPhone || rawInput);
+        const activeDb = getSafeDb();
+        if (activeDb && clean10) {
+          const otpSnap = await getDoc(doc(activeDb, 'auth_otps', clean10));
+          if (otpSnap.exists() && otpSnap.data().otp === cleanOtp) {
+            if (Date.now() <= (otpSnap.data().expiresAt || 0)) {
+              isOtpValid = true;
+            } else {
+              setIsSubmitting(false);
+              Alert.alert('OTP Expired', 'The OTP has expired. Please tap Send OTP again.');
+              return;
+            }
+          }
+        }
+      }
+
+      if (!isOtpValid) {
+        setIsSubmitting(false);
+        Alert.alert('Invalid OTP', 'Please enter the 4-digit OTP sent to your phone, or 1234 for testing.');
+        return;
+      }
+
+      setIsSubmitting(false);
+      if (onLoginSuccess) {
+        onLoginSuccess(authData);
+      } else {
+        Alert.alert('Access Granted', `Welcome ${authData.userName} (Regular Staff Portal)`);
+      }
+    } catch (err) {
+      console.error('Staff login error:', err);
+      setIsSubmitting(false);
+      Alert.alert('Login Error', 'Failed to authenticate staff.');
     }
   };
 
@@ -177,9 +521,29 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
       return;
     }
 
+    const cleanInput = email.trim().toLowerCase();
+    const cleanPass = password.trim();
+
+    if (cleanInput === 'hr@sph.com' || cleanInput.includes('hr')) {
+      if (cleanPass !== 'hr@sph123') {
+        Alert.alert('Incorrect Password', 'Invalid password for HR login. Expected password: hr@sph123');
+        return;
+      }
+    } else if (cleanInput.includes('admin')) {
+      if (cleanPass !== 'admin123') {
+        Alert.alert('Incorrect Password', 'Invalid password for Admin login. Expected password: admin123');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     const authData = await detectRoleAndBranch(email);
     setIsSubmitting(false);
+
+    if (!authData) {
+      Alert.alert('Access Denied', 'Account not recognized or removed by Admin/HR.');
+      return;
+    }
 
     if (onLoginSuccess) {
       onLoginSuccess(authData);
@@ -215,20 +579,35 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
 
           {/* White Card Box */}
           <View style={styles.whiteCard}>
-            {/* 2 Unified Login Tabs: Mobile OTP vs Email/Password */}
+            {/* 3 Unified Login Tabs: Mobile OTP vs Staff Login vs Email/Password */}
             <View style={styles.tabBarContainer}>
               <TouchableOpacity
                 style={[styles.tabButton, loginMethod === 'otp' && styles.tabButtonActive]}
-                onPress={() => setLoginMethod('otp')}
+                onPress={() => { setLoginMethod('otp'); setOtpSent(false); }}
               >
                 <Ionicons
                   name="call-outline"
-                  size={16}
+                  size={15}
                   color={loginMethod === 'otp' ? '#258ec8' : '#64748b'}
-                  style={{ marginRight: 6 }}
+                  style={{ marginRight: 4 }}
                 />
                 <Text style={[styles.tabButtonText, loginMethod === 'otp' && styles.tabButtonTextActive]}>
-                  Mobile OTP
+                  Doctor / Reception
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabButton, loginMethod === 'staff' && styles.tabButtonActive]}
+                onPress={() => { setLoginMethod('staff'); setOtpCode('1234'); }}
+              >
+                <Ionicons
+                  name="person-outline"
+                  size={15}
+                  color={loginMethod === 'staff' ? '#258ec8' : '#64748b'}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[styles.tabButtonText, loginMethod === 'staff' && styles.tabButtonTextActive]}>
+                  Staff Login
                 </Text>
               </TouchableOpacity>
 
@@ -238,17 +617,107 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
               >
                 <Ionicons
                   name="mail-outline"
-                  size={16}
+                  size={15}
                   color={loginMethod === 'email' ? '#258ec8' : '#64748b'}
-                  style={{ marginRight: 6 }}
+                  style={{ marginRight: 4 }}
                 />
                 <Text style={[styles.tabButtonText, loginMethod === 'email' && styles.tabButtonTextActive]}>
-                  Email (Admin/HR)
+                  Admin / HR
                 </Text>
               </TouchableOpacity>
             </View>
 
-            {loginMethod === 'otp' ? (
+            {loginMethod === 'staff' && (
+              <>
+                <Text style={styles.sectionSubtitle}>Regular Staff Login (Punch, Leaves & Reports)</Text>
+
+                {/* Staff ID or Mobile Input */}
+                <View style={styles.inputContainer}>
+                  <Ionicons name="person-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
+                  <TextInput
+                    style={styles.inputField}
+                    placeholder="Staff Mobile Number or Name"
+                    placeholderTextColor="#94a3b8"
+                    value={phoneNumber}
+                    onChangeText={(t) => {
+                      setPhoneNumber(t);
+                      setOtpSent(false);
+                    }}
+                  />
+                </View>
+
+                {otpSent ? (
+                  <>
+                    {/* Notice Banner */}
+                    {smsNotice ? (
+                      <View style={{
+                        backgroundColor: '#eff6ff',
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: '#bfdbfe',
+                        padding: 10,
+                        marginBottom: 10
+                      }}>
+                        <Text style={{ fontSize: 11.5, color: '#1e40af', fontWeight: '600' }}>{smsNotice}</Text>
+                        {displayedOtp ? (
+                          <Text style={{ fontSize: 12, color: '#0284c7', fontWeight: '800', marginTop: 4 }}>
+                            OTP Code: <Text style={{ letterSpacing: 2, backgroundColor: '#dbeafe' }}>{displayedOtp}</Text>
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+
+                    {/* OTP Code (4 digits) */}
+                    <View style={styles.inputContainer}>
+                      <Ionicons name="lock-closed-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
+                      <TextInput
+                        style={styles.inputField}
+                        placeholder="Enter 4-Digit SMS OTP (or 1234 for test)"
+                        placeholderTextColor="#94a3b8"
+                        keyboardType="number-pad"
+                        value={otpCode}
+                        onChangeText={setOtpCode}
+                        maxLength={6}
+                      />
+                    </View>
+
+                    <TouchableOpacity
+                      style={[styles.primaryButton, { backgroundColor: '#16a34a' }]}
+                      onPress={handleStaffLogin}
+                      disabled={isSubmitting}
+                    >
+                      {isSubmitting ? (
+                        <ActivityIndicator color="#ffffff" />
+                      ) : (
+                        <Text style={styles.primaryButtonText}>Verify & Sign In to Staff Portal</Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={handleSendOTP}
+                      style={{ marginTop: 8, alignItems: 'center' }}
+                      disabled={isSubmitting}
+                    >
+                      <Text style={{ fontSize: 12, color: '#258ec8', fontWeight: '700' }}>Resend 4-Digit SMS OTP</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.primaryButton, { backgroundColor: '#258ec8' }]}
+                    onPress={handleSendOTP}
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <Text style={styles.primaryButtonText}>Send 4-Digit SMS OTP</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {loginMethod === 'otp' && (
               <>
                 <Text style={styles.sectionSubtitle}>Doctor, Staff & Receptionist Login</Text>
 
@@ -284,12 +753,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
                       <Ionicons name="lock-closed-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
                       <TextInput
                         style={styles.inputField}
-                        placeholder="Enter 6-Digit OTP"
+                        placeholder="Enter 4-Digit OTP"
                         placeholderTextColor="#94a3b8"
                         keyboardType="number-pad"
                         value={otpCode}
                         onChangeText={setOtpCode}
-                        maxLength={6}
+                        maxLength={4}
                       />
                     </View>
 
@@ -306,73 +775,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
                     </TouchableOpacity>
                   </>
                 )}
-
-                {/* Quick Click-to-Fill Authorized Numbers */}
-                <View style={{ marginTop: 16, paddingTop: 14, borderTopWidth: 1, borderColor: '#e2e8f0' }}>
-                  <Text style={{ fontSize: 11, fontWeight: '800', color: '#475569', textTransform: 'uppercase', marginBottom: 8 }}>
-                    Quick Click-to-Fill Authorized Numbers:
-                  </Text>
-
-                  <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#0284c7', marginBottom: 6 }}>
-                    🏢 Reception Desks:
-                  </Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-                    {[
-                      { label: 'KPHB', phone: '9030176176' },
-                      { label: 'Nallagandla', phone: '9132176176' },
-                      { label: 'Dilshuknagar', phone: '9804176176' },
-                      { label: 'Chandanagar', phone: '9553176176' },
-                    ].map(b => (
-                      <TouchableOpacity
-                        key={b.phone}
-                        onPress={() => setPhoneNumber(b.phone)}
-                        style={{
-                          backgroundColor: phoneNumber === b.phone ? '#e0f2fe' : '#f8fafc',
-                          borderWidth: phoneNumber === b.phone ? 1.5 : 1,
-                          borderColor: phoneNumber === b.phone ? '#0284c7' : '#cbd5e1',
-                          paddingHorizontal: 8,
-                          paddingVertical: 5,
-                          borderRadius: 6,
-                        }}
-                      >
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: phoneNumber === b.phone ? '#0369a1' : '#334155' }}>
-                          {b.label} ({b.phone})
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#9333ea', marginBottom: 6 }}>
-                    🩺 Doctors Directory:
-                  </Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                    {[
-                      { label: 'Dr. Prashanth', phone: '8125260176' },
-                      { label: 'Dr. Jobedah', phone: '9903119766' },
-                      { label: 'Dr. Padma Priya', phone: '9490808582' },
-                      { label: 'Dr. Ramakrishna', phone: '1111111111' },
-                    ].map(d => (
-                      <TouchableOpacity
-                        key={d.phone}
-                        onPress={() => setPhoneNumber(d.phone)}
-                        style={{
-                          backgroundColor: phoneNumber === d.phone ? '#faf5ff' : '#f8fafc',
-                          borderWidth: phoneNumber === d.phone ? 1.5 : 1,
-                          borderColor: phoneNumber === d.phone ? '#9333ea' : '#cbd5e1',
-                          paddingHorizontal: 8,
-                          paddingVertical: 5,
-                          borderRadius: 6,
-                        }}
-                      >
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: phoneNumber === d.phone ? '#7e22ce' : '#334155' }}>
-                          {d.label} ({d.phone})
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
               </>
-            ) : (
+            )}
+
+            {loginMethod === 'email' && (
               <>
                 <Text style={styles.sectionSubtitle}>Admin & HR Management Login</Text>
 

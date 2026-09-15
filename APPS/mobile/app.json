@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/app_icon.png",
     "userInterfaceStyle": "dark",
-    "splash": {
-      "image": "./assets/sh_logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0f172a"
-    },
     "notification": {
       "icon": "./assets/noti_icon.png"
     },
@@ -21,7 +16,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/noti_icon.png",
+        "foregroundImage": "./assets/app_icon.png",
         "backgroundColor": "#0f172a"
       },
       "package": "com.spiritualhomeo.staff",
@@ -29,6 +24,11 @@
     },
     "web": {
       "favicon": "./assets/sh_logo.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "942c4865-7e77-443e-b3bd-50521ca257df"
+      }
     }
   }
 }

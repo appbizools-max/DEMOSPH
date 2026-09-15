@@ -1,21 +1,46 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView } from 'react-native';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { getSafeDb, collection, onSnapshot } from '../../../utils/firebaseSafe';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
+import { calculateRealBranchRevenue, syncBranchTargetToFirestore } from '../../../utils/branchRevenueCalculator';
 
 const DEFAULT_BRANCH_TARGETS = [
-  { id: 'kphb', name: 'KPHB Branch', monthlyTarget: 1200000, targetReached: 980000 },
-  { id: 'nallagandla', name: 'Nallagandla Branch', monthlyTarget: 1000000, targetReached: 840000 },
-  { id: 'dilshuknagar', name: 'Dilshuknagar Branch', monthlyTarget: 1400000, targetReached: 1150000 },
-  { id: 'chandanagar', name: 'Chandanagar Branch', monthlyTarget: 900000, targetReached: 720000 },
+  { id: 'kphb', name: 'KPHB Branch', monthlyTarget: 1200000, targetReached: 0 },
+  { id: 'nallagandla', name: 'Nallagandla Branch', monthlyTarget: 1000000, targetReached: 0 },
+  { id: 'dilshuknagar', name: 'Dilshuknagar Branch', monthlyTarget: 1400000, targetReached: 0 },
+  { id: 'chandanagar', name: 'Chandanagar Branch', monthlyTarget: 900000, targetReached: 0 },
 ];
 
 export const BranchTargetsScreen: React.FC = () => {
   const [branchTargets, setBranchTargets] = useState(DEFAULT_BRANCH_TARGETS);
 
+  // Subscribe to real-time collections via receptionDataStore to calculate live revenue
   useEffect(() => {
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      const appts = state.appointments;
+      const pkgs = state.packageMembersList;
+
+      setBranchTargets((prev) =>
+        prev.map((b) => {
+          const res = calculateRealBranchRevenue(b.name, appts, pkgs, b.monthlyTarget);
+          syncBranchTargetToFirestore(getSafeDb(), b.name, res.targetReached, res.monthlyTarget).catch(() => {});
+          return {
+            ...b,
+            monthlyTarget: res.monthlyTarget,
+            targetReached: res.targetReached,
+          };
+        })
+      );
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const firestoreDb = getSafeDb();
+    if (!firestoreDb) return;
     try {
-      const colRef = collection(db, 'branchTargets');
+      const colRef = collection(firestoreDb, 'branchTargets');
       const unsubscribe = onSnapshot(colRef, (snapshot) => {
         if (!snapshot.empty) {
           const liveMap: Record<string, any> = {};
@@ -25,12 +50,12 @@ export const BranchTargetsScreen: React.FC = () => {
 
           setBranchTargets((prev) =>
             prev.map((b) => {
-              const live = liveMap[b.id] || liveMap[b.name.toLowerCase()];
+              const live = liveMap[b.id] || liveMap[b.name.toLowerCase().replace(/\s*branch$/i, '')];
               if (live) {
                 return {
                   ...b,
                   monthlyTarget: Number(live.monthlyTarget) || b.monthlyTarget,
-                  targetReached: Number(live.targetReached) || b.targetReached,
+                  targetReached: Number(live.targetReached) ?? b.targetReached,
                 };
               }
               return b;

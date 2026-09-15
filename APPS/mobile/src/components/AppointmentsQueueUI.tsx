@@ -12,9 +12,11 @@ import {
   TextInput,
 } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { collection, onSnapshot, doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification } from '@app/shared';
+import { getSafeDb, collection, onSnapshot, doc, updateDoc, query, limit } from '../utils/firebaseSafe';
+import { sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification, sendInvoiceWhatsAppNotification } from '@app/shared';
 import { DEFAULT_DOCTORS_SEED } from '../screens/Reception/BookAppointment/BookAppointmentScreen';
+import { getPatientVisitState } from '../utils/patientVisitState';
+import { receptionDataStore } from '../utils/receptionDataStore';
 export interface PatientAppointmentRecord {
   id: string;
   name: string;
@@ -23,21 +25,29 @@ export interface PatientAppointmentRecord {
   doctor: string;
   time: string;
   date: string;
-  status: 'upcoming' | 'active' | 'completed';
+  status: 'upcoming' | 'active' | 'completed' | 'collect_fee';
   branch: string;
   mode?: string;
   queueOrder?: number;
+  visitState?: any;
+  [key: string]: any;
 }
 interface AppointmentsQueueUIProps {
   patients?: PatientAppointmentRecord[];
+  allRecords?: any[];
+  packageMembers?: any[];
   onSelectPatient?: (patient: PatientAppointmentRecord) => void;
   onViewPatientFile?: (patient: PatientAppointmentRecord) => void;
 }
 export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
   patients = [],
+  allRecords,
+  packageMembers,
   onSelectPatient,
   onViewPatientFile,
 }) => {
+  const [allCollectionsPool, setAllCollectionsPool] = useState<any[]>(() => (allRecords && allRecords.length > 0) ? allRecords : receptionDataStore.getAllCollectionsPool());
+  const [packageMembersList, setPackageMembersList] = useState<any[]>(() => (packageMembers && packageMembers.length > 0) ? packageMembers : receptionDataStore.getPackageMembers());
   const [activeTab, setActiveTab] = useState<'upcoming' | 'active' | 'completed'>('active');
 
   const getTodayDateStr = () => {
@@ -67,8 +77,10 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
   const [liveDoctorsData, setLiveDoctorsData] = useState<any[]>(DEFAULT_DOCTORS_SEED);
   // Subscribe to real-time Firestore doctors collection
   useEffect(() => {
+    const activeDb = getSafeDb();
+    if (!activeDb) return;
     try {
-      const colRef = collection(db, 'doctors');
+      const colRef = collection(activeDb, 'doctors');
       const unsubscribe = onSnapshot(colRef, (snapshot) => {
         const list: any[] = [];
         if (!snapshot.empty) {
@@ -103,6 +115,16 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
       setLiveDoctorsData(DEFAULT_DOCTORS_SEED);
     }
   }, []);
+
+  // Connect to persistent receptionDataStore singleton (keeps cache static, zero duplicate network listeners)
+  useEffect(() => {
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      if (!allRecords || allRecords.length === 0) setAllCollectionsPool(state.allCollectionsPool);
+      if (!packageMembers || packageMembers.length === 0) setPackageMembersList(state.packageMembersList);
+    });
+    return () => unsub();
+  }, [allRecords, packageMembers]);
 
   // Helper to convert DD-MM-YYYY to DayName ('Sun' | 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat')
   const getDayNameFromDateStr = (dateStr: string): string => {
@@ -279,18 +301,19 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
         updatedAt: new Date().toISOString(),
       };
       // Update in appointments collection
+      const activeDb = getSafeDb();
       try {
-        await updateDoc(doc(db, 'appointments', docId), payload);
-      } catch (e) {}
+        await updateDoc(doc(activeDb, 'appointments', docId), payload);
+      } catch (e) { }
       // Update in allpatients collection
       try {
-        await updateDoc(doc(db, 'allpatients', docId), payload);
-      } catch (e) {}
+        await updateDoc(doc(activeDb, 'allpatients', docId), payload);
+      } catch (e) { }
 
       // Trigger Leonas WhatsApp Reschedule Notification
       sendRescheduleWhatsAppNotification({
-        patientName: selectedRescheduleAppt.name || selectedRescheduleAppt.patientName || 'Patient',
-        phone: selectedRescheduleAppt.phone || selectedRescheduleAppt.phoneNumber || '',
+        patientName: selectedRescheduleAppt.name || (selectedRescheduleAppt as any).patientName || 'Patient',
+        phone: selectedRescheduleAppt.phone || (selectedRescheduleAppt as any).phoneNumber || '',
         date: rescheduleDate,
         time: rescheduleTime,
         doctorName: rescheduleDoctor,
@@ -300,17 +323,37 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
       Alert.alert('Rescheduled', `Appointment for ${selectedRescheduleAppt.name} rescheduled to ${rescheduleDate} at ${rescheduleTime}.`);
       setRescheduleModalOpen(false);
     } catch (err) {
-        console.error('Reschedule error:', err);
+      console.error('Reschedule error:', err);
       Alert.alert('Error', 'Failed to reschedule appointment in Firestore.');
     }
   };
 
-  const filteredPatients = patients.filter(p => p.status === activeTab).sort((a, b) => {
-    if (a.queueOrder !== undefined && b.queueOrder !== undefined) {
-      return a.queueOrder - b.queueOrder;
+  const filteredPatients = React.useMemo(() => {
+    return patients.filter(p => p.status === activeTab).sort((a, b) => {
+      if (a.queueOrder !== undefined && b.queueOrder !== undefined) {
+        return a.queueOrder - b.queueOrder;
+      }
+      return 0;
+    });
+  }, [patients, activeTab]);
+
+  const patientVisitStates = React.useMemo(() => {
+    const recordsToCheck = (allRecords && allRecords.length > 0)
+      ? allRecords
+      : (allCollectionsPool.length > 0 ? allCollectionsPool : patients);
+    const pkgsToCheck = (packageMembers && packageMembers.length > 0)
+      ? packageMembers
+      : packageMembersList;
+    const map = new Map<string, any>();
+    for (const p of filteredPatients) {
+      if (p.visitState) {
+        map.set(p.id, p.visitState);
+      } else {
+        map.set(p.id, getPatientVisitState(p, recordsToCheck, pkgsToCheck));
+      }
     }
-    return 0;
-  });
+    return map;
+  }, [filteredPatients, allRecords, allCollectionsPool, packageMembers, packageMembersList]);
 
   // Handler for shifting patient queue position (Up / Down) in Firestore
   const handleShiftQueueOrder = async (patient: PatientAppointmentRecord, direction: 'up' | 'down') => {
@@ -325,15 +368,16 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
       const currentOrder = listIndex + 1;
       const targetOrder = targetIndex + 1;
       // Swap queue orders in Firestore (appointments & allpatients)
+      const activeDb = getSafeDb();
       try {
-        await updateDoc(doc(db, 'appointments', currentApp.id), { queueOrder: targetOrder, updatedAt: new Date().toISOString() });
+        await updateDoc(doc(activeDb, 'appointments', currentApp.id), { queueOrder: targetOrder, updatedAt: new Date().toISOString() });
       } catch (e) {
-        await updateDoc(doc(db, 'allpatients', currentApp.id), { queueOrder: targetOrder, updatedAt: new Date().toISOString() });
+        await updateDoc(doc(activeDb, 'allpatients', currentApp.id), { queueOrder: targetOrder, updatedAt: new Date().toISOString() });
       }
       try {
-        await updateDoc(doc(db, 'appointments', targetApp.id), { queueOrder: currentOrder, updatedAt: new Date().toISOString() });
+        await updateDoc(doc(activeDb, 'appointments', targetApp.id), { queueOrder: currentOrder, updatedAt: new Date().toISOString() });
       } catch (e) {
-        await updateDoc(doc(db, 'allpatients', targetApp.id), { queueOrder: currentOrder, updatedAt: new Date().toISOString() });
+        await updateDoc(doc(activeDb, 'allpatients', targetApp.id), { queueOrder: currentOrder, updatedAt: new Date().toISOString() });
       }
     } catch (err) {
       console.error('Error shifting queue order:', err);
@@ -361,7 +405,7 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
   const handleDeleteAppointment = (patientId: string, patientName: string) => {
     Alert.alert(
       'Delete Appointment',
-      `Are you sure you want to delete the appointment for ${patientName}?`,
+      `Are you sure you want to delete the appointment for ${patientName}? It can be restored within 24 hours from the Upcoming tab.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -370,6 +414,7 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
           onPress: async () => {
             try {
               const targetApp = patients.find(p => p.id === patientId);
+              const targetBranch = targetApp?.branch || 'KPHB';
               if (targetApp) {
                 sendCancellationWhatsAppNotification({
                   patientName: targetApp.name || 'Patient',
@@ -377,17 +422,27 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
                   date: targetApp.date || '',
                   time: targetApp.time || '10:00 AM',
                   doctorName: targetApp.doctor,
-                  branch: targetApp.branch || 'KPHB'
+                  branch: targetBranch
                 }).catch(err => console.error('Cancellation WhatsApp notification error:', err));
               }
 
+              const payload = {
+                isDeleted: true,
+                deletedAt: new Date().toISOString(),
+                deletedByBranch: targetBranch,
+                previousStatus: targetApp?.status || 'waiting',
+                status: 'deleted',
+                updatedAt: new Date().toISOString()
+              };
+
+              const activeDb = getSafeDb();
               try {
-                await deleteDoc(doc(db, 'appointments', patientId));
-              } catch (e) {}
+                await updateDoc(doc(activeDb, 'appointments', patientId), payload);
+              } catch (e) { }
               try {
-                await deleteDoc(doc(db, 'allpatients', patientId));
-              } catch (e) {}
-              Alert.alert('Deleted', 'Appointment deleted successfully.');
+                await updateDoc(doc(activeDb, 'allpatients', patientId), payload);
+              } catch (e) { }
+              Alert.alert('Moved to Recycle Bin', 'Appointment deleted. You can restore it within 24 hours from the Upcoming tab.');
             } catch (err) {
               console.error('Error deleting appointment:', err);
               Alert.alert('Error', 'Could not delete appointment from Firestore.');
@@ -400,14 +455,15 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
 
   const handleUpdateStatus = async (docId: string, newStatus: 'active' | 'completed' | 'upcoming') => {
     try {
+      const activeDb = getSafeDb();
       try {
-        const appRef = doc(db, 'appointments', docId);
+        const appRef = doc(activeDb, 'appointments', docId);
         await updateDoc(appRef, {
           status: newStatus,
           updatedAt: new Date().toISOString(),
         });
       } catch (e) {
-        const patRef = doc(db, 'allpatients', docId);
+        const patRef = doc(activeDb, 'allpatients', docId);
         await updateDoc(patRef, {
           status: newStatus,
           updatedAt: new Date().toISOString(),
@@ -417,17 +473,16 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
       if (newStatus === 'completed') {
         const targetApp = patients.find(p => p.id === docId);
         if (targetApp) {
-          // Trigger Invoice Receipt Template (invoice_recpt)
-          sendInvoiceReceiptWhatsAppNotification({
+          // Trigger Full 3-Step WhatsApp Flow (Payment Receipt -> Invoice with PDF -> 5s -> Experience Feedback Survey)
+          sendInvoiceWhatsAppNotification({
             patientName: targetApp.name || 'Patient',
             phone: targetApp.phone || '',
-          }).catch(e => console.error('WhatsApp invoice_recpt error:', e));
-
-          // Trigger Patient Experience Feedback Template (experience)
-          sendExperienceWhatsAppNotification({
-            patientName: targetApp.name || 'Patient',
-            phone: targetApp.phone || '',
-          }).catch(e => console.error('WhatsApp experience template error:', e));
+            invoiceId: targetApp.id,
+            totalPaid: Number(targetApp.targetAmount || (targetApp as any).totalPaid || 1000),
+            paymentMode: (targetApp as any).paymentMode || 'UPI',
+            branch: targetApp.branch || 'KPHB',
+            doctorName: targetApp.doctorName || targetApp.assignedDoctor || 'Dr. Prashanth K Vaidya'
+          }).catch(e => console.error('WhatsApp invoice flow error:', e));
         }
       }
 
@@ -481,7 +536,7 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
         {filteredPatients.length > 0 ? (
           filteredPatients.map((patient, index) => (
             <View key={patient.id} style={styles.patientCard}>
-              
+
               {/* Card Header Row */}
               <View style={styles.cardHeader}>
                 <View style={styles.patientAvatarCircle}>
@@ -490,7 +545,18 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
                   </Text>
                 </View>
                 <View style={styles.patientMainInfo}>
-                  <Text style={styles.patientName}>{patient.name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <Text style={styles.patientName}>{patient.name}</Text>
+                    {(() => {
+                      const vState = patient.visitState || patientVisitStates.get(patient.id);
+                      if (!vState) return null;
+                      return (
+                        <View style={{ backgroundColor: vState.badgeBg, borderWidth: 1, borderColor: vState.badgeBorder, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 }}>
+                          <Text style={{ fontSize: 9.5, fontWeight: '900', color: vState.badgeColor }}>{vState.badgeText}</Text>
+                        </View>
+                      );
+                    })()}
+                  </View>
                   <Text style={styles.patientMeta}>
                     {patient.status === 'upcoming' ? (
                       patient.phone
@@ -603,8 +669,8 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
                 </TouchableOpacity>
 
                 {patient.status === 'upcoming' && (
-                  <TouchableOpacity 
-                    style={styles.rescheduleIconBtn} 
+                  <TouchableOpacity
+                    style={styles.rescheduleIconBtn}
                     onPress={() => handleOpenRescheduleModal(patient)}
                   >
                     <Feather name="calendar" size={18} color="#258ec8" />
@@ -641,7 +707,7 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
           onPress={() => setRescheduleModalOpen(false)}
         >
           <View style={[styles.modalCard, { maxHeight: '90%' }]} onStartShouldSetResponder={() => true}>
-            
+
             {/* Modal Header */}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <View>
@@ -656,10 +722,10 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
-              
+
               {/* 1. SELECT NEW DATE */}
               <Text style={styles.fieldLabel}>Select New Date</Text>
-              
+
               {/* Quick Date Shortcuts & Calendar Toggle */}
               <View style={{ flexDirection: 'row', gap: 6, marginBottom: 10 }}>
                 <TouchableOpacity
@@ -782,7 +848,7 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
               <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
                 Select Doctor for {selectedRescheduleAppt?.branch || 'Branch'} ({getDayNameFromDateStr(rescheduleDate)})
               </Text>
-              
+
               <TouchableOpacity
                 style={styles.dropdownSelectorBox}
                 onPress={() => setDoctorDropdownOpen(!doctorDropdownOpen)}
@@ -932,7 +998,8 @@ export const CompleteAppointmentsQueueScreen = () => {
     const todayStr = getTodayFormatted();
     setLoading(true);
     try {
-      const colRef = collection(db, 'allpatients');
+      const activeDb = getSafeDb();
+      const colRef = query(collection(activeDb, 'allpatients'), limit(300));
       const unsubscribe = onSnapshot(
         colRef,
         (snapshot) => {
@@ -960,7 +1027,7 @@ export const CompleteAppointmentsQueueScreen = () => {
               else if (branchStr.includes('NALLAGANDLA') || branchStr === 'NGL') shortcut = 'NGL';
               else if (branchStr.includes('DILSHUKNAGAR') || branchStr === 'DIL') shortcut = 'DIL';
               else shortcut = branchStr.replace(/[^A-Z]/g, '').substring(0, 3) || 'GEN';
-              
+
               cleanRegId = `SPH-${shortcut}-${String(list.length + 1).padStart(4, '0')}`;
             }
 

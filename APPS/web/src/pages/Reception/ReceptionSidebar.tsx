@@ -1,18 +1,23 @@
 import React from 'react';
-import { ClipboardList, Calendar, Users, RefreshCw, Pill, CreditCard, UserX, Image, Camera, ChevronRight, ChevronLeft, FileText } from 'lucide-react';
+import {
+  ClipboardList, Calendar, Users, RefreshCw, Pill, CreditCard,
+  UserX, Image, Camera, ChevronRight, ChevronLeft, Lock
+} from 'lucide-react';
 
 interface ReceptionSidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   isNavCollapsed?: boolean;
   setIsNavCollapsed?: (collapsed: boolean) => void;
+  isCleaningBlocked?: boolean;
 }
 
 export const ReceptionSidebar: React.FC<ReceptionSidebarProps> = ({
   activeTab,
   setActiveTab,
   isNavCollapsed = false,
-  setIsNavCollapsed
+  setIsNavCollapsed,
+  isCleaningBlocked = false
 }) => {
   try {
     const saved = localStorage.getItem('sph_auth_session');
@@ -26,7 +31,6 @@ export const ReceptionSidebar: React.FC<ReceptionSidebarProps> = ({
 
   const menuItems = [
     { id: 'reception_dashboard', label: 'Dashboard', icon: ClipboardList },
-    { id: 'reception_patient_file', label: 'Patient File', icon: FileText },
     { id: 'reception_book', label: 'Book Appointment', icon: Calendar },
     { id: 'reception_patients', label: 'All Patients', icon: Users },
     { id: 'reception_followups', label: 'Follow Ups', icon: RefreshCw },
@@ -95,12 +99,25 @@ export const ReceptionSidebar: React.FC<ReceptionSidebarProps> = ({
 
       {menuItems.map((item) => {
         const Icon = item.icon;
+        const isCleaningItem = item.id === 'reception_cleaning';
+        const isItemLocked = isCleaningBlocked && !isCleaningItem;
         const isActive = activeTab === item.id || (item.id === 'reception_dashboard' && activeTab === 'reception');
+
         return (
           <button
             key={item.id}
-            onClick={() => setActiveTab(item.id)}
-            title={isNavCollapsed ? item.label : undefined}
+            onClick={() => {
+              if (isItemLocked) {
+                setActiveTab('reception_cleaning');
+              } else {
+                setActiveTab(item.id);
+              }
+            }}
+            title={
+              isItemLocked
+                ? `${item.label} (Locked: Weekly clinic cleaning photos required)`
+                : isNavCollapsed ? item.label : undefined
+            }
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -108,21 +125,52 @@ export const ReceptionSidebar: React.FC<ReceptionSidebarProps> = ({
               width: '100%',
               padding: isNavCollapsed ? '9px 0' : '7px 10px',
               borderRadius: '8px',
-              border: isActive ? '1px solid rgba(37, 142, 200, 0.3)' : '1px solid transparent',
-              background: isActive ? 'rgba(37, 142, 200, 0.1)' : 'transparent',
-              color: isActive ? '#258ec8' : '#475569',
-              fontWeight: isActive ? 700 : 500,
+              border: isCleaningBlocked && isCleaningItem
+                ? '1px solid #ef4444'
+                : isActive
+                ? '1px solid rgba(37, 142, 200, 0.3)'
+                : '1px solid transparent',
+              background: isCleaningBlocked && isCleaningItem
+                ? 'rgba(239, 68, 68, 0.1)'
+                : isActive
+                ? 'rgba(37, 142, 200, 0.1)'
+                : 'transparent',
+              color: isItemLocked
+                ? '#94a3b8'
+                : isCleaningBlocked && isCleaningItem
+                ? '#dc2626'
+                : isActive
+                ? '#258ec8'
+                : '#475569',
+              fontWeight: (isActive || (isCleaningBlocked && isCleaningItem)) ? 700 : 500,
               fontSize: '11.5px !important',
-              cursor: 'pointer',
+              cursor: isItemLocked ? 'not-allowed' : 'pointer',
+              opacity: isItemLocked ? 0.6 : 1,
               transition: 'all 0.2s ease',
               textAlign: 'left'
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: isNavCollapsed ? 'center' : 'flex-start' }}>
-              <Icon size={16} color={isActive ? '#258ec8' : '#64748b'} />
+              <Icon
+                size={16}
+                color={
+                  isItemLocked
+                    ? '#94a3b8'
+                    : isCleaningBlocked && isCleaningItem
+                    ? '#dc2626'
+                    : isActive
+                    ? '#258ec8'
+                    : '#64748b'
+                }
+              />
               {!isNavCollapsed && <span>{item.label}</span>}
             </div>
-            {!isNavCollapsed && isActive && <ChevronRight size={13} color="#258ec8" />}
+            {!isNavCollapsed && isItemLocked && (
+              <Lock size={12} color="#94a3b8" />
+            )}
+            {!isNavCollapsed && !isItemLocked && isActive && (
+              <ChevronRight size={13} color="#258ec8" />
+            )}
           </button>
         );
       })}

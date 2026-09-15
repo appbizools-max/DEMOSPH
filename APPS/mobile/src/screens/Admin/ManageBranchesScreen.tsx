@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, TextInput, Alert } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import { doc, onSnapshot, setDoc, collection } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { getSafeDb, doc, onSnapshot, setDoc, collection } from '../../utils/firebaseSafe';
 import { TargetProgressUI } from '../../components/TargetProgressUI';
 
 const DEFAULT_BRANCH_TARGETS = [
@@ -18,6 +17,7 @@ interface ManageBranchesScreenProps {
 }
 
 export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBack }) => {
+  const db = getSafeDb();
   const [branches, setBranches] = useState(DEFAULT_BRANCH_TARGETS);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState<any>(null);
@@ -38,6 +38,7 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
 
   // Firestore Real-time Listener for Branch Targets
   useEffect(() => {
+    if (!db) return;
     try {
       const colRef = collection(db, 'branchTargets');
       const unsubscribe = onSnapshot(colRef, (snapshot) => {

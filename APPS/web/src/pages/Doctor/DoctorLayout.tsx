@@ -41,7 +41,14 @@ export const DoctorLayout: React.FC<DoctorLayoutProps> = ({
           />
         );
       case 'patient_file':
-        return <PatientFilePage initialPatient={selectedPatient} onBack={() => setActiveTab('dashboard')} />;
+        return (
+          <PatientFilePage
+            initialPatient={selectedPatient}
+            isDoctor={true}
+            onBack={() => setActiveTab('dashboard')}
+            onSubmitConsultation={() => setActiveTab('dashboard')}
+          />
+        );
       case 'patient_list':
         return <DoctorPatientListPage onNavigateTab={handleNavigate} />;
       case 'packages':

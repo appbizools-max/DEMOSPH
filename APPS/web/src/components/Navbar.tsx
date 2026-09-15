@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LogOut, Phone, Building2, Clock, Calendar, User } from 'lucide-react';
+import { LogOut, Phone, Building2, Clock, Calendar, User, Pill, Mail } from 'lucide-react';
 import { signOutUser } from '@app/shared';
 
 interface NavbarProps {
@@ -19,8 +19,7 @@ const resolveDoctorName = (phone: string, storedName?: string): string => {
   if (digits.includes('8125260176')) return 'Dr. Prashanth K Vaidya';
   if (digits.includes('9903119766')) return 'Dr. Jobedah Parveez';
   if (digits.includes('9490808582')) return 'Dr. Padma Priya';
-  if (digits.includes('1111111111')) return 'Dr. Ramakrishna Chanduri';
-  if (digits.includes('9804176176')) return 'Dr. CH. Rama Krishna';
+  if (digits.includes('1111111111') || digits.includes('9804176176')) return 'Dr. Ramakrishna Chanduri';
   return storedName || 'Homeopathy Physician';
 };
 
@@ -131,35 +130,81 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* RIGHT SIDE: User / Doctor / Branch Info Pill + Log Out Button */}
+        {/* RIGHT SIDE: Quick Links + User / Doctor / Branch Info Pill + Log Out Button */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
 
-          {/* User / Doctor / Branch Pill */}
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '10px',
-            background: 'rgba(37, 142, 200, 0.06)',
-            border: '1px solid rgba(37, 142, 200, 0.25)',
-            padding: '6px 14px',
-            borderRadius: '20px'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {role === 'doctor' ? <User size={14} color="#258ec8" /> : <Building2 size={14} color="#258ec8" />}
+          {/* Quick Reception Medicine Requests Button */}
+          {(!role || role === 'reception' || role === 'staff' || activeTab.startsWith('reception')) && (
+            <button
+              onClick={() => setActiveTab('reception_medicines')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '7px',
+                background: activeTab === 'reception_medicines' ? '#eff6ff' : '#ffffff',
+                border: activeTab === 'reception_medicines' ? '1.5px solid #258ec8' : '1px solid #cbd5e1',
+                color: activeTab === 'reception_medicines' ? '#258ec8' : '#334155',
+                padding: '6px 14px',
+                borderRadius: '20px',
+                fontWeight: 700,
+                fontSize: '12px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: activeTab === 'reception_medicines' ? '0 2px 6px rgba(37, 142, 200, 0.2)' : '0 1px 2px rgba(0,0,0,0.04)'
+              }}
+              title="Medicine Requests & Letterhead PDF Generator"
+            >
+              <Pill size={15} color={activeTab === 'reception_medicines' ? '#258ec8' : '#64748b'} />
+              <span>Medicine Requests</span>
+            </button>
+          )}
+
+          {/* User / Doctor / Branch / Email Pill */}
+          {role === 'admin' || role === 'hr' ? (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: 'rgba(37, 142, 200, 0.06)',
+              border: '1px solid rgba(37, 142, 200, 0.25)',
+              padding: '6px 14px',
+              borderRadius: '20px'
+            }}>
+              <Mail size={14} color="#258ec8" />
               <span style={{ fontWeight: 800, color: '#0f172a', fontSize: '12px !important' }}>
-                {role === 'doctor' ? resolveDoctorName(branchPhone, userName) : branchName}
+                {userName && userName.includes('@') ? userName : (role === 'hr' ? 'hr@sph.com' : 'admin@sph.com')}
               </span>
             </div>
+          ) : (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '10px',
+              background: 'rgba(37, 142, 200, 0.06)',
+              border: '1px solid rgba(37, 142, 200, 0.25)',
+              padding: '6px 14px',
+              borderRadius: '20px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {role === 'doctor' || role === 'staff' ? <User size={14} color="#258ec8" /> : <Building2 size={14} color="#258ec8" />}
+                <span style={{ fontWeight: 800, color: '#0f172a', fontSize: '12px !important' }}>
+                  {role === 'doctor' ? resolveDoctorName(branchPhone, userName) : role === 'staff' ? `${userName || 'Staff Member'} (${branchName})` : branchName}
+                </span>
+              </div>
 
-            <span style={{ color: '#cbd5e1', fontSize: '11px' }}>•</span>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <Phone size={12} color="#a8ce3a" />
-              <span style={{ fontWeight: 700, color: '#258ec8', fontSize: '11.5px !important' }}>
-                {branchPhone}
-              </span>
+              {branchPhone ? (
+                <>
+                  <span style={{ color: '#cbd5e1', fontSize: '11px' }}>•</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <Phone size={12} color="#a8ce3a" />
+                    <span style={{ fontWeight: 700, color: '#258ec8', fontSize: '11.5px !important' }}>
+                      {branchPhone}
+                    </span>
+                  </div>
+                </>
+              ) : null}
             </div>
-          </div>
+          )}
 
           {/* Log Out Button */}
           <button

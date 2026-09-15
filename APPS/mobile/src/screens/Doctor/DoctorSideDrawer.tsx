@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Modal, SafeAreaView } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Modal, SafeAreaView, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 interface DoctorSideDrawerProps {
@@ -41,9 +41,11 @@ export const DoctorSideDrawer: React.FC<DoctorSideDrawerProps> = ({
           <SafeAreaView style={{ flex: 1 }}>
             {/* Header / Doctor Info */}
             <View style={styles.drawerHeader}>
-              <View style={styles.avatarCircle}>
-                <Ionicons name="person-outline" size={24} color="#38bdf8" />
-              </View>
+              <Image
+                source={require('../../assets/app_icon.png')}
+                style={{ width: 42, height: 42, borderRadius: 10, marginRight: 12 }}
+                resizeMode="contain"
+              />
               <View style={{ flex: 1 }}>
                 <Text style={styles.docName} numberOfLines={1}>{doctorName}</Text>
                 <View style={[styles.badge, isHeadDoctor ? styles.headBadge : styles.empBadge]}>

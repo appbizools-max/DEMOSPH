@@ -1,21 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ClipboardList, Clock, CreditCard, Search, Calendar, CheckCircle,
   ArrowRightLeft, UserX, Activity, CheckCircle2, Play, AlertCircle, Trash2,
-  ArrowUp, ArrowDown, Phone, CalendarClock, X, Save, MoreVertical, MessageCircle, FileText
+  ArrowUp, ArrowDown, Phone, CalendarClock, X, Save, MoreVertical, MessageCircle, FileText, RotateCcw
 } from 'lucide-react';
-import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification } from '@app/shared';
+import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification, sendInvoiceWhatsAppNotification } from '@app/shared';
 import { collection, onSnapshot, updateDoc, deleteDoc, doc, query, where, getDocs } from 'firebase/firestore';
 import { TargetProgressWebUI } from '../../../components/TargetProgressWebUI';
 import { PatientFileUI } from '../../../components/PatientFileUI';
 import { CollectFeeCheckoutModal } from '../../../components/CollectFeeCheckoutModal';
-
+import { getPatientVisitState } from '../../../utils/patientVisitState';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
+import { calculateRealBranchRevenue, syncBranchTargetToFirestore } from '../../../utils/branchRevenueCalculator';
 interface ReceptionDashboardPageProps {
   currentBranch?: string;
   onNavigate?: (tab: string, data?: any) => void;
+  initialPatientForCheckout?: any;
+  onClearInitialCheckout?: () => void;
 }
-export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ currentBranch, onNavigate }) => {
-  const [appointments, setAppointments] = useState<any[]>([]);
+export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
+  currentBranch,
+  onNavigate,
+  initialPatientForCheckout,
+  onClearInitialCheckout
+}) => {
+  const [appointments, setAppointments] = useState<any[]>(() => receptionDataStore.getAppointments());
   const [activeTab, setActiveTab] = useState<'upcoming' | 'active' | 'completed'>('upcoming');
   const [searchTerm, setSearchTerm] = useState('');
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
@@ -36,18 +45,76 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
   const [otherChargesInput, setOtherChargesInput] = useState<number>(0);
   const [discountInput, setDiscountInput] = useState<number>(100);
   const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('Cash');
-  const [splitCash, setSplitCash] = useState<number>(1000);
-  const [splitUpi, setSplitUpi] = useState<number>(900);
+  const [splitCash, setSplitCash] = useState<number | string>('');
+  const [splitUpi, setSplitUpi] = useState<number | string>('');
+  const [followupModalType, setFollowupModalType] = useState<'payment_pending' | 'opted' | 'not_opted' | null>(null);
+  const [followupSearchTerm, setFollowupSearchTerm] = useState('');
+  const [packageMembersList, setPackageMembersList] = useState<any[]>(() => receptionDataStore.getPackageMembers());
+  const [allCollectionsRecords, setAllCollectionsRecords] = useState<any[]>(() => receptionDataStore.getAllCollectionsPool());
+
+  // Delete Confirmation Modal & 24h Restore States
+  const [deleteConfirmApp, setDeleteConfirmApp] = useState<any | null>(null);
+  const [isDeletingApp, setIsDeletingApp] = useState<boolean>(false);
+  const [restoreModalOpen, setRestoreModalOpen] = useState<boolean>(false);
+  const [isRestoringId, setIsRestoringId] = useState<string | null>(null);
+
+  // Subscribe to persistent receptionDataStore singleton (zero-lag static cache across navigation)
+  useEffect(() => {
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      setAppointments(state.appointments);
+      setPackageMembersList(state.packageMembersList);
+      setAllCollectionsRecords(state.allCollectionsPool);
+    });
+    return () => unsub();
+  }, []);
+
+  const checkIsPackageMember = (app: any): boolean => {
+    if (!app) return false;
+    if (app.isPackageMember === true || app.hasPackage === true || app.hasActivePackage === true) return true;
+    if (!packageMembersList || packageMembersList.length === 0) return false;
+
+    const targetDocId = String(app.patientDocId || app.patient_id || app.patientId || app.id || '').trim();
+    const cleanReg = String(app.regId || app.registrationId || app.patientId || '').trim().toLowerCase();
+    const cleanPhone = String(app.phone || app.phoneNumber || '').replace(/\D/g, '').slice(-10);
+    const patName = String(app.patientName || app.name || '').trim().toLowerCase();
+
+    return packageMembersList.some(m => {
+      // Expiry verification
+      const expTime = m.expiryDate ? new Date(m.expiryDate).getTime() : Infinity;
+      if (!isNaN(expTime) && expTime < Date.now()) return false;
+
+      // Strict profile matching
+      if (targetDocId && (m.patientDocId === targetDocId || m.id === targetDocId || m.patientDocId === app.id)) return true;
+      if (cleanReg && m.patientId && String(m.patientId).trim().toLowerCase() === cleanReg) return true;
+      if (cleanPhone && m.phone && String(m.phone).replace(/\D/g, '').slice(-10) === cleanPhone) {
+        const mName = String(m.patientName || m.name || '').trim().toLowerCase();
+        if (patName && (mName === patName || mName.includes(patName) || patName.includes(mName))) {
+          return true;
+        }
+      }
+      return false;
+    });
+  };
 
   const handleOpenCheckout = (app: any) => {
     setCheckoutModalApp(app);
-    setConsultFeeInput(Number(app.consultationFee) || 500);
+    setConsultFeeInput(Number(app.consultationFee) || 0);
     setMedicineFeeInput(Number(app.medicineFeeRequested || app.medicineFee) || 1200);
-    setDietFeeInput(Number(app.dietFee) || 0);
+    setDietFeeInput(Number(app.dietFee || app.dietFeeAmount || app.dietPlan?.dietFeeAmount || app.dietPlan?.dietFee) || 0);
     setOtherChargesInput(Number(app.otherCharges) || 0);
     setDiscountInput(Number(app.discount) || 0);
     setSelectedPaymentMode(app.paymentMode || 'Cash');
   };
+
+  useEffect(() => {
+    if (initialPatientForCheckout) {
+      handleOpenCheckout(initialPatientForCheckout);
+      if (onClearInitialCheckout) {
+        onClearInitialCheckout();
+      }
+    }
+  }, [initialPatientForCheckout]);
 
   const handleStartConsultationWithFile = async (app: any) => {
     await handleUpdateStatus(app.id, 'in_consultation');
@@ -66,8 +133,10 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
 
     try {
       const payload = {
+        status: 'completed',
         paymentStatus: 'paid',
         paymentPending: false,
+        feeCollectionNeeded: false,
         paymentCollectedAt: new Date().toISOString(),
         consultationFee: consultFeeInput,
         medicineFee: medicineFeeInput,
@@ -75,7 +144,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
         otherCharges: otherChargesInput,
         discount: discountInput,
         totalPaid: totalDue,
-        paymentMode: selectedPaymentMode === 'Split' ? `Split (Cash ₹${splitCash} + UPI ₹${splitUpi})` : selectedPaymentMode,
+        paymentMode: selectedPaymentMode === 'Split' ? `Split (Cash ₹${Number(splitCash) || 0} + UPI ₹${Number(splitUpi) || 0})` : selectedPaymentMode,
         updatedAt: new Date().toISOString()
       };
 
@@ -192,109 +261,25 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
     }
   }, [currentBranch]);
 
-  // Subscribe live to both Firestore appointments & allpatients collections
+  // Real-time Dynamic Branch Target Calculation from live collections this month
+  const realBranchResult = useMemo(() => {
+    const curBranch = currentBranch || 'KPHB Branch';
+    return calculateRealBranchRevenue(curBranch, appointments, packageMembersList, branchTarget.monthlyTarget);
+  }, [currentBranch, appointments, packageMembersList, branchTarget.monthlyTarget]);
+
   useEffect(() => {
-    let unsubApp: (() => void) | null = null;
-    let unsubPat: (() => void) | null = null;
-    let appsFromAppointments: any[] = [];
-    let appsFromAllPatients: any[] = [];
-
-    const mergeAndSet = () => {
-      const combinedMap = new Map<string, any>();
-
-      // 1. Add all appointments from 'appointments' collection by document ID
-      appsFromAppointments.forEach(item => {
-        if (item.id) {
-          combinedMap.set(item.id, item);
-        }
-      });
-
-      // 2. Merge records from 'allpatients' collection
-      appsFromAllPatients.forEach(item => {
-        if (!item.id) return;
-        if (combinedMap.has(item.id)) {
-          const existing = combinedMap.get(item.id);
-          combinedMap.set(item.id, {
-            ...item,
-            ...existing,
-            status: existing.status || item.status,
-            paymentStatus: existing.paymentStatus || item.paymentStatus,
-            feeCollectionNeeded: existing.feeCollectionNeeded ?? item.feeCollectionNeeded
-          });
-        } else {
-          // Check if this allpatients record is an exact duplicate of an existing appointment (same phone, date, time and doctor)
-          const cleanPhone = String(item.phoneNumber || item.phone || '').replace(/\D/g, '').slice(-10);
-          const date = String(item.appointmentDate || item.date || '').trim();
-          const time = String(item.appointmentTime || item.time || item.timeSlot || '').trim().toLowerCase();
-          const doctor = String(item.doctorName || item.doctor || '').trim().toLowerCase();
-
-          let isDuplicate = false;
-          if (cleanPhone && date && time) {
-            for (const existing of combinedMap.values()) {
-              const exPhone = String(existing.phoneNumber || existing.phone || '').replace(/\D/g, '').slice(-10);
-              const exDate = String(existing.appointmentDate || existing.date || '').trim();
-              const exTime = String(existing.appointmentTime || existing.time || existing.timeSlot || '').trim().toLowerCase();
-              const exDoc = String(existing.doctorName || existing.doctor || '').trim().toLowerCase();
-              if (exPhone === cleanPhone && exDate === date && exTime === time && (!doctor || !exDoc || doctor === exDoc)) {
-                isDuplicate = true;
-                break;
-              }
-            }
-          }
-
-          if (!isDuplicate) {
-            combinedMap.set(item.id, item);
-          }
-        }
-      });
-
-      const list = Array.from(combinedMap.values());
-      list.sort((a, b) => {
-        const dateA = String(a.appointmentDate || a.date || a.createdAt || '');
-        const dateB = String(b.appointmentDate || b.date || b.createdAt || '');
-        return dateB.localeCompare(dateA);
-      });
-      setAppointments(list);
-    };
-
-    try {
-      unsubApp = onSnapshot(collection(db, 'appointments'), (snapshot) => {
-        const list: any[] = [];
-        snapshot.forEach((snap) => {
-          list.push({ ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
-        });
-        appsFromAppointments = list;
-        mergeAndSet();
-      }, (err) => {
-        console.warn('Appointments snapshot listener notice:', err);
-      });
-    } catch (e) {
-      console.warn('Appointments listener setup notice:', e);
+    const diff = Math.abs(realBranchResult.targetReached - branchTarget.targetReached);
+    if (diff >= 1 && realBranchResult.targetReached > 0 && appointments.length > 0) {
+      setBranchTarget(prev => ({
+        ...prev,
+        targetReached: realBranchResult.targetReached,
+        monthlyTarget: realBranchResult.monthlyTarget,
+      }));
+      syncBranchTargetToFirestore(db, realBranchResult.branchName, realBranchResult.targetReached, realBranchResult.monthlyTarget).catch(() => { });
     }
+  }, [realBranchResult.targetReached, realBranchResult.monthlyTarget, realBranchResult.branchName, appointments.length]);
 
-    try {
-      unsubPat = onSnapshot(collection(db, 'allpatients'), (snapshot) => {
-        const list: any[] = [];
-        snapshot.forEach((snap) => {
-          const data = snap.data();
-          if (data.appointmentDate || data.date || data.appointmentTime || data.doctor || data.status) {
-            list.push({ ...data, id: snap.id, docId: snap.id, collectionName: 'allpatients' });
-          }
-        });
-        appsFromAllPatients = list;
-        mergeAndSet();
-      }, (err) => {
-        console.warn('Allpatients snapshot listener notice:', err);
-      });
-    } catch (e) {
-      console.warn('Allpatients setup notice:', e);
-    }
 
-    return () => {
-      if (unsubApp) unsubApp();
-      if (unsubPat) unsubPat();
-    };
-  }, []);
 
   // Status update handler (updates both appointments and allpatients)
   const handleUpdateStatus = async (appId: string, newStatus: string) => {
@@ -375,18 +360,18 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
       if (targetApp) {
         const phone = targetApp.phoneNumber || targetApp.phone || '';
         const patientName = targetApp.patientName || targetApp.fullName || targetApp.name || 'Patient';
+        const totalPaid = Number(targetApp.totalPaid || targetApp.targetAmount || targetApp.amount || 1000);
 
-        // Trigger Invoice Receipt Template (invoice_recpt)
-        sendInvoiceReceiptWhatsAppNotification({
+        // Trigger Full 3-Step WhatsApp Flow (Payment Receipt -> Invoice with PDF -> 5s -> Experience Feedback Survey)
+        sendInvoiceWhatsAppNotification({
           patientName,
           phone,
-        }).catch(err => console.error('WhatsApp invoice_recpt error:', err));
-
-        // Trigger Patient Experience / Feedback Template (experience)
-        sendExperienceWhatsAppNotification({
-          patientName,
-          phone,
-        }).catch(err => console.error('WhatsApp experience error:', err));
+          invoiceId: targetApp.id,
+          totalPaid,
+          paymentMode: targetApp.paymentMode || 'UPI',
+          branch: targetApp.branch || targetApp.branchName || currentBranch || 'KPHB',
+          doctorName: targetApp.doctorName || targetApp.doctor || 'Dr. Prashanth K Vaidya'
+        }).catch(err => console.error('WhatsApp invoice flow error:', err));
       }
     } catch (err) {
       console.error('Failed to update status to completed:', err);
@@ -408,6 +393,26 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
       await updateDoc(doc(db, 'appointments', appId), payload).catch(() => { });
       await updateDoc(doc(db, 'allpatients', appId), payload).catch(() => { });
       await updateDoc(doc(db, 'patients', appId), payload).catch(() => { });
+
+      if (nextStatus === 'paid') {
+        const targetApp = appointments.find(a => a.id === appId);
+        if (targetApp) {
+          const phone = targetApp.phoneNumber || targetApp.phone || '';
+          const patientName = targetApp.patientName || targetApp.fullName || targetApp.name || 'Patient';
+          const totalPaid = Number(targetApp.totalPaid || targetApp.targetAmount || targetApp.amount || 1000);
+
+          // Trigger Full 3-Step WhatsApp Flow on Mark as Paid
+          sendInvoiceWhatsAppNotification({
+            patientName,
+            phone,
+            invoiceId: targetApp.id,
+            totalPaid,
+            paymentMode: targetApp.paymentMode || 'UPI',
+            branch: targetApp.branch || targetApp.branchName || currentBranch || 'KPHB',
+            doctorName: targetApp.doctorName || targetApp.doctor || 'Dr. Prashanth K Vaidya'
+          }).catch(err => console.error('WhatsApp invoice error on mark as paid:', err));
+        }
+      }
     } catch (err) {
       console.error('Failed to toggle payment status:', err);
     } finally {
@@ -415,49 +420,73 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
     }
   };
 
-  // Delete appointment handler
-  const handleDeleteAppointment = async (appId: string, pName: string) => {
-    if (!window.confirm(`Are you sure you want to delete the appointment for ${pName || 'this patient'}?`)) {
-      return;
-    }
-    setActionLoadingId(appId);
+  // Delete appointment handler: Opens confirmation modal (No direct deletion!)
+  const handleDeleteAppointment = (appId: string, pName: string) => {
+    const targetApp = appointments.find(a => a.id === appId) || { id: appId, patientName: pName };
+    setDeleteConfirmApp(targetApp);
+  };
+
+  // Confirmed Soft-Delete (Kept in 24h Recycle Bin)
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmApp) return;
+    const appId = deleteConfirmApp.id;
+    setIsDeletingApp(true);
     try {
-      const targetApp = appointments.find(a => a.id === appId);
-      const pPhone = targetApp?.phoneNumber || targetApp?.phone || '';
-      const appDate = targetApp?.appointmentDate || targetApp?.date || '';
+      const targetBranch = deleteConfirmApp.branch || deleteConfirmApp.branchName || currentBranch || 'KPHB Branch';
+      const prevStatus = deleteConfirmApp.status || 'waiting';
+      const payload = {
+        isDeleted: true,
+        deletedAt: new Date().toISOString(),
+        deletedByBranch: targetBranch,
+        previousStatus: prevStatus,
+        status: 'deleted',
+        updatedAt: new Date().toISOString()
+      };
 
-      // Direct ID deletion across all collections
-      await deleteDoc(doc(db, 'appointments', appId)).catch(() => {});
-      await deleteDoc(doc(db, 'allpatients', appId)).catch(() => {});
-      await deleteDoc(doc(db, 'patients', appId)).catch(() => {});
+      await updateDoc(doc(db, 'appointments', appId), payload).catch(() => { });
+      await updateDoc(doc(db, 'allpatients', appId), payload).catch(() => { });
+      await updateDoc(doc(db, 'patients', appId), payload).catch(() => { });
 
-      // Query and clean up duplicate records with same phone and name/date across all collections
-      if (pPhone || pName) {
-        const cleanPhone = pPhone.replace(/\D/g, '').slice(-10);
-        const cleanName = (pName || '').toLowerCase().trim();
-        const collectionsToClean = ['appointments', 'allpatients', 'patients'];
-        for (const colName of collectionsToClean) {
-          try {
-            const snap = await getDocs(collection(db, colName));
-            snap.forEach((dSnap) => {
-              const data = dSnap.data();
-              const dPhone = String(data.phoneNumber || data.phone || '').replace(/\D/g, '').slice(-10);
-              const dName = String(data.patientName || data.name || '').toLowerCase().trim();
-              const dDate = String(data.appointmentDate || data.date || '').trim();
-              if (
-                (cleanPhone && dPhone === cleanPhone && dName === cleanName) ||
-                (appDate && dDate === appDate && dName === cleanName)
-              ) {
-                deleteDoc(doc(db, colName, dSnap.id)).catch(() => {});
-              }
-            });
-          } catch (e) {}
-        }
+      const pPhone = deleteConfirmApp.phoneNumber || deleteConfirmApp.phone || '';
+      const pName = deleteConfirmApp.patientName || deleteConfirmApp.fullName || deleteConfirmApp.name || 'Patient';
+      if (pPhone) {
+        sendCancellationWhatsAppNotification({
+          patientName: pName,
+          phone: pPhone,
+          date: deleteConfirmApp.appointmentDate || deleteConfirmApp.date || '',
+          time: deleteConfirmApp.appointmentTime || deleteConfirmApp.time || '10:00 AM',
+          doctorName: deleteConfirmApp.doctorName || deleteConfirmApp.doctor || 'Doctor',
+          branch: targetBranch
+        }).catch(err => console.error('Cancellation WhatsApp error:', err));
       }
+
+      setDeleteConfirmApp(null);
     } catch (err) {
-      console.error('Failed to delete appointment:', err);
+      console.error('Failed to soft delete appointment:', err);
     } finally {
-      setActionLoadingId(null);
+      setIsDeletingApp(false);
+    }
+  };
+
+  // Restore appointment from 24h Recycle Bin back to active queue
+  const handleRestoreAppointment = async (app: any) => {
+    setIsRestoringId(app.id);
+    try {
+      const prevStatus = app.previousStatus && app.previousStatus !== 'deleted' ? app.previousStatus : 'waiting';
+      const payload = {
+        isDeleted: false,
+        deletedAt: null,
+        status: prevStatus,
+        updatedAt: new Date().toISOString()
+      };
+
+      await updateDoc(doc(db, 'appointments', app.id), payload).catch(() => { });
+      await updateDoc(doc(db, 'allpatients', app.id), payload).catch(() => { });
+      await updateDoc(doc(db, 'patients', app.id), payload).catch(() => { });
+    } catch (err) {
+      console.error('Failed to restore appointment:', err);
+    } finally {
+      setIsRestoringId(null);
     }
   };
 
@@ -506,8 +535,26 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
     return normAppBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normAppBranch);
   };
 
-  // Filter ONLY appointments for the selected date AND current branch
+  // Deleted appointments in the last 24h for current branch (Restorable)
+  const deleted24hList = useMemo(() => {
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return appointments.filter(a => {
+      if (!isMatchingBranch(a)) return false;
+      const isDel = a.isDeleted === true || (a.status || '').toLowerCase() === 'deleted';
+      if (!isDel) return false;
+      const delTime = a.deletedAt ? new Date(a.deletedAt).getTime() : 0;
+      return delTime >= oneDayAgo;
+    }).sort((a, b) => {
+      const timeA = a.deletedAt ? new Date(a.deletedAt).getTime() : 0;
+      const timeB = b.deletedAt ? new Date(b.deletedAt).getTime() : 0;
+      return timeB - timeA;
+    });
+  }, [appointments, currentBranch]);
+
+  // Filter ONLY active (non-deleted) appointments for the selected date AND current branch
   const filteredBranchDateAppointments = appointments.filter(a => {
+    const isDel = a.isDeleted === true || (a.status || '').toLowerCase() === 'deleted';
+    if (isDel) return false;
     return isMatchingDate(a) && isMatchingBranch(a);
   });
 
@@ -515,8 +562,9 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
   const upcomingList = filteredBranchDateAppointments.filter(a => {
     const st = (a.status || 'scheduled').toLowerCase().trim();
     const p = (a.paymentStatus || '').toLowerCase().trim();
-    const isCompleted = st === 'completed' || st === 'concluded' || st === 'finished' || st === 'done' || st === 'paid' || p === 'paid';
-    const isActive = st === 'in-consultation' || st === 'active' || st === 'consulting' || st === 'in_consultation' || st === 'collect_fee' || a.feeCollectionNeeded === true;
+    const isFeeNeeded = st === 'collect_fee' || a.feeCollectionNeeded === true;
+    const isCompleted = !isFeeNeeded && (st === 'completed' || st === 'concluded' || st === 'finished' || st === 'done' || st === 'paid' || p === 'paid');
+    const isActive = st === 'in-consultation' || st === 'active' || st === 'consulting' || st === 'in_consultation' || isFeeNeeded;
     return !isCompleted && !isActive && st !== 'cancelled';
   }).sort((a, b) => {
     if (a.queueOrder !== undefined && b.queueOrder !== undefined) {
@@ -554,23 +602,47 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
   const activeList = filteredBranchDateAppointments.filter(a => {
     const st = (a.status || '').toLowerCase().trim();
     const p = (a.paymentStatus || '').toLowerCase().trim();
-    return (st === 'in-consultation' || st === 'active' || st === 'consulting' || st === 'in_consultation' || st === 'collect_fee' || a.feeCollectionNeeded === true) && p !== 'paid' && st !== 'completed';
+    const isFeeNeeded = st === 'collect_fee' || a.feeCollectionNeeded === true;
+    if (isFeeNeeded && st !== 'completed') return true;
+    return (st === 'in-consultation' || st === 'active' || st === 'consulting' || st === 'in_consultation') && p !== 'paid' && st !== 'completed';
   });
-
   const completedList = filteredBranchDateAppointments.filter(a => {
     const st = (a.status || '').toLowerCase().trim();
     const p = (a.paymentStatus || '').toLowerCase().trim();
-    return st === 'completed' || st === 'concluded' || st === 'finished' || st === 'done' || st === 'paid' || p === 'paid';
+    const isFeeNeeded = st === 'collect_fee' || a.feeCollectionNeeded === true;
+    if (isFeeNeeded && st !== 'completed') return false;
+    return st === 'completed' || st === 'concluded' || st === 'finished' || st === 'done' || (p === 'paid' && !isFeeNeeded);
   });
 
   // Dynamic statistics for selected date & branch
   const totalBookings = filteredBranchDateAppointments.length;
   const waitingCount = filteredBranchDateAppointments.filter(a => (a.status || '').toLowerCase() === 'waiting' || (a.status || '').toLowerCase() === 'scheduled').length;
-  const paymentPendingCount = filteredBranchDateAppointments.filter(a => a.paymentStatus === 'pending' || a.paymentPending).length;
+
+  const isPaymentPending = (a: any) => {
+    const st = (a.status || '').toLowerCase().trim();
+    const p = (a.paymentStatus || '').toLowerCase().trim();
+    if (st === 'completed' || st === 'concluded' || st === 'finished' || st === 'done') return false;
+    if (st === 'collect_fee' || a.feeCollectionNeeded === true) return true;
+    const isPaid = p === 'paid';
+    if (isPaid) return false;
+    return (p === 'pending' || a.paymentPending) && st !== 'in_consultation' && st !== 'in-consultation' && st !== 'active' && st !== 'consulting';
+  };
+  const paymentPendingList = filteredBranchDateAppointments.filter(isPaymentPending);
+  const paymentPendingCount = paymentPendingList.length;
   const activeConsultationCount = activeList.length;
   const completedCount = completedList.length;
-  const followupOptedCount = filteredBranchDateAppointments.filter(a => a.followUpOpted || a.followup === true).length;
-  const followupNotOptedCount = filteredBranchDateAppointments.filter(a => a.followUpOpted === false || a.followup === false).length;
+
+  const isFollowUpOpted = (a: any) => {
+    if (a.followUpOpted === true || a.followup === true) return true;
+    if (a.followUpInterval && a.followUpInterval !== 'No Follow-up' && a.followUpInterval !== 'None') return true;
+    if (a.preferredFollowUpDate || a.followUpDate) return true;
+    return false;
+  };
+
+  const followupOptedList = filteredBranchDateAppointments.filter(isFollowUpOpted);
+  const followupNotOptedList = filteredBranchDateAppointments.filter(a => !isFollowUpOpted(a));
+  const followupOptedCount = followupOptedList.length;
+  const followupNotOptedCount = followupNotOptedList.length;
 
   // Active list based on selected section tab
   const getTabAppointments = () => {
@@ -596,57 +668,42 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
   });
 
   return (
-    <div style={{ padding: '24px 20px', maxWidth: '1400px', margin: '0 auto', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      {/* Branch Monthly Target Card */}
-      <TargetProgressWebUI
-        branchName={branchTarget.branchName}
-        monthlyTarget={branchTarget.monthlyTarget}
-        targetReached={branchTarget.targetReached}
-      />
-
-      {/* Header Banner */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ background: 'rgba(37, 142, 200, 0.12)', padding: '10px', borderRadius: '12px', border: '1px solid rgba(37, 142, 200, 0.25)' }}>
-            <ClipboardList color="#258ec8" size={24} />
-          </div>
-          <div>
-            <h1 style={{ fontSize: '18px', fontWeight: 800, color: '#1e293b', margin: 0 }}>
-              Reception Desk Dashboard ({currentBranch || 'KPHB Branch'})
-            </h1>
-          </div>
+    <div style={{ padding: '24px 32px', maxWidth: '1600px', margin: '0 auto', fontFamily: 'Inter, system-ui, sans-serif' }}>
+      {/* HEADER BAR */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.5px' }}>
+            Reception Operations Dashboard
+          </h1>
+          <p style={{ margin: '4px 0 0 0', fontSize: '13.5px', color: '#64748b' }}>
+            Queue tracking, active doctor consultations & instant fee collection • Branch: <strong style={{ color: '#258ec8' }}>{currentBranch || 'KPHB'}</strong>
+          </p>
         </div>
 
-        {/* Date Filter Picker */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#ffffff', border: '1.5px solid #258ec8', padding: '6px 14px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(37, 142, 200, 0.12)' }}>
-          <Calendar size={16} color="#258ec8" />
-          <span style={{ fontSize: '12px', fontWeight: 800, color: '#1e293b' }}>Select Date:</span>
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            style={{
-              border: 'none',
-              outline: 'none',
-              fontSize: '12px',
-              fontWeight: 700,
-              color: '#0f172a',
-              cursor: 'pointer',
-              background: 'transparent'
-            }}
-          />
-          {selectedDate !== getTodayISO() && (
+        {/* Action Controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Quick Date Picker */}
+          <div style={{ display: 'flex', alignItems: 'center', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '10px', padding: '6px 12px', gap: '8px' }}>
+            <Calendar size={16} color="#64748b" />
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={e => setSelectedDate(e.target.value)}
+              style={{ border: 'none', outline: 'none', fontSize: '13px', fontWeight: 600, color: '#0f172a', cursor: 'pointer', background: 'transparent' }}
+            />
+          </div>
+
+          {selectedDate !== new Date().toISOString().split('T')[0] && (
             <button
-              type="button"
-              onClick={() => setSelectedDate(getTodayISO())}
+              onClick={() => setSelectedDate(new Date().toISOString().split('T')[0])}
               style={{
-                background: '#258ec8',
-                color: '#ffffff',
-                border: 'none',
-                padding: '4px 10px',
+                padding: '7px 12px',
                 borderRadius: '8px',
-                fontSize: '11px',
-                fontWeight: 800,
+                border: '1px solid #cbd5e1',
+                background: '#f8fafc',
+                color: '#258ec8',
+                fontSize: '12px',
+                fontWeight: 700,
                 cursor: 'pointer'
               }}
             >
@@ -656,9 +713,26 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
         </div>
       </div>
 
-      {/* 7 Metric Cards */}
+      {/* Dynamic Real-Time Target Progress Card */}
+      <div style={{ marginBottom: '20px' }}>
+        <TargetProgressWebUI
+          branchName={realBranchResult.branchName}
+          monthlyTarget={realBranchResult.monthlyTarget}
+          targetReached={realBranchResult.targetReached}
+        />
+      </div>
+
+      {/* 7 Metric Cards (CLICKABLE TO TABS OR POPUPS) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '14px', marginBottom: '24px' }}>
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 1. Total Bookings */}
+        <div
+          onClick={() => {
+            setActiveTab('upcoming');
+            document.getElementById('appointments-table-container')?.scrollIntoView({ behavior: 'smooth' });
+          }}
+          style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', cursor: 'pointer', transition: 'all 0.2s ease' }}
+          title="Click to view all upcoming bookings"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Total Bookings</span>
             <Calendar color="#258ec8" size={16} />
@@ -667,63 +741,171 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
           <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>Bookings Today</p>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 2. Waiting - CLICKABLE REDIRECT TO UPCOMING APPOINTMENTS TAB */}
+        <div
+          onClick={() => {
+            setActiveTab('upcoming');
+            document.getElementById('appointments-table-container')?.scrollIntoView({ behavior: 'smooth' });
+          }}
+          style={{
+            background: activeTab === 'upcoming' ? '#eff6ff' : '#ffffff',
+            border: activeTab === 'upcoming' ? '2px solid #258ec8' : '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          title="Click to view Upcoming Appointments"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Waiting</span>
-            <Clock color="#d97706" size={16} />
+            <span style={{ fontSize: '11.5px', fontWeight: 700, color: activeTab === 'upcoming' ? '#0284c7' : '#64748b' }}>Waiting</span>
+            <Clock color={activeTab === 'upcoming' ? '#0284c7' : '#d97706'} size={16} />
           </div>
-          <span style={{ fontSize: '20px', fontWeight: 800, color: '#d97706' }}>{waitingCount}</span>
-          <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>In Waiting Lounge</p>
+          <span style={{ fontSize: '20px', fontWeight: 800, color: activeTab === 'upcoming' ? '#0284c7' : '#d97706' }}>{waitingCount}</span>
+          <p style={{ fontSize: '10.5px', color: activeTab === 'upcoming' ? '#0284c7' : '#258ec8', marginTop: '4px', margin: 0, fontWeight: 700 }}>
+            {activeTab === 'upcoming' ? '● Upcoming Tab Open' : 'Click to view Upcoming ➔'}
+          </p>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 3. Active Consultations - CLICKABLE REDIRECT TO ACTIVE TAB */}
+        <div
+          onClick={() => {
+            setActiveTab('active');
+            document.getElementById('appointments-table-container')?.scrollIntoView({ behavior: 'smooth' });
+          }}
+          style={{
+            background: activeTab === 'active' ? '#fffbeb' : '#ffffff',
+            border: activeTab === 'active' ? '2px solid #d97706' : '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          title="Click to switch to Active Consultation tab"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Active Consultations</span>
+            <span style={{ fontSize: '11.5px', fontWeight: 700, color: activeTab === 'active' ? '#b45309' : '#64748b' }}>Active Consultations</span>
             <Activity color="#d97706" size={16} />
           </div>
           <span style={{ fontSize: '20px', fontWeight: 800, color: '#d97706' }}>{activeConsultationCount}</span>
-          <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>With Doctor Now</p>
+          <p style={{ fontSize: '10.5px', color: activeTab === 'active' ? '#b45309' : '#d97706', marginTop: '4px', margin: 0, fontWeight: 700 }}>
+            {activeTab === 'active' ? '● Active Tab Open' : 'Click to view tab ➔'}
+          </p>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 4. Payment Pending - CLICKABLE OPEN POPUP */}
+        <div
+          onClick={() => {
+            setFollowupModalType('payment_pending');
+            setFollowupSearchTerm('');
+          }}
+          style={{
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          title="Click to view Payment Pending Patients popup"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Payment Pending</span>
+            <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#ef4444' }}>Payment Pending</span>
             <CreditCard color="#ef4444" size={16} />
           </div>
           <span style={{ fontSize: '20px', fontWeight: 800, color: '#ef4444' }}>{paymentPendingCount}</span>
-          <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>Unpaid Invoices</p>
+          <p style={{ fontSize: '10.5px', color: '#ef4444', marginTop: '4px', margin: 0, fontWeight: 700 }}>
+            Click to view popup ➔
+          </p>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 5. Completed - CLICKABLE REDIRECT TO COMPLETED TAB */}
+        <div
+          onClick={() => {
+            setActiveTab('completed');
+            document.getElementById('appointments-table-container')?.scrollIntoView({ behavior: 'smooth' });
+          }}
+          style={{
+            background: activeTab === 'completed' ? '#f0fdf4' : '#ffffff',
+            border: activeTab === 'completed' ? '2px solid #16a34a' : '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          title="Click to switch to Completed Appointments tab"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Completed</span>
+            <span style={{ fontSize: '11.5px', fontWeight: 700, color: activeTab === 'completed' ? '#15803d' : '#64748b' }}>Completed</span>
             <CheckCircle color="#16a34a" size={16} />
           </div>
           <span style={{ fontSize: '20px', fontWeight: 800, color: '#16a34a' }}>{completedCount}</span>
-          <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>Visits Concluded</p>
+          <p style={{ fontSize: '10.5px', color: activeTab === 'completed' ? '#15803d' : '#16a34a', marginTop: '4px', margin: 0, fontWeight: 700 }}>
+            {activeTab === 'completed' ? '● Active Tab Open' : 'Click to view tab ➔'}
+          </p>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 6. Follow-up Opted - CLICKABLE OPEN POPUP */}
+        <div
+          onClick={() => {
+            setFollowupModalType('opted');
+            setFollowupSearchTerm('');
+          }}
+          style={{
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          title="Click to view Follow-up Opted Patients popup"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Follow-up Opted</span>
+            <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#258ec8' }}>Follow-up Opted</span>
             <ArrowRightLeft color="#258ec8" size={16} />
           </div>
           <span style={{ fontSize: '20px', fontWeight: 800, color: '#258ec8' }}>{followupOptedCount}</span>
-          <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>Next Visit Booked</p>
+          <p style={{ fontSize: '10.5px', color: '#258ec8', marginTop: '4px', margin: 0, fontWeight: 700 }}>
+            Click to view popup ➔
+          </p>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+        {/* 7. Follow-up Not Opted - CLICKABLE OPEN POPUP */}
+        <div
+          onClick={() => {
+            setFollowupModalType('not_opted');
+            setFollowupSearchTerm('');
+          }}
+          style={{
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          title="Click to view Follow-up Not Opted Patients popup"
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#64748b' }}>Follow-up Not Opted</span>
+            <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#64748b' }}>Follow-up Not Opted</span>
             <UserX color="#64748b" size={16} />
           </div>
           <span style={{ fontSize: '20px', fontWeight: 800, color: '#64748b' }}>{followupNotOptedCount}</span>
-          <p style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', margin: 0 }}>No Next Visit</p>
+          <p style={{ fontSize: '10.5px', color: '#64748b', marginTop: '4px', margin: 0, fontWeight: 700 }}>
+            Click to view popup ➔
+          </p>
         </div>
       </div>
 
       {/* 3 SECTION TAB BUTTONS & APPOINTMENTS TABLE */}
-      <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+      <div id="appointments-table-container" style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
 
         {/* Section Tabs Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px', marginBottom: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '16px' }}>
@@ -829,23 +1011,61 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
             </button>
           </div>
 
-          {/* Search Field */}
-          <div style={{ position: 'relative', width: '280px' }}>
-            <Search size={15} color="#64748b" style={{ position: 'absolute', left: '12px', top: '10px' }} />
-            <input
-              type="text"
-              placeholder="Search by patient, phone, doctor..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {/* Restore (24h) Recycle Bin Button */}
+            <button
+              type="button"
+              onClick={() => setRestoreModalOpen(true)}
+              title="View and restore appointments deleted within the last 24 hours"
               style={{
-                width: '100%',
-                padding: '8px 12px 8px 36px',
-                borderRadius: '8px',
-                border: '1px solid #cbd5e1',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+                borderRadius: '10px',
+                border: '1.5px solid #bae6fd',
+                background: '#f0f9ff',
+                color: '#0284c7',
                 fontSize: '12px',
-                outline: 'none'
+                fontWeight: 800,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease'
               }}
-            />
+            >
+              <RotateCcw size={14} color="#0284c7" />
+              <span>Restore (24h)</span>
+              {deleted24hList.length > 0 && (
+                <span style={{
+                  background: '#0284c7',
+                  color: '#ffffff',
+                  fontSize: '10.5px',
+                  fontWeight: 800,
+                  padding: '1px 6px',
+                  borderRadius: '10px'
+                }}>
+                  {deleted24hList.length}
+                </span>
+              )}
+            </button>
+
+            {/* Search Field */}
+            <div style={{ position: 'relative', width: '260px' }}>
+              <Search size={15} color="#64748b" style={{ position: 'absolute', left: '12px', top: '10px' }} />
+              <input
+                type="text"
+                placeholder="Search by patient, phone, doctor..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px 8px 36px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '12px',
+                  outline: 'none'
+                }}
+              />
+            </div>
           </div>
         </div>
 
@@ -873,7 +1093,8 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                 const status = (app.status || 'scheduled').toLowerCase().trim();
                 const isPaid = app.paymentStatus === 'paid';
                 const isCompleted = status === 'completed' || status === 'done' || status === 'finished' || status === 'paid' || isPaid;
-                const isConsulting = status === 'in-consultation' || status === 'active' || status === 'in_consultation' || status === 'consulting';
+                const isFeeReady = status === 'collect_fee' || app.feeCollectionNeeded === true;
+                const isConsulting = (status === 'in-consultation' || status === 'active' || status === 'in_consultation' || status === 'consulting') && !isFeeReady;
 
                 const rawReg = app.registrationId || app.registration_id || app.regId || app.regID || app.patientId || app.uhid;
                 let cleanRegId = '';
@@ -894,22 +1115,45 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                 const patientPhone = app.phoneNumber || app.phone || '';
                 const cleanPhoneNum = patientPhone.replace(/\D/g, '').slice(-10);
                 const isMenuOpen = activeMenuId === app.id;
+                const visitState = getPatientVisitState(app, allCollectionsRecords.length > 0 ? allCollectionsRecords : appointments, packageMembersList);
 
                 return (
                   <tr key={app.id} style={{ borderBottom: '1px solid #f8fafc' }}>
                     <td style={{ padding: '12px 8px' }}>
                       <div
                         onClick={() => {
-                          if (status === 'collect_fee' || app.feeCollectionNeeded) {
+                          if (isFeeReady) {
                             handleOpenCheckout(app);
                           } else {
-                            setPatientFileApp(app);
+                            if (onNavigate) {
+                              onNavigate('reception_patient_file', app);
+                            } else {
+                              setPatientFileApp(app);
+                            }
                           }
                         }}
-                        style={{ fontWeight: 800, color: '#258ec8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-                        title={status === 'collect_fee' || app.feeCollectionNeeded ? "Click to open Billing Checkout & Fee Collection" : "Click to view Patient File & Clinical History"}
+                        style={{ fontWeight: 800, color: '#258ec8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}
+                        title={isFeeReady ? "Click to open Billing Checkout & Fee Collection" : "Click to view Patient File & Clinical History"}
                       >
                         <span>{app.patientName || app.name || 'Unnamed Patient'}</span>
+                        <span
+                          title={visitState.tooltip}
+                          style={{
+                            fontSize: '9.5px',
+                            background: visitState.badgeBg,
+                            color: visitState.badgeColor,
+                            border: `1px solid ${visitState.badgeBorder}`,
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            fontWeight: 900,
+                            letterSpacing: '0.4px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '2px'
+                          }}
+                        >
+                          {visitState.badgeText}
+                        </span>
                         {!isCompleted && activeTab !== 'completed' && (
                           <span style={{ fontSize: '10px', background: '#e0f2fe', color: '#0284c7', padding: '1px 6px', borderRadius: '4px', fontWeight: 800 }}>
                             📄 File
@@ -956,6 +1200,15 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                           }}>
                             PAID ✓
                           </span>
+                        ) : isFeeReady ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCheckout(app)}
+                            style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '4px 10px', borderRadius: '12px', fontSize: '11px', fontWeight: 800, cursor: 'pointer' }}
+                            title="Doctor finished consultation & sent to Reception for Fee Collection"
+                          >
+                            🔔 Sent to Reception
+                          </button>
                         ) : isConsulting ? (
                           <button
                             type="button"
@@ -967,6 +1220,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                               }
                             }}
                             style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '4px 10px', borderRadius: '12px', fontSize: '11px', fontWeight: 800, cursor: 'pointer' }}
+                            title="Consultation currently in progress with doctor"
                           >
                             ⚡ In Consultation
                           </button>
@@ -994,8 +1248,8 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                           </button>
                         )}
 
-                        {/* Unpaid / Pending Badge -> Triggers Full Screen Billing Checkout in Active / Fee Pending stage */}
-                        {!isCompleted && activeTab !== 'upcoming' && (
+                        {/* Unpaid / Pending Badge -> ONLY when doctor sent to reception (isFeeReady) and payment not completed */}
+                        {isFeeReady && !isCompleted && !isPaid && (
                           <button
                             type="button"
                             onClick={() => handleOpenCheckout(app)}
@@ -1065,27 +1319,57 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                         )}
 
                         {activeTab === 'active' && (
-                          <button
-                            type="button"
-                            disabled={isLoading}
-                            onClick={() => handleOpenCheckout(app)}
-                            style={{
-                              background: '#16a34a',
-                              color: '#ffffff',
-                              border: 'none',
-                              padding: '6px 12px',
-                              borderRadius: '8px',
-                              fontSize: '11px',
-                              fontWeight: 800,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)'
-                            }}
-                          >
-                            <CreditCard size={12} /> Collect Fee & Billing
-                          </button>
+                          isFeeReady ? (
+                            <button
+                              type="button"
+                              disabled={isLoading}
+                              onClick={() => handleOpenCheckout(app)}
+                              style={{
+                                background: '#16a34a',
+                                color: '#ffffff',
+                                border: 'none',
+                                padding: '6px 12px',
+                                borderRadius: '8px',
+                                fontSize: '11px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)'
+                              }}
+                            >
+                              <CreditCard size={12} /> Collect Fee & Billing
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (onNavigate) {
+                                  onNavigate('reception_patient_file', app);
+                                } else {
+                                  setPatientFileApp(app);
+                                }
+                              }}
+                              style={{
+                                background: '#0284c7',
+                                color: '#ffffff',
+                                border: 'none',
+                                padding: '6px 12px',
+                                borderRadius: '8px',
+                                fontSize: '11px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
+                              }}
+                              title="Resume ongoing consultation"
+                            >
+                              <Play size={11} /> Continue Consultation
+                            </button>
+                          )
                         )}
 
                         {(activeTab === 'completed' || isCompleted) && (
@@ -1229,61 +1513,33 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
                                 </button>
                               )}
 
-                              {/* View Patient File Separate Page Option */}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveMenuId(null);
-                                  if (onNavigate) {
-                                    onNavigate('reception_patient_file', app);
-                                  } else {
-                                    setPatientFileApp(app);
-                                  }
-                                }}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '8px',
-                                  padding: '8px 10px',
-                                  borderRadius: '6px',
-                                  fontSize: '12px',
-                                  fontWeight: 700,
-                                  color: '#0284c7',
-                                  border: 'none',
-                                  background: 'none',
-                                  cursor: 'pointer',
-                                  width: '100%'
-                                }}
-                              >
-                                <FileText size={14} color="#0284c7" /> Open Patient File Page
-                              </button>
-
-                              {/* Collect Fee / Billing Checkout Option */}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveMenuId(null);
-                                  handleOpenCheckout(app);
-                                }}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '8px',
-                                  padding: '8px 10px',
-                                  borderRadius: '6px',
-                                  fontSize: '12px',
-                                  fontWeight: 700,
-                                  color: '#16a34a',
-                                  border: 'none',
-                                  background: 'none',
-                                  cursor: 'pointer',
-                                  width: '100%'
-                                }}
-                              >
-                                <CreditCard size={14} color="#16a34a" /> Collect Fee & Checkout
-                              </button>
+                              {/* Collect Fee / Billing Checkout Option (Only when doctor has sent to reception or completed) */}
+                              {(isFeeReady || isCompleted) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuId(null);
+                                    handleOpenCheckout(app);
+                                  }}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    padding: '8px 10px',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: 700,
+                                    color: '#16a34a',
+                                    border: 'none',
+                                    background: 'none',
+                                    cursor: 'pointer',
+                                    width: '100%'
+                                  }}
+                                >
+                                  <CreditCard size={14} color="#16a34a" /> Collect Fee & Checkout
+                                </button>
+                              )}
 
                               {/* 4. Delete Option (Hidden on Completed Tab) */}
                               {!isCompleted && activeTab !== 'completed' && (
@@ -1472,7 +1728,9 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
       <CollectFeeCheckoutModal
         appointment={checkoutModalApp}
         onClose={() => setCheckoutModalApp(null)}
-        onSuccess={() => setCheckoutModalApp(null)}
+        onSuccess={() => {
+          // Keep checkout modal open to display payment success popup and allow digital invoice viewing/printing
+        }}
       />
 
       {/* RECEPTIONIST PATIENT FILE & CLINICAL DETAILS MODAL */}
@@ -1486,6 +1744,761 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({ 
             handleOpenCheckout(nextApp);
           }}
         />
+      )}
+
+      {/* ---------------- FOLLOW-UP MODAL POPUP (OPTED / NOT OPTED) ---------------- */}
+      {followupModalType && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.7)',
+          backdropFilter: 'blur(5px)',
+          zIndex: 10000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '20px'
+        }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '20px',
+            width: '100%',
+            maxWidth: '780px',
+            maxHeight: '85vh',
+            display: 'flex',
+            flexDirection: 'column',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            overflow: 'hidden'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: '1px solid #e2e8f0',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: followupModalType === 'payment_pending'
+                ? 'linear-gradient(135deg, #fef2f2 0%, #ffffff 100%)'
+                : followupModalType === 'opted'
+                  ? 'linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)'
+                  : 'linear-gradient(135deg, #f8fafc 0%, #ffffff 100%)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '12px',
+                  background: followupModalType === 'payment_pending'
+                    ? '#fee2e2'
+                    : followupModalType === 'opted' ? '#dcfce7' : '#f1f5f9',
+                  color: followupModalType === 'payment_pending'
+                    ? '#ef4444'
+                    : followupModalType === 'opted' ? '#16a34a' : '#64748b',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  {followupModalType === 'payment_pending'
+                    ? <CreditCard size={22} />
+                    : (followupModalType === 'opted' ? <ArrowRightLeft size={22} /> : <UserX size={22} />)}
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {followupModalType === 'payment_pending'
+                      ? 'Payment Pending Patients'
+                      : (followupModalType === 'opted' ? 'Follow-up Opted Patients' : 'Follow-up Not Opted Patients')}
+                    <span style={{
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      padding: '2px 10px',
+                      borderRadius: '12px',
+                      background: followupModalType === 'payment_pending'
+                        ? '#ef4444'
+                        : (followupModalType === 'opted' ? '#258ec8' : '#64748b'),
+                      color: '#ffffff'
+                    }}>
+                      {followupModalType === 'payment_pending'
+                        ? paymentPendingList.length
+                        : (followupModalType === 'opted' ? followupOptedList.length : followupNotOptedList.length)}
+                    </span>
+                  </h3>
+                  <div style={{ fontSize: '12.5px', color: '#64748b', marginTop: '2px' }}>
+                    {followupModalType === 'payment_pending'
+                      ? `Patients sent to Reception for Fee Collection & Billing on ${selectedDate}`
+                      : (followupModalType === 'opted'
+                        ? `Patients booked for ${selectedDate} who have a follow-up scheduled or recommended`
+                        : `Patients booked for ${selectedDate} with no follow-up scheduled`)}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => { setFollowupModalType(null); setFollowupSearchTerm(''); }}
+                style={{
+                  width: '34px', height: '34px', borderRadius: '50%', background: '#f1f5f9',
+                  border: 'none', color: '#475569', cursor: 'pointer', display: 'flex',
+                  alignItems: 'center', justifyContent: 'center'
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Search Filter Inside Modal */}
+            <div style={{ padding: '14px 24px', borderBottom: '1px solid #f1f5f9', background: '#ffffff', display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <div style={{
+                position: 'relative', flex: 1, display: 'flex', alignItems: 'center'
+              }}>
+                <Search size={16} color="#94a3b8" style={{ position: 'absolute', left: '12px' }} />
+                <input
+                  type="text"
+                  placeholder="Search by patient name, phone, reg id, or doctor..."
+                  value={followupSearchTerm}
+                  onChange={e => setFollowupSearchTerm(e.target.value)}
+                  style={{
+                    width: '100%', padding: '9px 12px 9px 36px',
+                    borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '13px', outline: 'none'
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Scrollable Patient List */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+              {(() => {
+                const baseList = followupModalType === 'payment_pending'
+                  ? paymentPendingList
+                  : (followupModalType === 'opted' ? followupOptedList : followupNotOptedList);
+
+                const targetList = baseList.filter(app => {
+                  if (!followupSearchTerm.trim()) return true;
+                  const q = followupSearchTerm.toLowerCase();
+                  const name = (app.patientName || app.name || '').toLowerCase();
+                  const phone = (app.phone || app.phoneNumber || '').toLowerCase();
+                  const regId = (app.regId || '').toLowerCase();
+                  const doc = (app.doctor || app.doctorName || '').toLowerCase();
+                  return name.includes(q) || phone.includes(q) || regId.includes(q) || doc.includes(q);
+                });
+
+                if (targetList.length === 0) {
+                  return (
+                    <div style={{ padding: '40px 20px', textAlign: 'center', color: '#64748b' }}>
+                      <div style={{ width: '54px', height: '54px', borderRadius: '50%', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px auto', color: '#94a3b8' }}>
+                        {followupModalType === 'payment_pending'
+                          ? <CreditCard size={28} color="#ef4444" />
+                          : (followupModalType === 'opted' ? <ArrowRightLeft size={28} /> : <UserX size={28} />)}
+                      </div>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#1e293b' }}>No Patients Found</div>
+                      <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '4px' }}>
+                        {followupSearchTerm ? 'No matching patients found for your search query.' : (
+                          followupModalType === 'payment_pending'
+                            ? `No pending fee collection patients found for ${selectedDate}.`
+                            : (followupModalType === 'opted'
+                              ? `None of today's booked patients have a follow-up registered yet.`
+                              : `All of today's booked patients have opted for follow-up.`)
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {targetList.map((app, idx) => {
+                      const pName = app.patientName || app.name || 'Patient';
+                      const pPhone = app.phone || app.phoneNumber || 'N/A';
+                      const pRegId = app.regId || 'N/A';
+                      const pDoc = app.doctor || app.doctorName || 'Doctor';
+                      const pBranch = app.branch || 'Branch';
+                      const pTime = app.timeSlot || app.time || 'Scheduled';
+                      const pStatus = app.status || 'waiting';
+                      const followDate = app.preferredFollowUpDate || app.followUpDate;
+                      const followInterval = app.followUpInterval;
+
+                      const numPharm = Number(app.pharmacyFee) || 0;
+                      const numDiet = Number(app.dietFee || app.dietFeeAmount || app.dietPlan?.dietFeeAmount || app.dietPlan?.dietFee) || 0;
+                      const totalDue = app.totalAmount || (numPharm + numDiet > 0 ? (numPharm + numDiet) : null);
+
+                      return (
+                        <div
+                          key={app.id || idx}
+                          style={{
+                            background: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '12px',
+                            padding: '14px 18px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: '12px',
+                            transition: 'all 0.2s ease'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: '220px' }}>
+                            <div style={{
+                              width: '32px', height: '32px', borderRadius: '50%',
+                              background: '#ffffff', border: '1px solid #cbd5e1',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: '12px', fontWeight: 800, color: '#475569'
+                            }}>
+                              {idx + 1}
+                            </div>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontSize: '14.5px', fontWeight: 800, color: '#0f172a' }}>{pName}</span>
+                                {checkIsPackageMember(app) && (
+                                  <span style={{ fontSize: '10px', background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '1px 6px', borderRadius: '4px', fontWeight: 900 }}>
+                                    [PKG]
+                                  </span>
+                                )}
+                                <span style={{ fontSize: '11px', fontWeight: 700, color: '#258ec8', background: '#eff6ff', padding: '1px 7px', borderRadius: '6px' }}>{pRegId}</span>
+                              </div>
+                              <div style={{ fontSize: '12.5px', color: '#64748b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <span>📱 +91 {pPhone}</span>
+                                <span>• 👨‍⚕️ {pDoc} ({pBranch})</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Info Badge & Action Buttons */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                            {followupModalType === 'payment_pending' ? (
+                              <div style={{
+                                background: '#fef2f2', border: '1px solid #fecaca',
+                                borderRadius: '8px', padding: '6px 12px', textAlign: 'right'
+                              }}>
+                                <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#dc2626' }}>
+                                  {totalDue ? `Fee Due: ₹${totalDue}` : 'Fee Pending ⏳'}
+                                </div>
+                                <div style={{ fontSize: '11px', color: '#7f1d1d', marginTop: '1px', fontWeight: 600 }}>
+                                  {numPharm > 0 && numDiet > 0
+                                    ? `Rx: ₹${numPharm} + Diet: ₹${numDiet}`
+                                    : (numPharm > 0 ? `Prescription: ₹${numPharm}` : (numDiet > 0 ? `Diet Fee: ₹${numDiet}` : 'Awaiting Reception Collection'))}
+                                </div>
+                              </div>
+                            ) : followupModalType === 'opted' ? (
+                              <div style={{
+                                background: '#eff6ff', border: '1px solid #bfdbfe',
+                                borderRadius: '8px', padding: '6px 12px', textAlign: 'right'
+                              }}>
+                                <div style={{ fontSize: '12px', fontWeight: 800, color: '#1d4ed8' }}>
+                                  📅 {followDate ? `Follow-up: ${followDate}` : (followInterval || 'Follow-up Opted')}
+                                </div>
+                                {followInterval && followDate && (
+                                  <div style={{ fontSize: '11px', color: '#3b82f6', marginTop: '1px' }}>
+                                    Interval: {followInterval}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div style={{
+                                background: '#fef2f2', border: '1px solid #fecaca',
+                                borderRadius: '8px', padding: '6px 12px', textAlign: 'right'
+                              }}>
+                                <div style={{ fontSize: '12px', fontWeight: 700, color: '#dc2626' }}>
+                                  No Follow-up Added
+                                </div>
+                                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '1px' }}>
+                                  Time: {pTime} ({pStatus})
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Collect Fee & Billing Direct Button (Payment Pending Only) */}
+                            {followupModalType === 'payment_pending' && (
+                              <button
+                                onClick={() => {
+                                  setFollowupModalType(null);
+                                  handleOpenCheckout(app);
+                                }}
+                                style={{
+                                  padding: '7px 14px',
+                                  borderRadius: '8px',
+                                  background: 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  fontWeight: 800,
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)'
+                                }}
+                                title="Open Fee Collection and Digital Billing Invoice"
+                              >
+                                <CreditCard size={14} /> Collect Fee & Billing
+                              </button>
+                            )}
+
+                            {/* WhatsApp Button */}
+                            {pPhone && pPhone !== 'N/A' && (
+                              <a
+                                href={`https://wa.me/91${pPhone.replace(/\D/g, '')}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{
+                                  padding: '7px 12px',
+                                  borderRadius: '8px',
+                                  background: '#22c55e',
+                                  color: '#ffffff',
+                                  fontWeight: 700,
+                                  fontSize: '12px',
+                                  textDecoration: 'none',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                <MessageCircle size={14} /> WhatsApp
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ padding: '14px 24px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setFollowupModalType(null); setFollowupSearchTerm(''); }}
+                style={{
+                  padding: '9px 20px',
+                  borderRadius: '10px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                  cursor: 'pointer'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Delete Appointment Confirmation Modal (Popup Before Delete!) */}
+      {deleteConfirmApp && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '16px'
+        }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '18px',
+            width: '100%',
+            maxWidth: '480px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            border: '1px solid #e2e8f0',
+            overflow: 'hidden',
+            animation: 'fadeIn 0.2s ease-out'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: '1px solid #f1f5f9',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: '#fef2f2'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '12px',
+                  background: '#fee2e2',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#dc2626'
+                }}>
+                  <Trash2 size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#991b1b' }}>
+                    Confirm Appointment Deletion
+                  </h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#b91c1c' }}>
+                    No direct permanent loss • 24-hour restore available
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmApp(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#94a3b8',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  borderRadius: '6px'
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: '24px' }}>
+              <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#334155', lineHeight: 1.5 }}>
+                Are you sure you want to delete the appointment for <strong style={{ color: '#0f172a' }}>{deleteConfirmApp.patientName || deleteConfirmApp.fullName || deleteConfirmApp.name || 'this patient'}</strong>?
+              </p>
+
+              {/* Patient Card Preview */}
+              <div style={{
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                marginBottom: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+                fontSize: '12.5px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Doctor:</span>
+                  <span style={{ fontWeight: 700, color: '#0f172a' }}>{deleteConfirmApp.doctorName || deleteConfirmApp.doctor || 'Assigned Doctor'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Date & Time:</span>
+                  <span style={{ fontWeight: 700, color: '#0f172a' }}>
+                    {deleteConfirmApp.appointmentDate || deleteConfirmApp.date || selectedDate} • {deleteConfirmApp.appointmentTime || deleteConfirmApp.time || '10:00 AM'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Branch:</span>
+                  <span style={{ fontWeight: 600, color: '#334155' }}>{deleteConfirmApp.branch || deleteConfirmApp.branchName || currentBranch || 'KPHB Branch'}</span>
+                </div>
+              </div>
+
+              {/* 24-Hour Recovery Notice Box */}
+              <div style={{
+                background: '#f0f9ff',
+                border: '1.5px solid #bae6fd',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '10px'
+              }}>
+                <RotateCcw size={18} color="#0284c7" style={{ marginTop: '2px', flexShrink: 0 }} />
+                <div style={{ fontSize: '12px', color: '#0369a1', lineHeight: 1.5 }}>
+                  <strong style={{ display: 'block', color: '#0284c7', marginBottom: '2px' }}>
+                    Restorable for Up to 24 Hours
+                  </strong>
+                  This appointment will be moved to the <strong>Restore (24h)</strong> recycle bin for {deleteConfirmApp.branch || currentBranch || 'this branch'}. You or the mobile app can restore it back to the queue anytime within 24 hours.
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{
+              padding: '16px 24px',
+              borderTop: '1px solid #f1f5f9',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '10px'
+            }}>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmApp(null)}
+                disabled={isDeletingApp}
+                style={{
+                  padding: '9px 18px',
+                  borderRadius: '10px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={isDeletingApp}
+                style={{
+                  padding: '9px 20px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: '#dc2626',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  fontSize: '13px',
+                  cursor: isDeletingApp ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 6px rgba(220, 38, 38, 0.3)'
+                }}
+              >
+                <Trash2 size={15} />
+                <span>{isDeletingApp ? 'Deleting...' : 'Delete Appointment'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Restore Appointments Modal (24h Retention) */}
+      {restoreModalOpen && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '16px'
+        }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '20px',
+            width: '100%',
+            maxWidth: '680px',
+            maxHeight: '85vh',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            border: '1px solid #e2e8f0',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            animation: 'fadeIn 0.2s ease-out'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '18px 24px',
+              borderBottom: '1px solid #e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: '#f8fafc'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '12px',
+                  background: '#e0f2fe',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#0284c7'
+                }}>
+                  <RotateCcw size={22} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: '#0f172a' }}>
+                    Restore Appointments (Last 24 Hours)
+                  </h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '12.5px', color: '#64748b' }}>
+                    Appointments deleted for <strong style={{ color: '#0284c7' }}>{currentBranch || 'KPHB Branch'}</strong> within the last 24h
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRestoreModalOpen(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#94a3b8',
+                  cursor: 'pointer',
+                  padding: '6px',
+                  borderRadius: '8px'
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Content / List */}
+            <div style={{ padding: '20px 24px', overflowY: 'auto', flex: 1 }}>
+              {deleted24hList.length === 0 ? (
+                <div style={{
+                  padding: '48px 24px',
+                  textAlign: 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '12px'
+                }}>
+                  <div style={{
+                    width: '56px',
+                    height: '56px',
+                    borderRadius: '28px',
+                    background: '#f0fdf4',
+                    border: '1.5px solid #bbf7d0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#16a34a'
+                  }}>
+                    <CheckCircle2 size={28} />
+                  </div>
+                  <div style={{ fontSize: '15px', fontWeight: 800, color: '#1e293b' }}>
+                    Recycle Bin is Empty
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#64748b', maxWidth: '360px', lineHeight: 1.5 }}>
+                    No appointments have been deleted in the last 24 hours for {currentBranch || 'this branch'}.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>
+                    Found <strong>{deleted24hList.length}</strong> deleted appointment{deleted24hList.length !== 1 ? 's' : ''} restorable back to active queue:
+                  </div>
+
+                  {deleted24hList.map((delApp) => {
+                    const dTime = delApp.deletedAt ? new Date(delApp.deletedAt).getTime() : 0;
+                    const diffMs = Date.now() - dTime;
+                    const elapsedMins = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+                    const elapsedHours = Math.floor(elapsedMins / 60);
+                    const elapsedStr = elapsedHours > 0 ? `${elapsedHours}h ${elapsedMins % 60}m ago` : `${elapsedMins}m ago`;
+
+                    const remainingMs = Math.max(0, 24 * 60 * 60 * 1000 - diffMs);
+                    const remHours = Math.floor(remainingMs / (1000 * 60 * 60));
+                    const remMins = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+                    const remainingStr = remHours > 0 ? `${remHours}h ${remMins}m left` : `${remMins}m left`;
+
+                    const isRestoring = isRestoringId === delApp.id;
+
+                    return (
+                      <div
+                        key={delApp.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          background: '#ffffff',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '14px',
+                          padding: '14px 18px',
+                          gap: '16px',
+                          boxShadow: '0 1px 4px rgba(0,0,0,0.03)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {/* Patient & Doctor Info */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>
+                              {delApp.patientName || delApp.fullName || delApp.name || 'Patient'}
+                            </span>
+                            <span style={{
+                              fontSize: '10.5px',
+                              fontWeight: 800,
+                              padding: '2px 7px',
+                              borderRadius: '6px',
+                              background: '#fef2f2',
+                              color: '#dc2626',
+                              border: '1px solid #fecaca'
+                            }}>
+                              DELETED
+                            </span>
+                          </div>
+
+                          <div style={{ fontSize: '12px', color: '#64748b' }}>
+                            {delApp.phoneNumber || delApp.phone || 'No phone'} • <span style={{ color: '#0284c7', fontWeight: 700 }}>{delApp.registrationId || delApp.regId || 'N/A'}</span>
+                          </div>
+
+                          <div style={{ fontSize: '12px', color: '#334155', marginTop: '2px' }}>
+                            👨‍⚕️ {delApp.doctorName || delApp.doctor || 'Doctor'} • 📅 {delApp.appointmentDate || delApp.date || 'N/A'} at {delApp.appointmentTime || delApp.time || '10:00 AM'}
+                          </div>
+
+                          {/* Deletion & Retention badges */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                            <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                              Deleted: <strong style={{ color: '#475569' }}>{elapsedStr}</strong>
+                            </span>
+                            <span style={{ fontSize: '11px', color: '#d97706', fontWeight: 700, background: '#fffbeb', padding: '1px 6px', borderRadius: '4px' }}>
+                              ⏳ {remainingStr}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Action: Restore Button */}
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreAppointment(delApp)}
+                          disabled={isRestoring}
+                          style={{
+                            padding: '9px 18px',
+                            borderRadius: '10px',
+                            border: 'none',
+                            background: isRestoring ? '#94a3b8' : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                            color: '#ffffff',
+                            fontWeight: 800,
+                            fontSize: '12.5px',
+                            cursor: isRestoring ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            boxShadow: '0 2px 8px rgba(2, 132, 199, 0.25)',
+                            flexShrink: 0
+                          }}
+                        >
+                          <RotateCcw size={14} />
+                          <span>{isRestoring ? 'Restoring...' : 'Restore'}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{
+              padding: '14px 24px',
+              borderTop: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <span style={{ fontSize: '12px', color: '#64748b' }}>
+                Restored appointments automatically return to their previous queue order.
+              </span>
+              <button
+                type="button"
+                onClick={() => setRestoreModalOpen(false)}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: '10px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '12.5px',
+                  cursor: 'pointer'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

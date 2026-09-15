@@ -2,9 +2,38 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from '
 import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, Modal, Alert, BackHandler, Keyboard, InteractionManager, ActivityIndicator } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createDocument, db, sendBookingWhatsAppNotification } from '@app/shared';
-import { collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
+import { createDocument, sendBookingWhatsAppNotification } from '@app/shared';
+import {
+  getSafeDb, collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs
+} from '../../../utils/firebaseSafe';
 import { generateRegistrationId, getBranchShortcut } from '../../../utils/idGenerator';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
+import { getPatientVisitState } from '../../../utils/patientVisitState';
+import { createBookingNotificationInFirestore } from '../../../utils/fcmService';
+import {
+  DoctorNoShowOverride,
+  getActiveDoctorNoShow,
+  filterSlotsByNoShow,
+  normalizeToISODate,
+  getCanonicalDoctorName
+} from '../DoctorNoShow/doctorRosterHelper';
+
+export const CLINIC_BRANCHES = [
+  'KPHB Branch',
+  'Nallagandla Branch',
+  'Dilshuknagar Branch',
+  'Chandanagar Branch',
+];
+
+export const normalizeToClinicBranch = (branch?: string): string => {
+  if (!branch) return 'KPHB Branch';
+  const norm = String(branch).toLowerCase();
+  if (norm.includes('kphb') || norm.includes('kukatpally')) return 'KPHB Branch';
+  if (norm.includes('nalla') || norm.includes('nallagandla')) return 'Nallagandla Branch';
+  if (norm.includes('dilshuk') || norm.includes('dilsukh') || norm.includes('dsnr')) return 'Dilshuknagar Branch';
+  if (norm.includes('chanda') || norm.includes('chnr') || norm.includes('chandanagar')) return 'Chandanagar Branch';
+  return 'KPHB Branch';
+};
 
 const COLORS = {
   primary: '#0284c7',
@@ -19,6 +48,7 @@ const STORAGE_APPTS_KEY = '@sph_appts_cache_v2';
 
 interface BookAppointmentScreenProps {
   currentBranch?: string;
+  userRole?: string;
   onNavigate?: (tab: string) => void;
   onBack?: () => void;
 }
@@ -31,6 +61,26 @@ interface TimeSlot {
   endMinute: string;
   endAmPm: 'AM' | 'PM';
 }
+
+// Top-level time conversion helpers
+const parseTimeToMinutes = (hourStr: string, minStr: string, ampm: 'AM' | 'PM'): number => {
+  let h = parseInt(hourStr, 10);
+  const m = parseInt(minStr, 10) || 0;
+  if (ampm === 'PM' && h < 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return h * 60 + m;
+};
+
+const formatMinutesToTimeStr = (totalMins: number): string => {
+  let h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12;
+  if (h === 0) h = 12;
+  const hhStr = h.toString().padStart(2, '0');
+  const mmStr = m.toString().padStart(2, '0');
+  return `${hhStr}:${mmStr} ${ampm}`;
+};
 
 type DayName = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
 
@@ -107,7 +157,7 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
   },
   {
     id: 'doc-2',
-    name: 'Dr. CH. Rama Krishna',
+    name: 'Dr. Ramakrishna Chanduri',
     phone: '9804176176',
     role: 'Homeopathy Physician',
     branchSchedules: [
@@ -215,11 +265,413 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
   }
 ];
 
+let GLOBAL_MOBILE_DOCTORS_CACHE: Doctor[] = DEFAULT_DOCTORS_SEED;
+let GLOBAL_MOBILE_NOSHOWS_CACHE: DoctorNoShowOverride[] = [];
+
+interface AnalogClockModalProps {
+  visible: boolean;
+  onClose: () => void;
+  selectedTimeSlot: string;
+  onSelectTime: (timeStr: string) => void;
+}
+
+const AnalogClockModal: React.FC<AnalogClockModalProps> = ({
+  visible,
+  onClose,
+  selectedTimeSlot,
+  onSelectTime,
+}) => {
+  const [mode, setMode] = useState<'hours' | 'minutes'>('hours');
+  const [selectedHour, setSelectedHour] = useState(10);
+  const [selectedMinute, setSelectedMinute] = useState(0);
+  const [ampm, setAmPm] = useState<'AM' | 'PM'>('AM');
+
+  useEffect(() => {
+    if (selectedTimeSlot) {
+      const parts = selectedTimeSlot.trim().split(' ');
+      if (parts.length === 2) {
+        const [hStr, mStr] = parts[0].split(':');
+        const h = parseInt(hStr, 10);
+        const m = parseInt(mStr, 10);
+        if (!isNaN(h)) setSelectedHour(h === 0 ? 12 : h > 12 ? h - 12 : h);
+        if (!isNaN(m)) setSelectedMinute(m);
+        setAmPm(parts[1].toUpperCase() === 'PM' ? 'PM' : 'AM');
+      }
+    }
+  }, [selectedTimeSlot, visible]);
+
+  const handleConfirm = () => {
+    const formattedH = String(selectedHour).padStart(2, '0');
+    const formattedM = String(selectedMinute).padStart(2, '0');
+    const timeStr = `${formattedH}:${formattedM} ${ampm}`;
+    onSelectTime(timeStr);
+    onClose();
+  };
+
+  const getHourCoords = (h: number) => {
+    const angle = (h * 30 - 90) * (Math.PI / 180);
+    const r = 74;
+    const cx = 100;
+    const cy = 100;
+    return {
+      x: cx + r * Math.cos(angle) - 18,
+      y: cy + r * Math.sin(angle) - 18,
+      endX: cx + r * Math.cos(angle),
+      endY: cy + r * Math.sin(angle),
+    };
+  };
+
+  const getMinuteCoords = (m: number) => {
+    const angle = (m * 6 - 90) * (Math.PI / 180);
+    const r = 74;
+    const cx = 100;
+    const cy = 100;
+    return {
+      x: cx + r * Math.cos(angle) - 18,
+      y: cy + r * Math.sin(angle) - 18,
+      endX: cx + r * Math.cos(angle),
+      endY: cy + r * Math.sin(angle),
+    };
+  };
+
+  const hours = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  const minutes = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+
+  const activeHandCoords = mode === 'hours'
+    ? getHourCoords(selectedHour)
+    : getMinuteCoords(selectedMinute);
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <View style={{
+        flex: 1,
+        backgroundColor: 'rgba(15, 23, 42, 0.65)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20
+      }}>
+        <View style={{
+          backgroundColor: '#ffffff',
+          borderRadius: 24,
+          width: '100%',
+          maxWidth: 340,
+          overflow: 'hidden',
+          elevation: 10,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.2,
+          shadowRadius: 16
+        }}>
+          {/* Header Display */}
+          <View style={{
+            backgroundColor: '#0284c7',
+            paddingVertical: 18,
+            paddingHorizontal: 20,
+            alignItems: 'center'
+          }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#bae6fd', textTransform: 'uppercase', letterSpacing: 1 }}>
+              Select Online Time
+            </Text>
+
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6, marginVertical: 6 }}>
+              <TouchableOpacity onPress={() => setMode('hours')}>
+                <Text style={{
+                  fontSize: 36,
+                  fontWeight: '900',
+                  color: mode === 'hours' ? '#ffffff' : '#93c5fd',
+                  borderBottomWidth: mode === 'hours' ? 2 : 0,
+                  borderBottomColor: '#ffffff'
+                }}>
+                  {String(selectedHour).padStart(2, '0')}
+                </Text>
+              </TouchableOpacity>
+
+              <Text style={{ fontSize: 36, fontWeight: '900', color: '#ffffff' }}>:</Text>
+
+              <TouchableOpacity onPress={() => setMode('minutes')}>
+                <Text style={{
+                  fontSize: 36,
+                  fontWeight: '900',
+                  color: mode === 'minutes' ? '#ffffff' : '#93c5fd',
+                  borderBottomWidth: mode === 'minutes' ? 2 : 0,
+                  borderBottomColor: '#ffffff'
+                }}>
+                  {String(selectedMinute).padStart(2, '0')}
+                </Text>
+              </TouchableOpacity>
+
+              {/* AM/PM Switch */}
+              <View style={{ marginLeft: 12, gap: 4 }}>
+                <TouchableOpacity
+                  onPress={() => setAmPm('AM')}
+                  style={{
+                    backgroundColor: ampm === 'AM' ? '#ffffff' : 'rgba(255,255,255,0.2)',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 6
+                  }}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: '900', color: ampm === 'AM' ? '#0284c7' : '#ffffff' }}>
+                    AM
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setAmPm('PM')}
+                  style={{
+                    backgroundColor: ampm === 'PM' ? '#ffffff' : 'rgba(255,255,255,0.2)',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 6
+                  }}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: '900', color: ampm === 'PM' ? '#0284c7' : '#ffffff' }}>
+                    PM
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Mode Switcher Pills */}
+            <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12, padding: 3, gap: 4 }}>
+              <TouchableOpacity
+                onPress={() => setMode('hours')}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 4,
+                  borderRadius: 9,
+                  backgroundColor: mode === 'hours' ? '#ffffff' : 'transparent'
+                }}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '800', color: mode === 'hours' ? '#0284c7' : '#ffffff' }}>
+                  HOURS
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setMode('minutes')}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 4,
+                  borderRadius: 9,
+                  backgroundColor: mode === 'minutes' ? '#ffffff' : 'transparent'
+                }}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '800', color: mode === 'minutes' ? '#0284c7' : '#ffffff' }}>
+                  MINUTES
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Analog Clock Face Body */}
+          <View style={{ padding: 20, alignItems: 'center' }}>
+            <View
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderGrant={(e) => {
+                const { locationX, locationY } = e.nativeEvent;
+                const dx = locationX - 100;
+                const dy = locationY - 100;
+                let angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+                if (angleDeg < 0) angleDeg += 360;
+
+                if (mode === 'hours') {
+                  let h = Math.round(angleDeg / 30);
+                  if (h === 0) h = 12;
+                  if (h > 12) h = 12;
+                  setSelectedHour(h);
+                  setMode('minutes');
+                } else {
+                  let m = Math.round(angleDeg / 6) % 60;
+                  // Snap to nearest minute or 5 min step
+                  setSelectedMinute(m);
+                }
+              }}
+              onResponderMove={(e) => {
+                const { locationX, locationY } = e.nativeEvent;
+                const dx = locationX - 100;
+                const dy = locationY - 100;
+                let angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+                if (angleDeg < 0) angleDeg += 360;
+
+                if (mode === 'hours') {
+                  let h = Math.round(angleDeg / 30);
+                  if (h === 0) h = 12;
+                  if (h > 12) h = 12;
+                  setSelectedHour(h);
+                } else {
+                  let m = Math.round(angleDeg / 6) % 60;
+                  setSelectedMinute(m);
+                }
+              }}
+              style={{
+                width: 200,
+                height: 200,
+                borderRadius: 100,
+                backgroundColor: '#f8fafc',
+                borderWidth: 2,
+                borderColor: '#e2e8f0',
+                position: 'relative'
+              }}
+            >
+              {/* Center Pivot Point */}
+              <View style={{
+                position: 'absolute',
+                top: 96,
+                left: 96,
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: '#0284c7',
+                zIndex: 10
+              }} />
+
+              {/* Clock Hand Pointer */}
+              <View
+                style={{
+                  position: 'absolute',
+                  top: 100,
+                  left: 100,
+                  width: Math.sqrt(Math.pow(activeHandCoords.endX - 100, 2) + Math.pow(activeHandCoords.endY - 100, 2)),
+                  height: 2,
+                  backgroundColor: '#0284c7',
+                  transformOrigin: '0% 50%',
+                  transform: [{
+                    rotate: `${Math.atan2(activeHandCoords.endY - 100, activeHandCoords.endX - 100)}rad`
+                  }],
+                  zIndex: 2
+                }}
+              />
+
+              {/* Render Hours / Minutes Numbers Radially */}
+              {mode === 'hours' ? (
+                hours.map((h) => {
+                  const coords = getHourCoords(h);
+                  const isSelected = selectedHour === h;
+                  return (
+                    <TouchableOpacity
+                      key={h}
+                      onPress={() => {
+                        setSelectedHour(h);
+                        setMode('minutes');
+                      }}
+                      style={{
+                        position: 'absolute',
+                        left: coords.x,
+                        top: coords.y,
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        backgroundColor: isSelected ? '#0284c7' : 'transparent',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 5
+                      }}
+                    >
+                      <Text style={{
+                        fontSize: 13,
+                        fontWeight: isSelected ? '900' : '700',
+                        color: isSelected ? '#ffffff' : '#334155'
+                      }}>
+                        {h}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              ) : (
+                minutes.map((m) => {
+                  const coords = getMinuteCoords(m);
+                  const isSelected = selectedMinute === m;
+                  return (
+                    <TouchableOpacity
+                      key={m}
+                      onPress={() => setSelectedMinute(m)}
+                      style={{
+                        position: 'absolute',
+                        left: coords.x,
+                        top: coords.y,
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        backgroundColor: isSelected ? '#0284c7' : 'transparent',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 5
+                      }}
+                    >
+                      <Text style={{
+                        fontSize: 11.5,
+                        fontWeight: isSelected ? '900' : '700',
+                        color: isSelected ? '#ffffff' : '#334155'
+                      }}>
+                        {String(m).padStart(2, '0')}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+
+            {/* Action Buttons */}
+            <View style={{ flexDirection: 'row', gap: 12, marginTop: 20, width: '100%' }}>
+              <TouchableOpacity
+                onPress={onClose}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: '#f1f5f9',
+                  alignItems: 'center'
+                }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#64748b' }}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleConfirm}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: '#0284c7',
+                  alignItems: 'center'
+                }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: '800', color: '#ffffff' }}>OK / Set Time</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
 export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   currentBranch = "Nallagandla",
+  userRole,
   onNavigate,
   onBack
 }) => {
+  const isHR = userRole === 'hr' || userRole === 'admin' || currentBranch === 'All Branches' || currentBranch === 'HR' || currentBranch === 'Admin';
+  const [selectedBranch, setSelectedBranch] = useState<string>(() => {
+    if (isHR) return '';
+    return normalizeToClinicBranch(currentBranch);
+  });
+  const [branchExpanded, setBranchExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!isHR && currentBranch) {
+      setSelectedBranch(normalizeToClinicBranch(currentBranch));
+    }
+  }, [currentBranch, isHR]);
+
   // Section 1: Patient Details
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [patientName, setPatientName] = useState('');
@@ -245,26 +697,32 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
     const clean = String(rawPhone).replace(/\D/g, '').slice(-10);
     if (clean.length < 10) return [];
 
+    const seenDocIds = new Set<string>();
     const profilesMap = new Map();
 
     const processDoc = (data: any, docId: string) => {
       if (!data) return;
+      if (docId && seenDocIds.has(docId)) return;
+      if (docId) seenDocIds.add(docId);
+
       const pName = data.fullName || data.patientName || data.name || data.patient_name;
       const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || '';
       const cleanDocPhone = String(docPhone).replace(/\D/g, '').slice(-10);
       if (pName && cleanDocPhone === clean) {
         const rawReg = data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid;
         let regId = '';
-        if (rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 18 && !/^[a-zA-Z0-9]{19,32}$/.test(rawReg.trim())) {
+        const isValidReg = rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 18 && !/^[a-zA-Z0-9]{19,32}$/.test(rawReg.trim());
+        if (isValidReg) {
           regId = rawReg.trim().toUpperCase();
-        } else {
-          const shortcut = getBranchShortcut(data.branchName || data.branch || currentBranch);
-          regId = `SPH-${shortcut}-${String(profilesMap.size + 1).padStart(4, '0')}`;
         }
 
-        const key = `${pName.toLowerCase()}_${cleanDocPhone}_${regId.toLowerCase()}`;
-        if (!profilesMap.has(key)) {
-          profilesMap.set(key, {
+        const personKey = `${pName.trim().toLowerCase()}_${cleanDocPhone}`;
+        if (!profilesMap.has(personKey)) {
+          if (!regId) {
+            const shortcut = getBranchShortcut(data.branchName || data.branch || selectedBranch);
+            regId = `SPH-${shortcut}-${String(profilesMap.size + 1).padStart(4, '0')}`;
+          }
+          profilesMap.set(personKey, {
             id: docId,
             fullName: pName,
             registrationId: regId,
@@ -272,14 +730,29 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
             gender: data.gender || '',
             age: data.age || '',
             source: data.source || 'Old Patient',
-            branchName: data.branchName || data.branch || ''
+            branchName: data.branchName || data.branch || selectedBranch
           });
+        } else {
+          const existing = profilesMap.get(personKey);
+          if (isValidReg && (!existing.registrationId || existing.registrationId.startsWith('SPH-'))) {
+            existing.registrationId = regId;
+          }
+          if (!existing.gender && data.gender) existing.gender = data.gender;
+          if (!existing.age && data.age) existing.age = data.age;
         }
       }
     };
 
     // 1. Search in-memory state & cache instantly (0ms)
     try {
+      const storePool = receptionDataStore.getAllCollectionsPool();
+      if (storePool && storePool.length > 0) {
+        storePool.forEach(p => processDoc(p, p?.id));
+      }
+      const storeAppts = receptionDataStore.getAppointments();
+      if (storeAppts && storeAppts.length > 0) {
+        storeAppts.forEach(a => processDoc(a, a?.id));
+      }
       (allPatientsList || []).forEach(p => processDoc(p, p?.id));
       (patientsList || []).forEach(p => processDoc(p, p?.id));
       (existingAppointments || []).forEach(a => processDoc(a, a?.id));
@@ -287,28 +760,34 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       (GLOBAL_MOBILE_PATIENTS_CACHE || []).forEach(p => processDoc(p, p?.id));
     } catch (e) { }
 
-    // 2. Query Firestore collections with a 1.5s max timeout safety
-    const safeQuery = (q: any) => Promise.race([
-      getDocs(q).catch(() => ({ docs: [] })),
-      new Promise(res => setTimeout(() => res({ docs: [] }), 1500))
-    ]);
-
-    try {
-      const [snapAll, snapPatients, snapAppts, snapProfiles] = await Promise.all([
-        safeQuery(query(collection(db, 'allpatients'), where('phone', '==', clean), limit(20))),
-        safeQuery(query(collection(db, 'patients'), where('phone', '==', clean), limit(20))),
-        safeQuery(query(collection(db, 'appointments'), where('phone', '==', clean), limit(20))),
-        safeQuery(query(collection(db, 'patient_profiles'), where('phone', '==', clean), limit(20)))
+    // 2. Query Firestore collections with a 2.5s max timeout safety using safe active DB
+    const activeDb = getSafeDb();
+    if (activeDb) {
+      const safeQuery = (q: any) => Promise.race([
+        getDocs(q).catch((err) => {
+          console.warn('[Phone Query] Collection query error:', err);
+          return { docs: [] };
+        }),
+        new Promise(res => setTimeout(() => res({ docs: [] }), 2500))
       ]);
 
-      [snapAll, snapPatients, snapAppts, snapProfiles].forEach((snap: any) => {
-        if (!snap || snap.empty || !snap.forEach) return;
-        snap.forEach((docSnap: any) => {
-          processDoc(docSnap.data(), docSnap.id);
+      try {
+        const [snapAll, snapPatients, snapAppts, snapProfiles] = await Promise.all([
+          safeQuery(query(collection(activeDb, 'allpatients'), where('phone', '==', clean), limit(20))),
+          safeQuery(query(collection(activeDb, 'patients'), where('phone', '==', clean), limit(20))),
+          safeQuery(query(collection(activeDb, 'appointments'), where('phone', '==', clean), limit(20))),
+          safeQuery(query(collection(activeDb, 'patient_profiles'), where('phone', '==', clean), limit(20)))
+        ]);
+
+        [snapAll, snapPatients, snapAppts, snapProfiles].forEach((snap: any) => {
+          if (!snap || snap.empty || !snap.forEach) return;
+          snap.forEach((docSnap: any) => {
+            processDoc(docSnap.data(), docSnap.id);
+          });
         });
-      });
-    } catch (err) {
-      console.warn("Firestore phone query error:", err);
+      } catch (err) {
+        console.warn("Firestore phone query error:", err);
+      }
     }
 
     const resultList = Array.from(profilesMap.values());
@@ -383,14 +862,17 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const [appointmentDate, setAppointmentDate] = useState(getTodayFormatted);
   const [selectedDoctor, setSelectedDoctor] = useState('');
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('');
+  const [clockModalOpen, setClockModalOpen] = useState(false);
 
   // Firestore Live Doctors List
-  const [allDoctorsList, setAllDoctorsList] = useState<Doctor[]>(DEFAULT_DOCTORS_SEED);
+  const [allDoctorsList, setAllDoctorsList] = useState<Doctor[]>(() => GLOBAL_MOBILE_DOCTORS_CACHE.length > 0 ? GLOBAL_MOBILE_DOCTORS_CACHE : DEFAULT_DOCTORS_SEED);
 
   // Subscribe to real-time Firestore doctors collection
   useEffect(() => {
     try {
-      const docColRef = collection(db, 'doctors');
+      const activeDb = getSafeDb();
+      if (!activeDb) return;
+      const docColRef = collection(activeDb, 'doctors');
       const unsubscribe = onSnapshot(docColRef, (snapshot) => {
         if (!snapshot.empty) {
           const fetched: Doctor[] = [];
@@ -415,6 +897,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
                 : (seedFallback?.branchSchedules || []),
             } as any);
           });
+          GLOBAL_MOBILE_DOCTORS_CACHE = fetched;
           setAllDoctorsList(fetched);
         }
       }, (err) => {
@@ -425,6 +908,35 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       console.warn('Firestore doctors subscribe notice:', e);
     }
   }, []);
+
+  // Firestore Live Doctor No Shows List
+  const [noShowsList, setNoShowsList] = useState<DoctorNoShowOverride[]>(() => GLOBAL_MOBILE_NOSHOWS_CACHE);
+  useEffect(() => {
+    const activeDb = getSafeDb();
+    if (!activeDb) return;
+    try {
+      const q = collection(activeDb, 'doctor_no_shows');
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const list: DoctorNoShowOverride[] = snapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<DoctorNoShowOverride, 'id'>)
+        }));
+        GLOBAL_MOBILE_NOSHOWS_CACHE = list;
+        setNoShowsList(list);
+      }, (err) => {
+        console.warn('Firestore doctor_no_shows listener error on mobile BookAppointment:', err);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Firestore doctor_no_shows subscribe notice on mobile:', e);
+    }
+  }, []);
+
+  // Compute if selectedDoctor has an active No Show for appointmentDate at selectedBranch
+  const activeNoShowForSelectedDoc = useMemo(() => {
+    if (!selectedDoctor) return undefined;
+    return getActiveDoctorNoShow(noShowsList, selectedDoctor, selectedBranch, appointmentDate);
+  }, [noShowsList, selectedDoctor, selectedBranch, appointmentDate]);
 
   // Helper to convert DD-MM-YYYY to DayName
   const getSelectedDayName = (dateStr: string): DayName => {
@@ -447,13 +959,19 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
 
   // Dynamically filter doctors available for the selected branch and selected day
   const availableDoctors = useMemo(() => {
-    const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+    if (consultationMode === 'Online') {
+      return allDoctorsList && allDoctorsList.length > 0 ? allDoctorsList : DEFAULT_DOCTORS_SEED;
+    }
 
-    return allDoctorsList.filter((doc) => {
+    if (!selectedBranch) return [];
+
+    const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+
+    const matches = allDoctorsList.filter((doc) => {
       if (doc.branchSchedules && doc.branchSchedules.length > 0) {
         const matchBs = doc.branchSchedules.find((bs) => {
           const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-          return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
+          return normBsBranch.includes(normSelectedBranch) || normSelectedBranch.includes(normBsBranch);
         });
 
         if (!matchBs) return false;
@@ -465,12 +983,31 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
 
       const docBranchStr = ((doc as any).branch || (doc as any).assignedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
       if (docBranchStr) {
-        return docBranchStr.includes(normCurrentBranch) || normCurrentBranch.includes(docBranchStr);
+        return docBranchStr.includes(normSelectedBranch) || normSelectedBranch.includes(docBranchStr);
       }
 
       return false;
     });
-  }, [allDoctorsList, currentBranch, selectedDayName]);
+
+    if (matches.length > 0) return matches;
+
+    // Graceful fallback: If day schedule has no specific roster, return all doctors assigned to this branch
+    const branchDocs = allDoctorsList.filter((doc) => {
+      if (doc.branchSchedules && doc.branchSchedules.length > 0) {
+        return doc.branchSchedules.some((bs) => {
+          const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+          return normBsBranch.includes(normSelectedBranch) || normSelectedBranch.includes(normBsBranch);
+        });
+      }
+      const docBranchStr = ((doc as any).branch || (doc as any).assignedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+      if (docBranchStr) {
+        return docBranchStr.includes(normSelectedBranch) || normSelectedBranch.includes(docBranchStr);
+      }
+      return false;
+    });
+
+    return branchDocs.length > 0 ? branchDocs : DEFAULT_DOCTORS_SEED;
+  }, [allDoctorsList, selectedBranch, selectedDayName, consultationMode]);
 
   // Auto-reset selectedDoctor if no longer available on changed date/branch
   useEffect(() => {
@@ -481,7 +1018,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         setSelectedTimeSlot('');
       }
     }
-  }, [appointmentDate, currentBranch, availableDoctors]);
+  }, [appointmentDate, selectedBranch, availableDoctors]);
 
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -527,61 +1064,44 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   }, [onBack, onNavigate]);
 
   // Firestore Live Patient History Collections (appointments, patients & allpatients) with 0ms Instant Device Cache
-  const [existingAppointments, setExistingAppointments] = useState<any[]>(GLOBAL_MOBILE_APPTS_CACHE);
+  const [existingAppointments, setExistingAppointments] = useState<any[]>(() => {
+    const storeAppts = receptionDataStore.getAppointments();
+    return storeAppts.length > 0 ? storeAppts : GLOBAL_MOBILE_APPTS_CACHE;
+  });
   const [patientsList, setPatientsList] = useState<any[]>(GLOBAL_MOBILE_PATIENTS_CACHE);
-  const [allPatientsList, setAllPatientsList] = useState<any[]>(GLOBAL_MOBILE_ALLPATIENTS_CACHE);
+  const [allPatientsList, setAllPatientsList] = useState<any[]>(() => {
+    const storePool = receptionDataStore.getAllCollectionsPool();
+    return storePool.length > 0 ? storePool : GLOBAL_MOBILE_ALLPATIENTS_CACHE;
+  });
 
-  // 1. Deferred Non-Blocking Background Firestore Sync (InteractionManager runAfterInteractions)
+  // 1. Instant Zero-Network Data Synchronization via Centralized receptionDataStore
   useEffect(() => {
-    let appUnsub: (() => void) | undefined;
-    let patUnsub: (() => void) | undefined;
-    let allPatUnsub: (() => void) | undefined;
+    receptionDataStore.startListeners();
 
-    const task = InteractionManager.runAfterInteractions(() => {
-      try {
-        const appColRef = collection(db, 'appointments');
-        const qApp = currentBranch
-          ? query(appColRef, where('branch', '==', currentBranch), limit(300))
-          : query(appColRef, limit(300));
+    const currentAppts = receptionDataStore.getAppointments();
+    if (currentAppts.length > 0) {
+      setExistingAppointments(currentAppts);
+      GLOBAL_MOBILE_APPTS_CACHE = currentAppts;
+    }
+    const currentPool = receptionDataStore.getAllCollectionsPool();
+    if (currentPool.length > 0) {
+      setAllPatientsList(currentPool);
+      GLOBAL_MOBILE_ALLPATIENTS_CACHE = currentPool;
+    }
 
-        appUnsub = onSnapshot(qApp, (snapshot) => {
-          const appList: any[] = [];
-          snapshot.forEach((snap) => {
-            appList.push({ id: snap.id, ...snap.data() });
-          });
-          GLOBAL_MOBILE_APPTS_CACHE = appList;
-          setExistingAppointments(appList);
-        }, () => { });
-
-        const patColRef = collection(db, 'patients');
-        const qPat = query(patColRef, limit(300));
-        patUnsub = onSnapshot(qPat, (snapshot) => {
-          const list: any[] = [];
-          snapshot.forEach((snap) => {
-            list.push({ id: snap.id, ...snap.data() });
-          });
-          GLOBAL_MOBILE_PATIENTS_CACHE = list;
-          setPatientsList(list);
-        }, () => { });
-
-        const allPatColRef = collection(db, 'allpatients');
-        const qAllPat = query(allPatColRef, limit(300));
-        allPatUnsub = onSnapshot(qAllPat, (snapshot) => {
-          const list: any[] = [];
-          snapshot.forEach((snap) => {
-            list.push({ id: snap.id, ...snap.data() });
-          });
-          GLOBAL_MOBILE_ALLPATIENTS_CACHE = list;
-          setAllPatientsList(list);
-        }, () => { });
-      } catch (e) { }
+    const unsubscribe = receptionDataStore.subscribe((state) => {
+      if (state.appointments.length > 0) {
+        setExistingAppointments(state.appointments);
+        GLOBAL_MOBILE_APPTS_CACHE = state.appointments;
+      }
+      if (state.allCollectionsPool.length > 0) {
+        setAllPatientsList(state.allCollectionsPool);
+        GLOBAL_MOBILE_ALLPATIENTS_CACHE = state.allCollectionsPool;
+      }
     });
 
     return () => {
-      task.cancel();
-      if (appUnsub) appUnsub();
-      if (patUnsub) patUnsub();
-      if (allPatUnsub) allPatUnsub();
+      unsubscribe();
     };
   }, [currentBranch]);
 
@@ -618,25 +1138,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
     setShowSuggestions(false);
   };
 
-  // Time conversion helpers for 15-min slot generation
-  const parseTimeToMinutes = (hourStr: string, minStr: string, ampm: 'AM' | 'PM'): number => {
-    let h = parseInt(hourStr, 10);
-    const m = parseInt(minStr, 10) || 0;
-    if (ampm === 'PM' && h < 12) h += 12;
-    if (ampm === 'AM' && h === 12) h = 0;
-    return h * 60 + m;
-  };
-
-  const formatMinutesToTimeStr = (totalMins: number): string => {
-    let h = Math.floor(totalMins / 60);
-    const m = totalMins % 60;
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    if (h > 12) h -= 12;
-    if (h === 0) h = 12;
-    const hhStr = h.toString().padStart(2, '0');
-    const mmStr = m.toString().padStart(2, '0');
-    return `${hhStr}:${mmStr} ${ampm}`;
-  };
+  // Time conversion helpers are defined at top-level scope
 
   const generate15MinSlotsFromRanges = (slotRanges: TimeSlot[]): string[] => {
     const result: string[] = [];
@@ -682,7 +1184,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
 
   useEffect(() => {
     try {
-      const tempColRef = collection(db, 'doctor_temp_slots');
+      const activeDb = getSafeDb();
+      if (!activeDb) return;
+      const tempColRef = collection(activeDb, 'doctor_temp_slots');
       const unsubscribe = onSnapshot(tempColRef, (snapshot) => {
         const list: TempSlotDoc[] = [];
         snapshot.forEach((snap) => {
@@ -702,6 +1206,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const handleAddSlotBefore = async () => {
     if (!selectedDoctor || timeSlotsList.length === 0) return;
     try {
+      const activeDb = getSafeDb();
+      if (!activeDb) return;
       const earliestStr = timeSlotsList[0];
       const [timePart, ampm] = earliestStr.split(' ');
       const [h, m] = timePart.split(':');
@@ -719,9 +1225,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       const [eHour, eMinAmpm] = endStr.split(':');
       const [eMin, eAmPm] = eMinAmpm.split(' ');
 
-      await addDoc(collection(db, 'doctor_temp_slots'), {
+      await addDoc(collection(activeDb, 'doctor_temp_slots'), {
         doctorName: selectedDoctor,
-        branch: currentBranch,
+        branch: selectedBranch,
         appointmentDate: appointmentDate,
         startHour: sHour,
         startMinute: sMin,
@@ -740,6 +1246,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const handleAddSlotAfter = async () => {
     if (!selectedDoctor || timeSlotsList.length === 0) return;
     try {
+      const activeDb = getSafeDb();
+      if (!activeDb) return;
       const latestStr = timeSlotsList[timeSlotsList.length - 1];
       const [timePart, ampm] = latestStr.split(' ');
       const [h, m] = timePart.split(':');
@@ -757,9 +1265,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       const [eHour, eMinAmpm] = endStr.split(':');
       const [eMin, eAmPm] = eMinAmpm.split(' ');
 
-      await addDoc(collection(db, 'doctor_temp_slots'), {
+      await addDoc(collection(activeDb, 'doctor_temp_slots'), {
         doctorName: selectedDoctor,
-        branch: currentBranch,
+        branch: selectedBranch,
         appointmentDate: appointmentDate,
         startHour: sHour,
         startMinute: sMin,
@@ -788,65 +1296,90 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   // Compute available 15-minute time slots (Regular + Temporary) for selected doctor
   const selectedDocObj = availableDoctors.find((d) => d.name === selectedDoctor);
   const timeSlotsList = useMemo(() => {
-    const defaultFallbackRanges: TimeSlot[] = [{
-      startHour: '10', startMinute: '00', startAmPm: 'AM',
-      endHour: '01', endMinute: '00', endAmPm: 'PM'
-    }];
+    if (!selectedDoctor) return [];
 
     let regularSlots: string[] = [];
 
-    if (selectedDocObj && selectedDocObj.branchSchedules && selectedDocObj.branchSchedules.length > 0) {
-      const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-      const matchBs = selectedDocObj.branchSchedules.find((bs) => {
-        const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-        return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
-      });
+    if (consultationMode === 'Online') {
+      // 24 Hours Time Slots for Online Consultation (12:00 AM to 11:45 PM every 15 mins)
+      for (let mins = 0; mins < 24 * 60; mins += 15) {
+        regularSlots.push(formatMinutesToTimeStr(mins));
+      }
+    } else {
+      const defaultFallbackRanges: TimeSlot[] = [{
+        startHour: '10', startMinute: '00', startAmPm: 'AM',
+        endHour: '01', endMinute: '00', endAmPm: 'PM'
+      }];
 
-      if (matchBs && matchBs.daySchedules?.[selectedDayName]) {
-        const daySched = matchBs.daySchedules[selectedDayName];
-        if (daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0) {
-          regularSlots = generate15MinSlotsFromRanges(daySched.slots);
+      if (selectedDocObj && selectedDocObj.branchSchedules && selectedDocObj.branchSchedules.length > 0) {
+        const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+        const matchBs = selectedDocObj.branchSchedules.find((bs) => {
+          const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+          return normBsBranch.includes(normSelectedBranch) || normSelectedBranch.includes(normBsBranch);
+        });
+
+        if (matchBs && matchBs.daySchedules?.[selectedDayName]) {
+          const daySched = matchBs.daySchedules[selectedDayName];
+          if (daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0) {
+            regularSlots = generate15MinSlotsFromRanges(daySched.slots);
+          }
         }
       }
-    }
 
-    if (regularSlots.length === 0) {
-      regularSlots = generate15MinSlotsFromRanges(defaultFallbackRanges);
+      if (regularSlots.length === 0) {
+        regularSlots = generate15MinSlotsFromRanges(defaultFallbackRanges);
+      }
     }
 
     // Find temporary slots for selected doctor, appointment date, and branch
     const normSelectedDoc = (selectedDoctor || '').toLowerCase().trim();
-    const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+    const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
 
     const matchedTempDocs = tempSlotsList.filter((ts) => {
       const sameDoc = (ts.doctorName || '').toLowerCase().trim() === normSelectedDoc;
       const sameDate = ts.appointmentDate === appointmentDate;
       const tsBranch = (ts.branch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-      const sameBranch = !tsBranch || tsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(tsBranch);
+      const sameBranch = !tsBranch || tsBranch.includes(normSelectedBranch) || normSelectedBranch.includes(tsBranch);
       return sameDoc && sameDate && sameBranch;
     });
 
-    const tempSlotsRanges: TimeSlot[] = matchedTempDocs.map((ts) => ({
-      startHour: ts.startHour,
-      startMinute: ts.startMinute,
-      startAmPm: ts.startAmPm,
-      endHour: ts.endHour,
-      endMinute: ts.endMinute,
-      endAmPm: ts.endAmPm
-    }));
+    const tempSlotStrings: string[] = [];
+    matchedTempDocs.forEach((ts) => {
+      const slotRanges: TimeSlot[] = [{
+        startHour: ts.startHour,
+        startMinute: ts.startMinute,
+        startAmPm: ts.startAmPm,
+        endHour: ts.endHour,
+        endMinute: ts.endMinute,
+        endAmPm: ts.endAmPm,
+      }];
+      const slots = generate15MinSlotsFromRanges(slotRanges);
+      slots.forEach((s) => {
+        if (!tempSlotStrings.includes(s)) {
+          tempSlotStrings.push(s);
+        }
+      });
+    });
 
-    const generatedTempSlots = generate15MinSlotsFromRanges(tempSlotsRanges);
+    const combinedSlots = Array.from(new Set([...regularSlots, ...tempSlotStrings]));
+    const sorted = sortTimeSlotsChronologically(combinedSlots);
 
-    // Merge regular & temp slots, remove duplicates, and sort chronologically
-    const combined = Array.from(new Set([...regularSlots, ...generatedTempSlots]));
-    return sortTimeSlotsChronologically(combined);
-  }, [selectedDocObj, selectedDoctor, currentBranch, selectedDayName, appointmentDate, tempSlotsList]);
+    let availableList = sorted;
+    if (activeNoShowForSelectedDoc) {
+      const { availableSlots } = filterSlotsByNoShow(sorted, activeNoShowForSelectedDoc);
+      availableList = availableSlots;
+    }
 
-  const normalizeTimeStr = (str: string): string => {
-    if (!str) return '';
-    const trimmed = str.trim().toUpperCase();
+    // We return all valid slots without filtering out past slots so past slots remain visible but blocked in UI
+    return availableList;
+  }, [selectedDoctor, selectedDocObj, selectedDayName, selectedBranch, appointmentDate, tempSlotsList, activeNoShowForSelectedDoc, consultationMode]);
+
+  // Helper to normalize time slot string
+  const normalizeSlotTime = (slotStr: string): string => {
+    if (!slotStr) return '';
+    const trimmed = slotStr.trim();
     const parts = trimmed.split(' ');
-    if (parts.length < 2) return trimmed;
+    if (parts.length !== 2) return trimmed;
     const [timePart, ampm] = parts;
     const timeSub = timePart.split(':');
     if (timeSub.length < 2) return trimmed;
@@ -862,42 +1395,46 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
     const map: Record<string, string> = {};
     if (!selectedDoctor) return map;
     const normSelectedDoc = (selectedDoctor || '').toLowerCase().trim();
-    const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+    const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
 
     const matchedTempDocs = tempSlotsList.filter((ts) => {
       const sameDoc = (ts.doctorName || '').toLowerCase().trim() === normSelectedDoc;
       const sameDate = ts.appointmentDate === appointmentDate;
       const tsBranch = (ts.branch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-      const sameBranch = !tsBranch || tsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(tsBranch);
+      const sameBranch = !tsBranch || tsBranch.includes(normSelectedBranch) || normSelectedBranch.includes(tsBranch);
       return sameDoc && sameDate && sameBranch;
     });
 
     matchedTempDocs.forEach((ts) => {
-      const slots = generate15MinSlotsFromRanges([{
+      const slotRanges: TimeSlot[] = [{
         startHour: ts.startHour,
         startMinute: ts.startMinute,
         startAmPm: ts.startAmPm,
         endHour: ts.endHour,
         endMinute: ts.endMinute,
-        endAmPm: ts.endAmPm
-      }]);
-      slots.forEach((sStr) => {
+        endAmPm: ts.endAmPm,
+      }];
+      const slots = generate15MinSlotsFromRanges(slotRanges);
+      slots.forEach((s) => {
+        const normKey = normalizeSlotTime(s);
         if (ts.id) {
-          map[normalizeTimeStr(sStr)] = ts.id;
-          map[sStr.trim()] = ts.id;
+          map[normKey] = ts.id;
         }
       });
     });
 
     return map;
-  }, [selectedDoctor, currentBranch, appointmentDate, tempSlotsList]);
+  }, [selectedDoctor, tempSlotsList, appointmentDate, selectedBranch]);
 
   // Helper to delete temporary slot from Firestore
-  const handleDeleteTempSlot = async (tempDocId: string) => {
-    if (!tempDocId) return;
-    setTempSlotsList((prev) => prev.filter((ts) => ts.id !== tempDocId));
+  const handleDeleteTempSlot = async (tempDocId: string, slotTime?: string) => {
     try {
-      await deleteDoc(doc(db, 'doctor_temp_slots', tempDocId));
+      const activeDb = getSafeDb();
+      if (!activeDb) return;
+      await deleteDoc(doc(activeDb, 'doctor_temp_slots', tempDocId));
+      if (slotTime && selectedTimeSlot === slotTime) {
+        setSelectedTimeSlot('');
+      }
     } catch (e) {
       console.warn('Error deleting temp slot:', e);
     }
@@ -1012,14 +1549,45 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       return;
     }
 
+    if (activeNoShowForSelectedDoc && (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range')) {
+      Alert.alert(
+        'Doctor No Show',
+        `Cannot book appointment. ${selectedDoctor} is marked as NO SHOW at ${selectedBranch} on ${appointmentDate} (${activeNoShowForSelectedDoc.reason}). Please choose another doctor or date.`
+      );
+      return;
+    }
+
+    if (!selectedTimeSlot) {
+      Alert.alert('Required Field', 'Please select an available Time Slot.');
+      return;
+    }
+
+    if (activeNoShowForSelectedDoc) {
+      const { availableSlots } = filterSlotsByNoShow([selectedTimeSlot], activeNoShowForSelectedDoc);
+      if (availableSlots.length === 0) {
+        Alert.alert(
+          'Slot Blocked',
+          `The selected slot ${selectedTimeSlot} is blocked by Doctor No Show (${activeNoShowForSelectedDoc.reason}). Please select another slot.`
+        );
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
-      let generatedRegId = patientData.regID || patientData.patientId;
-      if (!generatedRegId || typeof generatedRegId !== 'string' || generatedRegId.trim().length === 0 || /^[a-zA-Z0-9]{19,32}$/.test(generatedRegId.trim())) {
-        generatedRegId = await generateRegistrationId(currentBranch);
+      const activeDb = getSafeDb();
+      if (!activeDb) {
+        Alert.alert('Database Error', 'Firebase database is initializing. Please try again.');
+        setIsSubmitting(false);
+        return;
       }
 
-      const newDocRef = doc(collection(db, 'appointments'));
+      let generatedRegId = patientData.regID || patientData.patientId;
+      if (!generatedRegId || typeof generatedRegId !== 'string' || generatedRegId.trim().length === 0 || /^[a-zA-Z0-9]{19,32}$/.test(generatedRegId.trim())) {
+        generatedRegId = await generateRegistrationId(selectedBranch);
+      }
+
+      const newDocRef = doc(collection(activeDb, 'appointments'));
       const docId = newDocRef.id;
 
       const appPayload = {
@@ -1036,8 +1604,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         emailAddress,
         marketingSource: (patientData.source === 'Old Patient' || marketingSource === 'Old Patient') ? 'Old Patient' : marketingSource,
         consultationMode,
-        branch: currentBranch,
-        branchName: currentBranch,
+        branch: selectedBranch,
+        branchName: selectedBranch,
+        targetBranch: selectedBranch,
         doctorName: selectedDoctor,
         doctor: selectedDoctor,
         appointmentDate,
@@ -1052,8 +1621,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
 
       await Promise.all([
         setDoc(newDocRef, appPayload),
-        setDoc(doc(db, 'allpatients', docId), appPayload).catch(() => { }),
-        setDoc(doc(db, 'patients', docId), appPayload).catch(() => { })
+        setDoc(doc(activeDb, 'allpatients', docId), appPayload).catch(() => { }),
+        setDoc(doc(activeDb, 'patients', docId), appPayload).catch(() => { })
       ]);
 
       // Trigger Leonas WhatsApp Booking Notification
@@ -1063,14 +1632,20 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         date: appointmentDate,
         time: selectedTimeSlot || '10:00 AM',
         doctorName: selectedDoctor,
-        branch: currentBranch
+        branch: selectedBranch
       }).catch(err => console.error('WhatsApp booking notification error:', err));
 
-      // Set confirmed details and show modal popup
-      setConfirmedBooking(appPayload);
-      setShowBookingConfirmModal(true);
+      // Trigger FCM Push Notification and 10-day Firestore retention cleanup
+      createBookingNotificationInFirestore({
+        patientName,
+        appointmentTime: selectedTimeSlot || '10:00 AM',
+        appointmentDate,
+        branch: selectedBranch,
+        doctorName: selectedDoctor,
+        consultationMode
+      }).catch(err => console.warn('FCM booking notification notice:', err));
 
-      // Complete Form & Search Reset to eliminate post-booking lag
+      // Complete Form & Search Reset
       setPatientName('');
       setDiseases('');
       setPhoneNumber('');
@@ -1083,8 +1658,15 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       setShowSuggestions(false);
       setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
       Keyboard.dismiss();
+
+      // Navigate back cleanly to dashboard (NO in-app popup!)
+      if (onNavigate) {
+        onNavigate('reception_dashboard');
+      } else if (onBack) {
+        onBack();
+      }
     } catch (err) {
-      Alert.alert('Appointment Booked', `Appointment for ${patientName} saved locally.`);
+      console.warn('Booking offline notice:', err);
       setPatientName('');
       setDiseases('');
       setPhoneNumber('');
@@ -1094,6 +1676,11 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       setDebouncedSearchTerm('');
       setShowSuggestions(false);
       Keyboard.dismiss();
+      if (onNavigate) {
+        onNavigate('reception_dashboard');
+      } else if (onBack) {
+        onBack();
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -1318,11 +1905,55 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
           <Text style={styles.cardTitle}>Appointment Information</Text>
           <View style={styles.cardHeaderLine} />
         </View>
-        {/* 1. Select Branch (Fixed to Logged-in Branch) */}
-        <Text style={styles.fieldLabel}>Select Branch *</Text>
-        <View style={styles.inputBoxFixedBranch}>
-          <Ionicons name="location-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
-          <Text style={styles.fixedBranchText}>{currentBranch}</Text>
+        {/* 1. Branch */}
+        <View style={{ marginBottom: 14, zIndex: isHR ? 500 : 1 }}>
+          <Text style={styles.fieldLabel}>Select Branch *</Text>
+          {isHR ? (
+            <View style={{ position: 'relative' }}>
+              <TouchableOpacity
+                style={[styles.dropdownBox, { borderColor: '#258ec8', backgroundColor: '#ffffff' }]}
+                onPress={() => setBranchExpanded(!branchExpanded)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="business" size={18} color="#258ec8" style={{ marginRight: 8 }} />
+                <Text style={[styles.dropdownValueText, { color: selectedBranch ? '#0f172a' : '#94a3b8', fontWeight: selectedBranch ? '800' : '500' }]}>
+                  {selectedBranch || 'Select Branch'}
+                </Text>
+                <Feather name="chevron-down" size={16} color="#94a3b8" style={{ marginLeft: 'auto' }} />
+              </TouchableOpacity>
+
+              {branchExpanded && (
+                <View
+                  style={styles.floatingMenu}
+                  onStartShouldSetResponder={() => true}
+                >
+                  {CLINIC_BRANCHES.map(b => (
+                    <TouchableOpacity
+                      key={b}
+                      style={styles.floatingOption}
+                      onPress={() => {
+                        setSelectedBranch(b);
+                        setSelectedDoctor('');
+                        setSelectedTimeSlot('');
+                        setBranchExpanded(false);
+                      }}
+                    >
+                      <Text style={[styles.floatingOptionText, selectedBranch === b && { color: '#258ec8', fontWeight: '800' }]}>
+                        {b}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+          ) : (
+            <View style={[styles.dropdownBox, { backgroundColor: '#f8fafc', borderColor: '#cbd5e1' }]}>
+              <Ionicons name="business" size={18} color="#258ec8" style={{ marginRight: 8 }} />
+              <Text style={[styles.dropdownValueText, { color: '#0f172a', fontWeight: '800' }]}>
+                {selectedBranch || currentBranch}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* 2. Date Field - Opens Visual Interactive Calendar Modal */}
@@ -1372,21 +2003,47 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
                     </Text>
                   </View>
                 ) : (
-                  availableDoctors.map(docObj => (
-                    <TouchableOpacity
-                      key={docObj.id || docObj.name}
-                      style={styles.floatingOption}
-                      onPress={() => {
-                        setSelectedDoctor(docObj.name);
-                        setDoctorExpanded(false);
-                        setSelectedTimeSlot('');
-                      }}
-                    >
-                      <Text style={[styles.floatingOptionText, selectedDoctor === docObj.name && { color: '#258ec8', fontWeight: '800' }]}>
-                        {docObj.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))
+                  availableDoctors.map(docObj => {
+                    const docNoShow = getActiveDoctorNoShow(noShowsList, docObj.name, currentBranch, appointmentDate);
+                    const isFullDayBlocked = docNoShow && (docNoShow.type === 'date' || docNoShow.type === 'date_range');
+                    return (
+                      <TouchableOpacity
+                        key={docObj.id || docObj.name}
+                        style={styles.floatingOption}
+                        onPress={() => {
+                          setSelectedDoctor(docObj.name);
+                          setDoctorExpanded(false);
+                          setSelectedTimeSlot('');
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                          <Text style={[
+                            styles.floatingOptionText,
+                            selectedDoctor === docObj.name && { color: '#258ec8', fontWeight: '800' },
+                            isFullDayBlocked && { color: '#dc2626' }
+                          ]}>
+                            {docObj.name}
+                          </Text>
+                          {docNoShow && (
+                            <View style={{
+                              backgroundColor: isFullDayBlocked ? '#fee2e2' : '#fef3c7',
+                              paddingHorizontal: 6,
+                              paddingVertical: 2,
+                              borderRadius: 4
+                            }}>
+                              <Text style={{
+                                fontSize: 9.5,
+                                fontWeight: '800',
+                                color: isFullDayBlocked ? '#dc2626' : '#b45309'
+                              }}>
+                                {isFullDayBlocked ? '🚫 NO SHOW' : `⚠️ ${docNoShow.type.toUpperCase()}`}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
                 )}
               </ScrollView>
             </View>
@@ -1438,11 +2095,113 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
             ) : null}
           </View>
 
-          {!selectedDoctor ? (
+          {/* Active Doctor No-Show Alert Card */}
+          {activeNoShowForSelectedDoc && (
+            <View style={{
+              backgroundColor: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#fef2f2' : '#fffbeb',
+              borderColor: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#fecaca' : '#fde68a',
+              borderWidth: 1.5,
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 10,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10
+            }}>
+              <Feather
+                name="user-x"
+                size={20}
+                color={(activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#dc2626' : '#d97706'}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={{
+                  fontSize: 12.5,
+                  fontWeight: '800',
+                  color: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#991b1b' : '#92400e'
+                }}>
+                  {(activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? 'Doctor No Show Active (Full Day Block)' : 'Partial No Show Active'}
+                </Text>
+                <Text style={{
+                  fontSize: 11,
+                  color: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#b91c1c' : '#b45309',
+                  marginTop: 2
+                }}>
+                  {selectedDoctor} is marked as NO SHOW at {currentBranch} on {appointmentDate} ({activeNoShowForSelectedDoc.reason}).
+                  {(activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range')
+                    ? ' All booking slots are closed for this doctor.'
+                    : ` Blocked slots for ${activeNoShowForSelectedDoc.type === 'session' ? `${activeNoShowForSelectedDoc.session?.toUpperCase()} Session` : `${activeNoShowForSelectedDoc.startTime} - ${activeNoShowForSelectedDoc.endTime}`} have been removed.`}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {consultationMode === 'Online' ? (
+            <View style={{
+              backgroundColor: '#f8fafc',
+              borderRadius: 16,
+              padding: 16,
+              borderWidth: 1.5,
+              borderColor: '#bae6fd',
+              alignItems: 'center',
+              marginBottom: 12
+            }}>
+              <Text style={{ fontSize: 12, fontWeight: '800', color: '#0369a1', marginBottom: 10 }}>
+                🌐 ONLINE CONSULTATION APPOINTMENT TIME
+              </Text>
+              
+              <TouchableOpacity
+                onPress={() => setClockModalOpen(true)}
+                style={{
+                  backgroundColor: '#0284c7',
+                  paddingHorizontal: 20,
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  elevation: 3
+                }}
+              >
+                <Ionicons name="time" size={22} color="#ffffff" />
+                <Text style={{ fontSize: 16, fontWeight: '900', color: '#ffffff' }}>
+                  {selectedTimeSlot || '10:00 AM'}
+                </Text>
+                <Feather name="edit-2" size={16} color="#bae6fd" style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
+
+              <Text style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>
+                Tap clock button to open Analog Clock Picker Popup
+              </Text>
+
+              <AnalogClockModal
+                visible={clockModalOpen}
+                onClose={() => setClockModalOpen(false)}
+                selectedTimeSlot={selectedTimeSlot}
+                onSelectTime={(tStr) => {
+                  setSelectedTimeSlot(tStr);
+                }}
+              />
+            </View>
+          ) : !selectedDoctor ? (
             <View style={styles.infoBoxPlaceholder}>
               <Ionicons name="information-circle-outline" size={16} color="#94a3b8" style={{ marginRight: 6 }} />
               <Text style={styles.infoBoxText}>
                 Please select a doctor and branch to check availability.
+              </Text>
+            </View>
+          ) : timeSlotsList.length === 0 ? (
+            <View style={{
+              backgroundColor: '#fef2f2',
+              borderWidth: 1,
+              borderColor: '#fecaca',
+              borderRadius: 12,
+              padding: 14,
+              alignItems: 'center'
+            }}>
+              <Text style={{ fontSize: 12, color: '#ef4444', fontWeight: '700', textAlign: 'center' }}>
+                {activeNoShowForSelectedDoc
+                  ? `No booking slots available — ${selectedDoctor} is marked as NO SHOW on ${appointmentDate} (${activeNoShowForSelectedDoc.reason}).`
+                  : `No active time slots configured for ${selectedDoctor} on ${selectedDayName}.`}
               </Text>
             </View>
           ) : (
@@ -1451,9 +2210,10 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
               selectedTimeSlot={selectedTimeSlot}
               getSlotCapacityInfo={getSlotCapacityInfo}
               tempSlotMap={tempSlotMap}
-              normalizeTimeStr={normalizeTimeStr}
+              normalizeTimeStr={normalizeSlotTime}
               onSelectSlot={setSelectedTimeSlot}
-              onDeleteTempSlot={handleDeleteTempSlot}
+              onDeleteTempSlot={(id) => handleDeleteTempSlot(id)}
+              appointmentDate={appointmentDate}
             />
           )}
         </View>
@@ -1481,305 +2241,198 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       </TouchableOpacity>
 
       {/* VISUAL INTERACTIVE CALENDAR DATE PICKER POPUP MODAL WITH MONTH & YEAR SWITCHING */}
-      <Modal visible={calendarModalOpen} transparent animationType="none">
-        <TouchableOpacity style={styles.calendarModalBackdrop} activeOpacity={1} onPress={() => setCalendarModalOpen(false)}>
-          <View style={styles.calendarModalContent}>
+      {calendarModalOpen && (
+        <Modal visible={calendarModalOpen} transparent animationType="fade">
+          <TouchableOpacity style={styles.calendarModalBackdrop} activeOpacity={1} onPress={() => setCalendarModalOpen(false)}>
+            <View style={styles.calendarModalContent} onStartShouldSetResponder={() => true}>
 
-            {/* Calendar Header with Month/Year Navigation Arrows */}
-            <View style={styles.calendarHeader}>
-              <TouchableOpacity onPress={handlePrevMonth} style={styles.monthNavBtn}>
-                <Feather name="chevron-left" size={20} color="#258ec8" />
-              </TouchableOpacity>
+              {/* Calendar Header with Month/Year Navigation Arrows */}
+              <View style={styles.calendarHeader}>
+                <TouchableOpacity onPress={handlePrevMonth} style={styles.monthNavBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Feather name="chevron-left" size={18} color="#258ec8" />
+                </TouchableOpacity>
 
-              <Text style={styles.calendarHeaderTitle}>
-                {monthNames[calMonth]} {calYear}
-              </Text>
+                <Text style={styles.calendarHeaderTitle}>
+                  {monthNames[calMonth]} {calYear}
+                </Text>
 
-              <TouchableOpacity onPress={handleNextMonth} style={styles.monthNavBtn}>
-                <Feather name="chevron-right" size={20} color="#258ec8" />
-              </TouchableOpacity>
+                <TouchableOpacity onPress={handleNextMonth} style={styles.monthNavBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Feather name="chevron-right" size={18} color="#258ec8" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Weekday Labels (14.28% each for perfect alignment) */}
+              <View style={styles.weekdaysRow}>
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+                  <Text key={day} style={styles.weekdayLabel}>{day}</Text>
+                ))}
+              </View>
+
+              {/* Days Grid with Dynamic Month Days (14.28% each cell) */}
+              <View style={styles.daysGrid}>
+                {/* Empty padding cells for start of month */}
+                {Array.from({ length: startDayIndex }).map((_, idx) => (
+                  <View key={`empty-${idx}`} style={styles.dayCellEmpty} />
+                ))}
+
+                {/* Numbered Days */}
+                {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((dayNum) => {
+                  const formattedMonth = (calMonth + 1) < 10 ? `0${calMonth + 1}` : `${calMonth + 1}`;
+                  const formattedDay = dayNum < 10 ? `0${dayNum}` : `${dayNum}`;
+                  const dayStr = `${formattedDay}-${formattedMonth}-${calYear}`;
+                  const isSelected = appointmentDate === dayStr;
+
+                  return (
+                    <View key={dayNum} style={styles.dayCellWrapper}>
+                      <TouchableOpacity
+                        style={[styles.dayCell, isSelected && styles.dayCellSelected]}
+                        onPress={() => {
+                          setAppointmentDate(dayStr);
+                          setCalendarModalOpen(false);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.dayCellText, isSelected && styles.dayCellTextSelected]}>
+                          {dayNum}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+              </View>
+
+              {/* Bottom Actions: Today Quick Select & Close */}
+              <View style={styles.calendarFooter}>
+                <TouchableOpacity
+                  onPress={() => {
+                    const todayStr = getTodayFormatted();
+                    setAppointmentDate(todayStr);
+                    setCalendarModalOpen(false);
+                  }}
+                  style={styles.calendarTodayBtn}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="today-outline" size={14} color="#0284c7" style={{ marginRight: 4 }} />
+                  <Text style={styles.calendarTodayBtnText}>Today</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setCalendarModalOpen(false)}
+                  style={styles.calendarCloseBtn}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.calendarCloseBtnText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+
             </View>
-
-            {/* Weekday Labels */}
-            <View style={styles.weekdaysRow}>
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-                <Text key={day} style={styles.weekdayLabel}>{day}</Text>
-              ))}
-            </View>
-
-            {/* Days Grid with Dynamic Month Days */}
-            <View style={styles.daysGrid}>
-              {/* Empty padding cells for start of month */}
-              {Array.from({ length: startDayIndex }).map((_, idx) => (
-                <View key={`empty-${idx}`} style={styles.dayCellEmpty} />
-              ))}
-
-              {/* Numbered Days */}
-              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((dayNum) => {
-                const formattedMonth = (calMonth + 1) < 10 ? `0${calMonth + 1}` : `${calMonth + 1}`;
-                const formattedDay = dayNum < 10 ? `0${dayNum}` : `${dayNum}`;
-                const dayStr = `${formattedDay}-${formattedMonth}-${calYear}`;
-                const isSelected = appointmentDate === dayStr;
-
-                return (
-                  <TouchableOpacity
-                    key={dayNum}
-                    style={[styles.dayCell, isSelected && styles.dayCellSelected]}
-                    onPress={() => {
-                      setAppointmentDate(dayStr);
-                      setCalendarModalOpen(false);
-                    }}
-                  >
-                    <Text style={[styles.dayCellText, isSelected && styles.dayCellTextSelected]}>
-                      {dayNum}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-          </View>
-        </TouchableOpacity>
-      </Modal>
+          </TouchableOpacity>
+        </Modal>
+      )}
 
       {/* START EXISTING PROFILES MODAL */}
-      <Modal
-        visible={existingProfilesModalVisible}
-        transparent={true}
-        animationType="none"
-        onRequestClose={() => setExistingProfilesModalVisible(false)}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setExistingProfilesModalVisible(false)}
-        >
-          <TouchableOpacity activeOpacity={1} style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <View>
-                <Text style={{ fontSize: 16, fontWeight: '700', color: '#0f172a' }}>
-                  Existing Profiles Found ({existingProfilesList.length})
-                </Text>
-                <Text style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                  Phone: +91 {checkedPhone}
-                </Text>
-              </View>
-              <TouchableOpacity onPress={() => setExistingProfilesModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#64748b" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={{ maxHeight: 300, marginBottom: 16 }} nestedScrollEnabled>
-              {existingProfilesList.map((prof, index) => (
-                <TouchableOpacity
-                  key={prof.id || index}
-                  style={{
-                    backgroundColor: '#f8fafc',
-                    borderWidth: 1,
-                    borderColor: '#e2e8f0',
-                    borderRadius: 10,
-                    padding: 12,
-                    marginBottom: 8,
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}
-                  onPress={() => handleSelectExistingProfile(prof)}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a' }}>
-                      {prof.fullName}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: '#0284c7', marginTop: 2 }}>
-                      Reg ID: {prof.registrationId}
-                    </Text>
-                    {!!prof.gender || !!prof.age ? (
-                      <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                        {[prof.gender, prof.age ? `${prof.age} YRS` : ''].filter(Boolean).join(' • ')}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#0284c7' }}>Select</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
-              <TouchableOpacity
-                style={{
-                  backgroundColor: '#f1f5f9',
-                  paddingVertical: 10,
-                  paddingHorizontal: 16,
-                  borderRadius: 8
-                }}
-                onPress={() => {
-                  setBypassPhoneCheck(true);
-                  setExistingProfilesModalVisible(false);
-                }}
-              >
-                <Text style={{ color: '#475569', fontWeight: '700', fontSize: 13 }}>Create New Patient</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-      {/* END EXISTING PROFILES MODAL */}
-
-      {/* APPOINTMENT BOOKING CONFIRMATION POPUP MODAL */}
-      <Modal
-        visible={showBookingConfirmModal && !!confirmedBooking}
-        transparent={true}
-        animationType="none"
-        onRequestClose={() => setShowBookingConfirmModal(false)}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setShowBookingConfirmModal(false)}
+      {existingProfilesModalVisible && (
+        <Modal
+          visible={existingProfilesModalVisible}
+          transparent={true}
+          animationType="none"
+          onRequestClose={() => setExistingProfilesModalVisible(false)}
         >
           <TouchableOpacity
+            style={styles.modalOverlay}
             activeOpacity={1}
-            style={[styles.modalCard, { maxWidth: 400, alignItems: 'center', paddingVertical: 24 }]}
-            onPress={(e) => e.stopPropagation()}
+            onPress={() => setExistingProfilesModalVisible(false)}
           >
-            {/* Success Icon */}
-            <View style={{
-              width: 60,
-              height: 60,
-              borderRadius: 30,
-              backgroundColor: '#dcfce7',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginBottom: 14,
-              borderWidth: 4,
-              borderColor: '#f0fdf4'
-            }}>
-              <MaterialCommunityIcons name="check-circle" size={38} color="#16a34a" />
-            </View>
-
-            <Text style={{ fontSize: 19, fontWeight: '800', color: '#0f172a', marginBottom: 4, textAlign: 'center' }}>
-              Appointment Confirmed!
-            </Text>
-            <Text style={{ fontSize: 12.5, color: '#64748b', marginBottom: 18, textAlign: 'center' }}>
-              Saved to clinic schedule successfully.
-            </Text>
-
-            {/* Registration ID Badge */}
-            <View style={{
-              width: '100%',
-              backgroundColor: '#e0f2fe',
-              borderColor: '#7dd3fc',
-              borderWidth: 1,
-              borderRadius: 12,
-              paddingVertical: 10,
-              paddingHorizontal: 14,
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 16
-            }}>
-              <Text style={{ fontSize: 11, fontWeight: '800', color: '#0369a1', textTransform: 'uppercase' }}>
-                Reg ID
-              </Text>
-              <Text style={{ fontSize: 14, fontWeight: '800', color: '#0284c7' }}>
-                {confirmedBooking?.registrationId}
-              </Text>
-            </View>
-
-            {/* Summary List */}
-            <View style={{
-              width: '100%',
-              backgroundColor: '#f8fafc',
-              borderWidth: 1,
-              borderColor: '#e2e8f0',
-              borderRadius: 14,
-              padding: 14,
-              gap: 10,
-              marginBottom: 20
-            }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Patient</Text>
-                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{confirmedBooking?.patientName}</Text>
-              </View>
-              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Phone</Text>
-                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>+91 {confirmedBooking?.phone}</Text>
-              </View>
-              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Doctor</Text>
-                <Text style={{ fontSize: 13, color: '#0284c7', fontWeight: '800' }}>{confirmedBooking?.doctorName}</Text>
-              </View>
-              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Branch</Text>
-                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{confirmedBooking?.branch}</Text>
-              </View>
-              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Date & Time</Text>
-                <Text style={{ fontSize: 13, color: '#16a34a', fontWeight: '800' }}>
-                  {confirmedBooking?.appointmentDate} @ {confirmedBooking?.appointmentTime}
-                </Text>
-              </View>
-              <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '600' }}>Mode</Text>
-                <View style={{
-                  backgroundColor: confirmedBooking?.consultationMode === 'Online' ? '#f3e8ff' : '#e0f2fe',
-                  paddingHorizontal: 8,
-                  paddingVertical: 2,
-                  borderRadius: 6
-                }}>
-                  <Text style={{
-                    fontSize: 11,
-                    fontWeight: '800',
-                    color: confirmedBooking?.consultationMode === 'Online' ? '#7c3aed' : '#0284c7'
-                  }}>
-                    {confirmedBooking?.consultationMode || 'In-Clinic'}
+            <TouchableOpacity activeOpacity={1} style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <View>
+                  <Text style={{ fontSize: 16, fontWeight: '700', color: '#0f172a' }}>
+                    Existing Profiles Found ({existingProfilesList.length})
+                  </Text>
+                  <Text style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                    Phone: +91 {checkedPhone}
                   </Text>
                 </View>
+                <TouchableOpacity onPress={() => setExistingProfilesModalVisible(false)}>
+                  <Ionicons name="close" size={24} color="#64748b" />
+                </TouchableOpacity>
               </View>
-            </View>
 
-            {/* Buttons */}
-            <View style={{ flexDirection: 'row', gap: 10, width: '100%' }}>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  backgroundColor: '#f1f5f9',
-                  borderRadius: 12,
-                  paddingVertical: 12,
-                  alignItems: 'center'
-                }}
-                onPress={() => {
-                  setShowBookingConfirmModal(false);
-                  if (onNavigate) onNavigate('reception_dashboard');
-                  else if (onBack) onBack();
-                }}
-              >
-                <Text style={{ color: '#475569', fontWeight: '700', fontSize: 13 }}>Dashboard</Text>
-              </TouchableOpacity>
+              <ScrollView style={{ maxHeight: 300, marginBottom: 16 }} nestedScrollEnabled>
+                {existingProfilesList.map((prof, index) => (
+                  <TouchableOpacity
+                    key={`${prof.id || 'prof'}_${prof.registrationId || ''}_${index}`}
+                    style={{
+                      backgroundColor: '#f8fafc',
+                      borderWidth: 1,
+                      borderColor: '#e2e8f0',
+                      borderRadius: 10,
+                      padding: 12,
+                      marginBottom: 8,
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}
+                    onPress={() => handleSelectExistingProfile(prof)}
+                  >
+                    <View style={{ flex: 1 }}>
+                      {(() => {
+                        const vState = getPatientVisitState(
+                          { ...prof, patientName: prof.fullName, phone: prof.phone || checkedPhone, patientDocId: prof.id, regId: prof.registrationId },
+                          receptionDataStore.getAllCollectionsPool(),
+                          receptionDataStore.getPackageMembers()
+                        );
+                        return (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a' }}>
+                              {prof.fullName}
+                            </Text>
+                            <View style={{ backgroundColor: vState.badgeBg, borderWidth: 1, borderColor: vState.badgeBorder, paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: 4 }}>
+                              <Text style={{ fontSize: 9.5, fontWeight: '900', color: vState.badgeColor }}>
+                                {vState.badgeText}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })()}
+                      <Text style={{ fontSize: 12, color: '#0284c7', marginTop: 2 }}>
+                        Reg ID: {prof.registrationId}
+                      </Text>
+                      {!!prof.gender || !!prof.age ? (
+                        <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                          {[prof.gender, prof.age ? `${prof.age} YRS` : ''].filter(Boolean).join(' • ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#0284c7' }}>Select</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
 
-              <TouchableOpacity
-                style={{
-                  flex: 1.5,
-                  backgroundColor: '#0284c7',
-                  borderRadius: 12,
-                  paddingVertical: 12,
-                  alignItems: 'center'
-                }}
-                onPress={() => setShowBookingConfirmModal(false)}
-              >
-                <Text style={{ color: '#ffffff', fontWeight: '800', fontSize: 13 }}>Done / Book Another</Text>
-              </TouchableOpacity>
-            </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: '#f1f5f9',
+                    paddingVertical: 10,
+                    paddingHorizontal: 16,
+                    borderRadius: 8
+                  }}
+                  onPress={() => {
+                    setBypassPhoneCheck(true);
+                    setExistingProfilesModalVisible(false);
+                  }}
+                >
+                  <Text style={{ color: '#475569', fontWeight: '700', fontSize: 13 }}>Create New Patient</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
           </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+        </Modal>
+      )}
+      {/* END EXISTING PROFILES MODAL */}
+
       {/* END EXISTING PROFILES MODAL */}
 
     </ScrollView>
@@ -2045,12 +2698,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.55)',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
   },
   calendarModalContent: {
     backgroundColor: '#ffffff',
-    borderRadius: 24,
-    padding: 22,
+    borderRadius: 20,
+    padding: 16,
     width: '100%',
     maxWidth: 340,
     shadowColor: '#0f172a',
@@ -2063,8 +2716,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
-    paddingBottom: 12,
+    marginBottom: 12,
+    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
   },
@@ -2074,36 +2727,41 @@ const styles = StyleSheet.create({
     backgroundColor: '#f1f5f9',
   },
   calendarHeaderTitle: {
-    fontSize: 15.5,
+    fontSize: 15,
     fontWeight: '800',
     color: '#0f172a',
   },
   weekdaysRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 10,
+    width: '100%',
+    marginBottom: 6,
   },
   weekdayLabel: {
     fontSize: 11,
     fontWeight: '700',
     color: '#64748b',
-    width: 36,
+    width: '14.285%',
     textAlign: 'center',
   },
   daysGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
-    justifyContent: 'flex-start',
+    width: '100%',
   },
   dayCellEmpty: {
-    width: 38,
+    width: '14.285%',
     height: 38,
   },
-  dayCell: {
-    width: 38,
+  dayCellWrapper: {
+    width: '14.285%',
     height: 38,
-    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayCell: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#f8fafc',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2112,13 +2770,48 @@ const styles = StyleSheet.create({
     backgroundColor: '#258ec8',
   },
   dayCellText: {
-    fontSize: 12.5,
+    fontSize: 12,
     fontWeight: '600',
     color: '#0f172a',
   },
   dayCellTextSelected: {
     color: '#ffffff',
     fontWeight: '800',
+  },
+  calendarFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  calendarTodayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  calendarTodayBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1d4ed8',
+  },
+  calendarCloseBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+  },
+  calendarCloseBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
   },
   modalOverlay: {
     flex: 1,
@@ -2145,6 +2838,7 @@ interface SlotButtonProps {
   slot: string;
   isSelected: boolean;
   isFull: boolean;
+  isPastSlot?: boolean;
   isTemp: boolean;
   remainingSlots: number;
   normKey: string;
@@ -2157,6 +2851,7 @@ const SlotButton = React.memo<SlotButtonProps>(({
   slot,
   isSelected,
   isFull,
+  isPastSlot,
   isTemp,
   remainingSlots,
   normKey,
@@ -2164,10 +2859,12 @@ const SlotButton = React.memo<SlotButtonProps>(({
   onSelectSlot,
   onDeleteTempSlot,
 }) => {
+  const isDisabled = isFull || !!isPastSlot;
+
   return (
     <View style={{ width: '23.2%', paddingTop: 6, paddingRight: 6, position: 'relative', marginBottom: 6 }}>
       <TouchableOpacity
-        disabled={isFull}
+        disabled={isDisabled}
         style={[
           styles.slotChipColumn,
           isTemp && {
@@ -2177,20 +2874,20 @@ const SlotButton = React.memo<SlotButtonProps>(({
           },
           isSelected && !isTemp && styles.slotChipSelected,
           isSelected && isTemp && { backgroundColor: '#dc2626', borderColor: '#991b1b', borderWidth: 2 },
-          isFull && { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1', opacity: 0.65 }
+          isDisabled && { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1', opacity: 0.6 }
         ]}
         onPress={() => {
-          if (!isFull) {
+          if (!isDisabled) {
             onSelectSlot(slot);
           }
         }}
-        activeOpacity={isFull ? 1 : 0.8}
+        activeOpacity={isDisabled ? 1 : 0.8}
       >
         <Text style={[
           styles.slotChipText,
           isTemp && !isSelected && { color: '#dc2626', fontWeight: '800' },
           isSelected && styles.slotChipTextSelected,
-          isFull && { color: '#94a3b8', textDecorationLine: 'line-through' }
+          isDisabled && { color: '#94a3b8', textDecorationLine: 'line-through' }
         ]}>
           {slot}
         </Text>
@@ -2204,11 +2901,13 @@ const SlotButton = React.memo<SlotButtonProps>(({
               ? 'rgba(255, 255, 255, 0.25)'
               : isTemp
                 ? '#fee2e2'
-                : isFull
+                : isPastSlot
                   ? '#fee2e2'
-                  : remainingSlots === 1
-                    ? '#fef3c7'
-                    : '#e0f2fe'
+                  : isFull
+                    ? '#fee2e2'
+                    : remainingSlots === 1
+                      ? '#fef3c7'
+                      : '#e0f2fe'
           }}
         >
           <Text
@@ -2219,14 +2918,16 @@ const SlotButton = React.memo<SlotButtonProps>(({
                 ? '#ffffff'
                 : isTemp
                   ? '#dc2626'
-                  : isFull
-                    ? '#ef4444'
-                    : remainingSlots === 1
-                      ? '#b45309'
-                      : '#0369a1'
+                  : isPastSlot
+                    ? '#dc2626'
+                    : isFull
+                      ? '#ef4444'
+                      : remainingSlots === 1
+                        ? '#b45309'
+                        : '#0369a1'
             }}
           >
-            {isFull ? 'FULL' : `${remainingSlots} left`}
+            {isPastSlot ? 'CLOSED' : (isFull ? 'FULL' : `${remainingSlots} left`)}
           </Text>
         </View>
       </TouchableOpacity>
@@ -2271,6 +2972,7 @@ interface SlotsGridProps {
   normalizeTimeStr: (str: string) => string;
   onSelectSlot: (slot: string) => void;
   onDeleteTempSlot: (tempDocId: string) => void;
+  appointmentDate?: string;
 }
 
 const SlotsGrid = React.memo<SlotsGridProps>(({
@@ -2281,7 +2983,13 @@ const SlotsGrid = React.memo<SlotsGridProps>(({
   normalizeTimeStr,
   onSelectSlot,
   onDeleteTempSlot,
+  appointmentDate,
 }) => {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const isToday = appointmentDate ? (appointmentDate === todayStr || normalizeToISODate(appointmentDate) === todayStr) : false;
+  const now = new Date();
+  const currentMins = now.getHours() * 60 + now.getMinutes();
+
   return (
     <View style={[styles.slotsGrid, { overflow: 'visible', paddingTop: 8, paddingRight: 6 }]}>
       {timeSlotsList.map((slot) => {
@@ -2291,12 +2999,26 @@ const SlotsGrid = React.memo<SlotsGridProps>(({
         const tempDocId = tempSlotMap[normKey] || tempSlotMap[slot.trim()];
         const isTemp = !!tempDocId;
 
+        let isPastSlot = false;
+        if (isToday) {
+          const parts = slot.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            const [hStr, mStr] = parts[0].split(':');
+            const ampm = parts[1].toUpperCase() as 'AM' | 'PM';
+            const slotMins = parseTimeToMinutes(hStr, mStr, ampm);
+            if (slotMins < currentMins) {
+              isPastSlot = true;
+            }
+          }
+        }
+
         return (
           <SlotButton
             key={slot}
             slot={slot}
             isSelected={isSelected}
             isFull={isFull}
+            isPastSlot={isPastSlot}
             isTemp={isTemp}
             remainingSlots={remainingSlots}
             normKey={normKey}

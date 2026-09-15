@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, TextInput, BackHandler } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { getSafeDb, collection, onSnapshot, doc, setDoc, deleteDoc } from '../../../utils/firebaseSafe';
 
 interface TimeSlot {
   startHour: string;
@@ -92,7 +91,7 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
   },
   {
     id: 'doc-2',
-    name: 'Dr. CH. Rama Krishna',
+    name: 'Dr. Ramakrishna Chanduri',
     phone: '9804176176',
     role: 'Homeopathy Physician',
     branchSchedules: [
@@ -201,6 +200,7 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
 ];
 
 export const DoctorTimingsScreen: React.FC = () => {
+  const db = getSafeDb();
   const [doctorsList, setDoctorsList] = useState<Doctor[]>(DEFAULT_DOCTORS_SEED);
   const [selectedDoctorId, setSelectedDoctorId] = useState<string | null>(null);
 

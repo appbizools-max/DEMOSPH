@@ -7,6 +7,7 @@ export const StaffWorkingHoursScreen: React.FC = () => {
     { name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', hours: '8.0 Hours/Day', shift: '10:00 AM - 08:00 PM' },
     { name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', hours: '8.5 Hours/Day', shift: '10:00 AM - 08:30 PM' },
     { name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', hours: '8.5 Hours/Day', shift: '10:00 AM - 08:30 PM' },
+    { name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 Hours/Day', shift: '10:00 AM - 08:30 PM' },
   ];
 
   return (

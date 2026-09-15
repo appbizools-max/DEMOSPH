@@ -3,15 +3,40 @@ import { Target } from 'lucide-react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '@app/shared';
 
+import { receptionDataStore } from '../../../utils/receptionDataStore';
+import { calculateRealBranchRevenue, syncBranchTargetToFirestore } from '../../../utils/branchRevenueCalculator';
+
 const DEFAULT_BRANCH_TARGETS = [
-  { id: 'kphb', name: 'KPHB Branch Target', monthlyTarget: 1200000, targetReached: 980000 },
-  { id: 'nallagandla', name: 'Nallagandla Branch Target', monthlyTarget: 1000000, targetReached: 840000 },
-  { id: 'dilshuknagar', name: 'Dilshuknagar Branch Target', monthlyTarget: 1400000, targetReached: 1150000 },
-  { id: 'chandanagar', name: 'Chandanagar Branch Target', monthlyTarget: 900000, targetReached: 720000 },
+  { id: 'kphb', name: 'KPHB Branch Target', monthlyTarget: 1200000, targetReached: 0 },
+  { id: 'nallagandla', name: 'Nallagandla Branch Target', monthlyTarget: 1000000, targetReached: 0 },
+  { id: 'dilshuknagar', name: 'Dilshuknagar Branch Target', monthlyTarget: 1400000, targetReached: 0 },
+  { id: 'chandanagar', name: 'Chandanagar Branch Target', monthlyTarget: 900000, targetReached: 0 },
 ];
 
 export const BranchTargetsPage: React.FC = () => {
   const [branchTargets, setBranchTargets] = useState(DEFAULT_BRANCH_TARGETS);
+
+  // Subscribe to real-time collections via receptionDataStore to calculate live revenue
+  useEffect(() => {
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      const appts = state.appointments;
+      const pkgs = state.packageMembersList;
+
+      setBranchTargets((prev) =>
+        prev.map((b) => {
+          const res = calculateRealBranchRevenue(b.name, appts, pkgs, b.monthlyTarget);
+          syncBranchTargetToFirestore(db, b.name, res.targetReached, res.monthlyTarget).catch(() => {});
+          return {
+            ...b,
+            monthlyTarget: res.monthlyTarget,
+            targetReached: res.targetReached,
+          };
+        })
+      );
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     try {
@@ -30,7 +55,7 @@ export const BranchTargetsPage: React.FC = () => {
                 return {
                   ...b,
                   monthlyTarget: Number(live.monthlyTarget) || b.monthlyTarget,
-                  targetReached: Number(live.targetReached) || b.targetReached,
+                  targetReached: Number(live.targetReached) ?? b.targetReached,
                 };
               }
               return b;

@@ -170,3 +170,15 @@ input, select, textarea, button { font-size: 11.5px !important; }
 .custom-dropdown-scroll::-webkit-scrollbar-thumb:hover {
   background: #2563eb;
 }
+
+/* Remove number input spinners / increase & decrease buttons */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none !important;
+  margin: 0 !important;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield !important;
+  appearance: textfield !important;
+}

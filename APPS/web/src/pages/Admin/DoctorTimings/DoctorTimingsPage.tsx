@@ -91,7 +91,7 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
   },
   {
     id: 'doc-2',
-    name: 'Dr. CH. Rama Krishna',
+    name: 'Dr. Ramakrishna Chanduri',
     phone: '9804176176',
     role: 'Homeopathy Physician',
     branchSchedules: [

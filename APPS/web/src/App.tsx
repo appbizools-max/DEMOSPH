@@ -1,37 +1,53 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { Navbar } from './components/Navbar';
 import { HomePage } from './pages/Home/HomePage';
 import { RemediesPage } from './pages/Remedies/RemediesPage';
 import { ConsultationPage } from './pages/Consultation/ConsultationPage';
 import { ProfilePage } from './pages/Profile/ProfilePage';
 import { AuthPage, WebLoginSuccessData } from './pages/Auth/AuthPage';
-
-// Role Portals
-import { AdminDashboardPage } from './pages/Admin/AdminDashboardPage';
-import { DoctorLayout } from './pages/Doctor/DoctorLayout';
-
-// Reception Layout & Sub-Pages
-import { ReceptionLayout } from './pages/Reception/ReceptionLayout';
-import { ReceptionDashboardPage } from './pages/Reception/Dashboard/ReceptionDashboardPage';
-import { BookAppointmentPage } from './pages/Reception/BookAppointment/BookAppointmentPage';
-import { AllPatientsPage } from './pages/Reception/AllPatients/AllPatientsPage';
-import { FollowUpsPage } from './pages/Reception/FollowUps/FollowUpsPage';
-import { MedicineRequestsPage } from './pages/Reception/MedicineRequests/MedicineRequestsPage';
-import { ProductBillingPage } from './pages/Reception/ProductBilling/ProductBillingPage';
-import { DoctorNoShowPage } from './pages/Reception/DoctorNoShow/DoctorNoShowPage';
-import { MediaManagerPage } from './pages/Reception/MediaManager/MediaManagerPage';
-import { CleaningPhotosPage } from './pages/Reception/CleaningPhotos/CleaningPhotosPage';
-
-import { StaffDashboardPage } from './pages/Staff/StaffDashboardPage';
-import { HRDashboardPage } from './pages/HR/HRDashboardPage';
-import { PatientFilePage } from './pages/PatientFile/PatientFilePage';
 import { signOutUser } from '@app/shared';
+
+// Lazy Loaded Role Portals (Loaded on-demand to optimize initial loading)
+const AdminDashboardPage = lazy(() => import('./pages/Admin/AdminDashboardPage').then(m => ({ default: m.AdminDashboardPage })));
+const HRDashboardPage = lazy(() => import('./pages/HR/HRDashboardPage').then(m => ({ default: m.HRDashboardPage })));
+const DoctorLayout = lazy(() => import('./pages/Doctor/DoctorLayout').then(m => ({ default: m.DoctorLayout })));
+const StaffDashboardPage = lazy(() => import('./pages/Staff/StaffDashboardPage').then(m => ({ default: m.StaffDashboardPage })));
+const PatientFilePage = lazy(() => import('./pages/PatientFile/PatientFilePage').then(m => ({ default: m.PatientFilePage })));
+
+// Lazy Loaded Reception Sub-Pages
+const ReceptionLayout = lazy(() => import('./pages/Reception/ReceptionLayout').then(m => ({ default: m.ReceptionLayout })));
+const ReceptionDashboardPage = lazy(() => import('./pages/Reception/Dashboard/ReceptionDashboardPage').then(m => ({ default: m.ReceptionDashboardPage })));
+const BookAppointmentPage = lazy(() => import('./pages/Reception/BookAppointment/BookAppointmentPage').then(m => ({ default: m.BookAppointmentPage })));
+const AllPatientsPage = lazy(() => import('./pages/Reception/AllPatients/AllPatientsPage').then(m => ({ default: m.AllPatientsPage })));
+const FollowUpsPage = lazy(() => import('./pages/Reception/FollowUps/FollowUpsPage').then(m => ({ default: m.FollowUpsPage })));
+const MedicineRequestsPage = lazy(() => import('./pages/Reception/MedicineRequests/MedicineRequestsPage').then(m => ({ default: m.MedicineRequestsPage })));
+const ProductBillingPage = lazy(() => import('./pages/Reception/ProductBilling/ProductBillingPage').then(m => ({ default: m.ProductBillingPage })));
+const DoctorNoShowPage = lazy(() => import('./pages/Reception/DoctorNoShow/DoctorNoShowPage').then(m => ({ default: m.DoctorNoShowPage })));
+const MediaManagerPage = lazy(() => import('./pages/Reception/MediaManager/MediaManagerPage').then(m => ({ default: m.MediaManagerPage })));
+const CleaningPhotosPage = lazy(() => import('./pages/Reception/CleaningPhotos/CleaningPhotosPage').then(m => ({ default: m.CleaningPhotosPage })));
+
+const PortalLoadingFallback = () => (
+  <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px' }}>
+    <div style={{
+      width: '36px',
+      height: '36px',
+      border: '3px solid #e2e8f0',
+      borderTop: '3px solid #258ec8',
+      borderRadius: '50%',
+      animation: 'sphSpin 0.8s linear infinite'
+    }} />
+    <span style={{ fontSize: '13px', fontWeight: 600, color: '#64748b' }}>Loading portal...</span>
+    <style>{`
+      @keyframes sphSpin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    `}</style>
+  </div>
+);
 
 const AUTH_STORAGE_KEY = 'sph_auth_session';
 
 export default function App() {
   // Read persistent auth session on initial load
-  const [authSession, setAuthSession] = useState<{ role: string; userName?: string; branchName: string; branchPhone: string } | null>(() => {
+  const [authSession, setAuthSession] = useState<{ role: string; userName?: string; branchName: string; branchPhone: string; staffId?: string } | null>(() => {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) return JSON.parse(saved);
@@ -57,6 +73,7 @@ export default function App() {
   const [userName, setUserName] = useState(authSession?.userName || '');
   const [branchName, setBranchName] = useState(authSession?.branchName || 'KPHB Branch');
   const [branchPhone, setBranchPhone] = useState(authSession?.branchPhone || '+91 90301 76176');
+  const [staffId, setStaffId] = useState(authSession?.staffId || '1');
 
   const handleLoginSuccess = (data: WebLoginSuccessData) => {
     const sessionData = {
@@ -64,6 +81,7 @@ export default function App() {
       userName: data.userName || '',
       branchName: data.branchName,
       branchPhone: data.branchPhone,
+      staffId: data.staffId || '1',
     };
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(sessionData));
@@ -73,6 +91,7 @@ export default function App() {
     setUserName(data.userName || '');
     setBranchName(data.branchName);
     setBranchPhone(data.branchPhone);
+    setStaffId(data.staffId || '1');
 
     if (data.role === 'admin') {
       setActiveTab('admin');
@@ -118,40 +137,72 @@ export default function App() {
   const isReceptionRoute = activeTab.startsWith('reception');
 
   const [selectedPatientForFile, setSelectedPatientForFile] = useState<any>(null);
+  const [fileReturnTab, setFileReturnTab] = useState<string>('reception_dashboard');
+  const [checkoutPatientForReception, setCheckoutPatientForReception] = useState<any>(null);
 
   const handleNavigateWithData = (tab: string, data?: any) => {
     if (data) {
       setSelectedPatientForFile(data);
     }
+    if (tab === 'reception_patient_file') {
+      setFileReturnTab(activeTab);
+    }
     setActiveTab(tab);
   };
 
   const renderReceptionSubPage = () => {
-    switch (activeTab) {
-      case 'reception':
-      case 'reception_dashboard':
-        return <ReceptionDashboardPage currentBranch={branchName} onNavigate={handleNavigateWithData} />;
-      case 'reception_patient_file':
-        return <PatientFilePage initialPatient={selectedPatientForFile} onBack={() => setActiveTab('reception_dashboard')} />;
-      case 'reception_book':
-        return <BookAppointmentPage currentBranch={branchName} onNavigate={setActiveTab} />;
-      case 'reception_patients':
-        return <AllPatientsPage />;
-      case 'reception_followups':
-        return <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} />;
-      case 'reception_medicines':
-        return <MedicineRequestsPage />;
-      case 'reception_billing':
-        return <ProductBillingPage />;
-      case 'reception_noshow':
-        return <DoctorNoShowPage />;
-      case 'reception_media':
-        return <MediaManagerPage />;
-      case 'reception_cleaning':
-        return <CleaningPhotosPage />;
-      default:
-        return <ReceptionDashboardPage currentBranch={branchName} onNavigate={setActiveTab} />;
-    }
+    const isDashboard = activeTab === 'reception' || activeTab === 'reception_dashboard';
+
+    return (
+      <>
+        <div style={{ display: isDashboard ? 'block' : 'none' }}>
+          <ReceptionDashboardPage
+            currentBranch={branchName}
+            onNavigate={handleNavigateWithData}
+            initialPatientForCheckout={checkoutPatientForReception}
+            onClearInitialCheckout={() => setCheckoutPatientForReception(null)}
+          />
+        </div>
+        {!isDashboard && (
+          <>
+            {activeTab === 'reception_patient_file' && (
+              <PatientFilePage
+                initialPatient={selectedPatientForFile}
+                onBack={() => setActiveTab(fileReturnTab || 'reception_dashboard')}
+                onSubmitConsultation={(savedPatient) => {
+                  setCheckoutPatientForReception({ ...selectedPatientForFile, ...savedPatient });
+                  setActiveTab('reception_dashboard');
+                }}
+              />
+            )}
+            {activeTab === 'reception_book' && (
+              <BookAppointmentPage currentBranch={branchName} userRole={userRole} onNavigate={setActiveTab} />
+            )}
+            {activeTab === 'reception_patients' && (
+              <AllPatientsPage currentBranch={branchName} onNavigate={handleNavigateWithData} />
+            )}
+            {activeTab === 'reception_followups' && (
+              <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} />
+            )}
+            {activeTab === 'reception_medicines' && (
+              <MedicineRequestsPage currentBranch={branchName} onNavigate={setActiveTab} />
+            )}
+            {activeTab === 'reception_billing' && (
+              <ProductBillingPage />
+            )}
+            {activeTab === 'reception_noshow' && (
+              <DoctorNoShowPage currentBranch={branchName} />
+            )}
+            {activeTab === 'reception_media' && (
+              <MediaManagerPage />
+            )}
+            {activeTab === 'reception_cleaning' && (
+              <CleaningPhotosPage />
+            )}
+          </>
+        )}
+      </>
+    );
   };
 
   const userRole = authSession?.role;
@@ -171,11 +222,11 @@ export default function App() {
 
   const renderCurrentPage = () => {
     if (userRole === 'admin') {
-      return <AdminDashboardPage />;
+      return <AdminDashboardPage role={userRole} />;
     }
 
     if (userRole === 'hr') {
-      return <HRDashboardPage />;
+      return <HRDashboardPage currentBranch={branchName} />;
     }
 
     if (userRole === 'doctor') {
@@ -190,7 +241,13 @@ export default function App() {
     }
 
     if (userRole === 'staff') {
-      return <StaffDashboardPage />;
+      return (
+        <StaffDashboardPage
+          currentStaffId={staffId || ''}
+          currentStaffName={userName || 'Staff Member'}
+          currentBranch={branchName ? branchName.replace(' Branch', '') : ''}
+        />
+      );
     }
 
     if (isReceptionRoute) {
@@ -237,7 +294,9 @@ export default function App() {
         />
       )}
       <main style={{ flex: 1 }}>
-        {renderCurrentPage()}
+        <Suspense fallback={<PortalLoadingFallback />}>
+          {renderCurrentPage()}
+        </Suspense>
       </main>
 
       {/* Hide footer on Login page */}

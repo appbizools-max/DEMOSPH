@@ -1,5 +1,4 @@
-import { db } from '@app/shared';
-import { doc, runTransaction, collection, getDocs } from 'firebase/firestore';
+import { getSafeDb, doc, runTransaction, collection, getDocs } from './firebaseSafe';
 
 // 1. Get 3-Letter Branch Code
 export const getBranchShortcut = (branchNameOrId?: string): string => {
@@ -32,6 +31,7 @@ export const getMaxExistingCounter = async (shortcut: string): Promise<number> =
     }
   };
   try {
+    const db = getSafeDb();
     await Promise.all(collectionsToScan.map(async (colName) => {
       try {
         const colRef = collection(db, colName);
@@ -48,6 +48,7 @@ export const getMaxExistingCounter = async (shortcut: string): Promise<number> =
 
 // 2. Generate Registration ID (Fast Atomic Firestore Transaction)
 export const generateRegistrationId = async (branchNameOrId?: string): Promise<string> => {
+  const db = getSafeDb();
   const shortcut = getBranchShortcut(branchNameOrId);
   const counterRef = doc(db, 'counters', `registration_${shortcut}`);
   try {

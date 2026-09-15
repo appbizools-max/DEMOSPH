@@ -8,7 +8,7 @@ interface TargetProgressUIProps {
   branchName?: string;
 }
 
-export const TargetProgressUI: React.FC<TargetProgressUIProps> = ({
+export const TargetProgressUI: React.FC<TargetProgressUIProps> = React.memo(({
   monthlyTarget = 100000,
   targetReached = 75000,
   branchName,
@@ -86,7 +86,7 @@ export const TargetProgressUI: React.FC<TargetProgressUIProps> = ({
       </View>
     </View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   cardContainer: {

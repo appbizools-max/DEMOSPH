@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Modal, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Modal, ScrollView, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { UserRole } from '@app/shared';
 
@@ -24,9 +24,14 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
 }) => {
 
   const getMenuItems = () => {
-    if (userRole === 'admin') {
+        if (userRole === 'hr') {
       return [
-        { id: 'admin', label: 'Admin Dashboard' },
+        { id: 'admin', label: 'HR Dashboard' },
+        { id: 'branch_cleaning', label: 'Branch Cleaning & Sanitation' },
+        { id: 'employee_works', label: 'Employee Daily Works' },
+        { id: 'employee_attendance', label: 'Attendance Report' },
+        { id: 'hr_fee_requests', label: 'Fee Requests' },
+        { id: 'hr_leave_requests', label: 'Leave Requests' },
         { id: 'admin_packages', label: 'Package Members' },
         { id: 'admin_patients', label: 'Global Patients' },
         { id: 'admin_banners', label: 'Manage Banners' },
@@ -39,12 +44,22 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
       ];
     }
 
-    if (userRole === 'hr') {
+    if (userRole === 'admin') {
       return [
-        { id: 'hr_attendance', label: 'Staff Attendance' },
-        { id: 'hr_roster', label: 'Shift Roster' },
-        { id: 'hr_targets', label: 'Branch Targets' },
-        { id: 'hr_payroll', label: 'Staff Payroll' },
+        { id: 'admin', label: 'Admin Dashboard' },
+        { id: 'branch_cleaning', label: 'Branch Cleaning & Sanitation' },
+        { id: 'employee_works', label: 'Employee Daily Works' },
+        { id: 'employee_attendance', label: 'Attendance Report' },
+        { id: 'hr_leave_requests', label: 'Leave Requests' },
+        { id: 'admin_packages', label: 'Package Members' },
+        { id: 'admin_patients', label: 'Global Patients' },
+        { id: 'admin_banners', label: 'Manage Banners' },
+        { id: 'admin_revenue', label: 'Analytics & Revenue' },
+        { id: 'admin_pending', label: 'Pending Payments' },
+        { id: 'admin_branches', label: 'Branch Targets' },
+        { id: 'admin_doctors', label: 'Doctor Timings' },
+        { id: 'admin_staff', label: 'Staff Management' },
+        { id: 'admin_medicines', label: 'Edit Medicines' },
       ];
     }
 
@@ -84,12 +99,24 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
         : 'Nallagandla Branch';
 
   return (
-    <Modal visible={visible} transparent animationType="none">
-      <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose}>
-        <View style={styles.drawerContainer} onStartShouldSetResponder={() => true}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.backdrop}>
+        {/* Backdrop click outside to close */}
+        <TouchableOpacity
+          style={StyleSheet.absoluteFillObject}
+          activeOpacity={1}
+          onPress={onClose}
+        />
 
+        {/* Drawer panel with smooth scroll */}
+        <View style={styles.drawerContainer}>
           {/* HEADER */}
           <View style={styles.drawerHeader}>
+            <Image
+              source={require('../../assets/app_icon.png')}
+              style={{ width: 40, height: 40, borderRadius: 10, marginRight: 12 }}
+              resizeMode="contain"
+            />
             <View style={{ flex: 1 }}>
               <Text style={styles.brandTitle}>Spiritual Homeo</Text>
               <Text style={styles.brandSub}>{getRoleBadgeTitle()}</Text>
@@ -111,8 +138,10 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
           {/* FULL SCROLLING NAVIGATION CONTAINER */}
           <ScrollView
             style={{ flex: 1 }}
-            contentContainerStyle={{ paddingVertical: 8, paddingBottom: 20 }}
-            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingVertical: 8, paddingBottom: 40 }}
+            showsVerticalScrollIndicator={true}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled={true}
           >
             <Text style={styles.sectionHeading}>MENU OPTIONS</Text>
 
@@ -147,7 +176,7 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
           </ScrollView>
 
         </View>
-      </TouchableOpacity>
+      </View>
     </Modal>
   );
 };

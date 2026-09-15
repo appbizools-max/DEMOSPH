@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, Modal, TextInput } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { collection, onSnapshot, updateDoc, doc, addDoc } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { getSafeDb, collection, onSnapshot, updateDoc, doc, addDoc, query, limit } from '../../../utils/firebaseSafe';
 
 interface DoctorDashboardProps {
   doctorName?: string;
@@ -23,6 +22,7 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
   doctorCategory = 'Head Doctor',
   onNavigateTab,
 }) => {
+  const db = getSafeDb();
   const [selectedBranch, setSelectedBranch] = useState<string>('KPHB Branch');
   const [appointments, setAppointments] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -55,6 +55,42 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
     year: 'numeric',
   });
 
+  const getTodayISO = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = (now.getMonth() + 1).toString().padStart(2, '0');
+    const day = now.getDate().toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const isTodayDate = (a: any) => {
+    const todayISO = getTodayISO();
+    const rawDate = a.appointmentDate || a.date || a.bookingDate || a.dateString || a.slotDate;
+    if (!rawDate) {
+      if (a.createdAt) {
+        return String(a.createdAt).startsWith(todayISO);
+      }
+      return false;
+    }
+    const clean = String(rawDate).trim();
+    if (!clean) return false;
+
+    if (clean === todayISO || clean.startsWith(todayISO)) return true;
+
+    // DD-MM-YYYY, DD/MM/YYYY, D/M/YYYY
+    const partsISO = todayISO.split('-'); // [YYYY, MM, DD]
+    if (partsISO.length === 3) {
+      const [y, m, d] = partsISO;
+      const ddmmyyyyHyphen = `${d}-${m}-${y}`;
+      const ddmmyyyySlash = `${d}/${m}/${y}`;
+      const dmySlash = `${parseInt(d, 10)}/${parseInt(m, 10)}/${y}`;
+      const dmyHyphen = `${parseInt(d, 10)}-${parseInt(m, 10)}-${y}`;
+      if (clean === ddmmyyyyHyphen || clean === ddmmyyyySlash || clean === dmySlash || clean === dmyHyphen) return true;
+    }
+
+    return false;
+  };
+
   const isActualAppointment = (item: any, colName: string) => {
     if (colName === 'appointments') return true;
     const hasApptDate = Boolean(item.appointmentDate || item.date || item.slotDate);
@@ -66,7 +102,7 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
 
   const isWaitingOrActiveStatus = (status: string) => {
     const st = String(status || 'waiting').toLowerCase().trim();
-    return st !== 'completed' && st !== 'done' && st !== 'finished' && st !== 'concluded' && st !== 'cancelled';
+    return st !== 'completed' && st !== 'done' && st !== 'finished' && st !== 'concluded' && st !== 'cancelled' && st !== 'collect_fee';
   };
 
   useEffect(() => {
@@ -84,17 +120,41 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
       [...appList, ...allPatList].forEach((item) => {
         if (!item) return;
         if (!isActualAppointment(item, item.collectionName)) return;
+        // Strictly filter to TODAY'S consultations only
+        if (!isTodayDate(item)) return;
 
         const docName = String(item.doctorName || item.doctor || item.doctor_name || '').toLowerCase().replace(/^dr\.\s*/i, '').replace(/^dr\s*/i, '').replace(/[^a-z0-9]/g, '').trim();
         const isDocMatch = !docName || docName === 'unassigned' || docName.includes(activeDocClean) || activeDocClean.includes(docName) || (docName.length >= 4 && activeDocClean.includes(docName.substring(0, 5)));
 
         if (isDocMatch) {
-          const uniqueId = item.id || `${item.phone}_${item.patientName}`;
-          map.set(uniqueId, {
-            ...item,
-            id: item.id || uniqueId,
-            displayStatus: String(item.status || 'waiting').toLowerCase(),
-          });
+          const cleanPhone = String(item.phone || item.phoneNumber || '').replace(/\D/g, '').slice(-10);
+          const cleanDate = String(item.appointmentDate || item.date || item.slotDate || item.dateString || '').trim();
+          const cleanTime = String(item.appointmentTime || item.time || item.timeSlot || '').trim().toLowerCase();
+          const cleanName = String(item.patientName || item.name || '').trim().toLowerCase();
+          const cleanReg = String(item.registrationId || item.regId || '').trim().toLowerCase();
+
+          const dedupKey = (cleanPhone && cleanDate && cleanTime)
+            ? `${cleanPhone}_${cleanDate}_${cleanTime}`
+            : (cleanReg && cleanDate)
+              ? `${cleanReg}_${cleanDate}`
+              : (cleanPhone && cleanName)
+                ? `${cleanPhone}_${cleanName}`
+                : (item.id || `${cleanPhone}_${cleanName}`);
+
+          if (!map.has(dedupKey)) {
+            map.set(dedupKey, {
+              ...item,
+              id: item.id || dedupKey,
+              displayStatus: String(item.status || 'waiting').toLowerCase(),
+            });
+          } else {
+            const existing = map.get(dedupKey);
+            map.set(dedupKey, {
+              ...item,
+              ...existing,
+              displayStatus: (existing.displayStatus && existing.displayStatus !== 'waiting') ? existing.displayStatus : (item.displayStatus || 'waiting')
+            });
+          }
         }
       });
 
@@ -110,11 +170,11 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
     };
 
     try {
-      unsubApp = onSnapshot(collection(db, 'appointments'), (snapshot) => {
+      unsubApp = onSnapshot(query(collection(db, 'appointments'), limit(300)), (snapshot) => {
         appList = snapshot.docs.map((d) => ({ id: d.id, collectionName: 'appointments', ...d.data() }));
         mergeAndFilter();
       });
-      unsubAllPat = onSnapshot(collection(db, 'allpatients'), (snapshot) => {
+      unsubAllPat = onSnapshot(query(collection(db, 'allpatients'), limit(300)), (snapshot) => {
         allPatList = snapshot.docs.map((d) => ({ id: d.id, collectionName: 'allpatients', ...d.data() }));
         mergeAndFilter();
       });
@@ -323,7 +383,7 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
 
       {displayedList.length > 0 ? (
         displayedList.map((patient, index) => {
-          const isDone = patient.displayStatus === 'completed' || patient.displayStatus === 'done';
+          const isDone = patient.displayStatus === 'completed' || patient.displayStatus === 'done' || patient.displayStatus === 'collect_fee';
           const isInConsult = patient.displayStatus === 'in_consultation' || patient.displayStatus === 'in consult' || patient.displayStatus === 'in-consultation';
 
           return (

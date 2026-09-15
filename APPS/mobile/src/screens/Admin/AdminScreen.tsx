@@ -1,18 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Modal } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { collection, onSnapshot, addDoc } from 'firebase/firestore';
-import { db } from '@app/shared';
+import {
+  getSafeDb, collection, onSnapshot, addDoc, updateDoc, doc, deleteDoc
+} from '../../utils/firebaseSafe';
 import { DoctorTimingsScreen } from './DoctorTimings/DoctorTimingsScreen';
 import { ManageBranchesScreen } from './ManageBranches/ManageBranchesScreen';
+import { AttendanceRosterScreen } from '../HR/AttendanceRoster/AttendanceRosterScreen';
+import { EmployeeDailyWorksScreen } from '../HR/EmployeeWorks/EmployeeDailyWorksScreen';
+import { BranchCleaningScreen } from './BranchCleaning/BranchCleaningScreen';
 
 interface AdminScreenProps {
   currentTab?: string;
+  role?: string;
+  onNavigateTab?: (tab: string) => void;
 }
 
-export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
+export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'admin', onNavigateTab }) => {
+  const db = getSafeDb();
   const normalizeTab = (tabStr?: string) => {
     if (!tabStr) return 'analytics';
+    if (tabStr === 'fee_requests' || tabStr === 'hr_fee_requests' || tabStr === 'fees') return 'fee_requests';
+    if (tabStr === 'leave_requests' || tabStr === 'hr_leave_requests' || tabStr === 'leaves') return 'leave_requests';
+    if (tabStr === 'branch_cleaning' || tabStr === 'cleaning' || tabStr === 'sanitation' || tabStr === 'admin_cleaning') return 'branch_cleaning';
+    if (tabStr === 'employee_attendance' || tabStr === 'admin_attendance' || tabStr === 'attendance' || tabStr === 'attendance_report') return 'employee_attendance';
+    if (tabStr === 'employee_works' || tabStr === 'admin_employee_works' || tabStr === 'daily_works' || tabStr === 'works') return 'employee_works';
     if (tabStr === 'admin_staff' || tabStr === 'staff') return 'staff';
     if (tabStr === 'admin_doctors' || tabStr === 'doctors') return 'doctors';
     if (tabStr === 'admin_branches' || tabStr === 'branches') return 'branches';
@@ -24,14 +36,14 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
     return 'analytics';
   };
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'package_members' | 'banners' | 'branches' | 'patients' | 'doctors' | 'staff' | 'medicine'>(() => normalizeTab(currentTab));
+  const [activeTab, setActiveTab] = useState<'analytics' | 'fee_requests' | 'leave_requests' | 'branch_cleaning' | 'employee_attendance' | 'employee_works' | 'package_members' | 'banners' | 'branches' | 'patients' | 'doctors' | 'staff' | 'medicine'>(() => normalizeTab(currentTab));
 
   useEffect(() => {
     if (currentTab) {
       setActiveTab(normalizeTab(currentTab));
     }
   }, [currentTab]);
-  const [staffCategory, setStaffCategory] = useState<'staff' | 'reception' | 'doctors'>('staff');
+  const [staffCategory, setStaffCategory] = useState<'staff' | 'reception' | 'doctors' | 'hr'>('staff');
 
   const DEFAULT_STAFF = [
     { name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹22,000' },
@@ -40,6 +52,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
     { name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', hours: '8 hrs/day', salary: '₹15,000' },
     { name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', hours: '10 hrs/day', salary: '₹18,000' },
     { name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', hours: '8 hrs/day', salary: '₹14,000' },
+    { name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '7995532759', hours: '10.5 hrs/day', salary: '₹14,000' },
   ];
 
   const [liveStaffMembers, setLiveStaffMembers] = useState(DEFAULT_STAFF);
@@ -52,8 +65,10 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
         const loaded = snap.docs.map(d => {
           const data = d.data();
           return {
+            id: d.id,
             name: data.name || 'Staff Member',
             phone: data.mobile || data.phone || '-',
+            mobile: data.mobile || data.phone || '-',
             role: data.role || 'Regular Staff',
             branch: data.branch || 'KPHB',
             shift: data.shift || '10:00 AM - 08:30 PM',
@@ -67,14 +82,51 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
     return () => unsub();
   }, []);
 
-  const DEFAULT_DOCTORS = [
-    { name: 'Dr. Prashanth k vaidya', role: 'Head Doctor', category: 'Head Doctor', phone: '8125260176', shift: '-', hours: '-', salary: '-' },
-    { name: 'Dr. Jobeadh parveej', role: 'Head Doctor', category: 'Head Doctor', phone: '9903119766', shift: '-', hours: '-', salary: '-' },
-    { name: 'Dr. Padma priya', role: 'Employee Doctor', category: 'Employee Doctor', phone: '9490808582', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹95,000' },
-    { name: 'Dr. Ramakrishna chanduri', role: 'Head Doctor', category: 'Head Doctor', phone: '1111111111', shift: '-', hours: '-', salary: '-' },
+  const handleDeleteStaff = (staffId?: string, staffName?: string) => {
+    Alert.alert(
+      'Delete Staff Member',
+      `Are you sure you want to delete ${staffName || 'this staff member'}?\n\nTheir login access will be immediately revoked across both Web and Mobile App.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete & Revoke Access',
+          style: 'destructive',
+          onPress: async () => {
+            if (staffId && db) {
+              try {
+                await deleteDoc(doc(db, 'staff', staffId));
+              } catch (e) {
+                console.warn('Error deleting staff:', e);
+              }
+            }
+            setLiveStaffMembers(prev => prev.filter(s => (s as any).id !== staffId && s.name !== staffName));
+            Alert.alert('Deleted', `${staffName} has been deleted and their login access is revoked.`);
+          }
+        }
+      ]
+    );
+  };
+
+  interface DoctorItem {
+    id?: string;
+    name: string;
+    role: string;
+    category: string;
+    phone: string;
+    mobile?: string;
+    shift: string;
+    hours: string;
+    salary: string;
+  }
+
+  const DEFAULT_DOCTORS: DoctorItem[] = [
+    { id: 'doc-prashanth', name: 'Dr. Prashanth k vaidya', role: 'Head Doctor', category: 'Head Doctor', phone: '8125260176', mobile: '8125260176', shift: '-', hours: '-', salary: '-' },
+    { id: 'doc-jobeadh', name: 'Dr. Jobeadh parveej', role: 'Head Doctor', category: 'Head Doctor', phone: '9903119766', mobile: '9903119766', shift: '-', hours: '-', salary: '-' },
+    { id: 'doc-padma', name: 'Dr. Padma priya', role: 'Employee Doctor', category: 'Employee Doctor', phone: '9490808582', mobile: '9490808582', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹95,000' },
+    { id: 'doc-ramakrishna', name: 'Dr. Ramakrishna Chanduri', role: 'Head Doctor', category: 'Head Doctor', phone: '1111111111', mobile: '1111111111', shift: '-', hours: '-', salary: '-' },
   ];
 
-  const [liveDoctors, setLiveDoctors] = useState(DEFAULT_DOCTORS);
+  const [liveDoctors, setLiveDoctors] = useState<DoctorItem[]>(DEFAULT_DOCTORS);
 
   useEffect(() => {
     if (!db) return;
@@ -85,10 +137,12 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
           const data = d.data();
           const category = data.category || (data.role?.includes('Employee') ? 'Employee Doctor' : 'Head Doctor');
           return {
+            id: d.id,
             name: data.name || 'Doctor',
             role: category,
             category: category,
             phone: data.mobile || data.phone || '0000000000',
+            mobile: data.mobile || data.phone || '0000000000',
             shift: category === 'Head Doctor' ? '-' : (data.shift || '-'),
             hours: category === 'Head Doctor' ? '-' : (data.hours || '-'),
             salary: category === 'Head Doctor' ? '-' : (data.salary || '-')
@@ -99,6 +153,31 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
     }, (err) => console.warn('Firestore mobile doctors listener error:', err));
     return () => unsub();
   }, []);
+
+  const handleDeleteDoctor = (docId?: string, docName?: string) => {
+    Alert.alert(
+      'Delete Doctor',
+      `Are you sure you want to delete ${docName || 'this doctor'}?\n\nTheir login access will be immediately revoked across both Web and Mobile App.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete & Revoke Access',
+          style: 'destructive',
+          onPress: async () => {
+            if (docId && db) {
+              try {
+                await deleteDoc(doc(db, 'doctors', docId));
+              } catch (e) {
+                console.warn('Error deleting doctor from Firestore:', e);
+              }
+            }
+            setLiveDoctors(prev => prev.filter(d => (d as any).id !== docId && d.name !== docName));
+            Alert.alert('Deleted', `${docName} has been deleted and their login access is revoked.`);
+          }
+        }
+      ]
+    );
+  };
 
   // Add Staff Modal state
   const [showAddStaffModal, setShowAddStaffModal] = useState(false);
@@ -143,12 +222,25 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
 
   // Add Doctor Modal state
   const [showAddDoctorModal, setShowAddDoctorModal] = useState(false);
+  const [showEditDoctorModal, setShowEditDoctorModal] = useState(false);
+  const [editingDocId, setEditingDocId] = useState('');
   const [newDocCategory, setNewDocCategory] = useState<'Head Doctor' | 'Employee Doctor'>('Head Doctor');
   const [newDocName, setNewDocName] = useState('');
   const [newDocPhone, setNewDocPhone] = useState('');
   const [newDocShift, setNewDocShift] = useState('');
   const [newDocHours, setNewDocHours] = useState('');
   const [newDocSalary, setNewDocSalary] = useState('');
+
+  const handleOpenEditDoctor = (d: any) => {
+    setEditingDocId(d.id || '');
+    setNewDocName(d.name || '');
+    setNewDocPhone(d.phone || d.mobile || '');
+    setNewDocCategory((d.category === 'Employee Doctor' || d.role?.includes('Employee')) ? 'Employee Doctor' : 'Head Doctor');
+    setNewDocShift(d.shift && d.shift !== '-' ? d.shift : '10:00 AM - 08:00 PM');
+    setNewDocHours(d.hours && d.hours !== '-' ? d.hours : '10 hrs/day');
+    setNewDocSalary(d.salary && d.salary !== '-' ? d.salary : '₹95,000');
+    setShowEditDoctorModal(true);
+  };
 
   const handleSaveNewStaff = async () => {
     if (!newStaffName.trim() || !newStaffPhone.trim()) {
@@ -205,23 +297,38 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
       shift: isHead ? '-' : (newDocShift.trim() || '10:00 AM - 08:00 PM'),
       hours: isHead ? '-' : (newDocHours.trim() || '10 hrs/day'),
       salary: isHead ? '-' : (newDocSalary.trim() || '₹95,000'),
-      createdAt: new Date().toISOString()
+      updatedAt: new Date().toISOString()
     };
-    if (db) {
+
+    if (showEditDoctorModal && editingDocId && db) {
       try {
-        await addDoc(collection(db, 'doctors'), doctorData);
+        await updateDoc(doc(db, 'doctors', editingDocId), doctorData);
+        setLiveDoctors(prev => prev.map(d => (d as any).id === editingDocId ? { id: editingDocId, ...doctorData } : d));
+        setShowEditDoctorModal(false);
+        Alert.alert('Updated', `Doctor ${doctorData.name} updated successfully.`);
       } catch (e) {
-        console.warn('Error saving doctor:', e);
+        console.warn('Error updating doctor:', e);
       }
+    } else {
+      let newId = Date.now().toString();
+      if (db) {
+        try {
+          const docRef = await addDoc(collection(db, 'doctors'), { ...doctorData, createdAt: new Date().toISOString() });
+          newId = docRef.id;
+        } catch (e) {
+          console.warn('Error saving doctor:', e);
+        }
+      }
+      setLiveDoctors(prev => [{ id: newId, ...doctorData }, ...prev]);
+      setShowAddDoctorModal(false);
+      Alert.alert('Saved', `${newDocCategory} ${doctorData.name} added successfully.`);
     }
-    setLiveDoctors(prev => [doctorData, ...prev]);
+
     setNewDocName('');
     setNewDocPhone('');
     setNewDocShift('');
     setNewDocHours('');
     setNewDocSalary('');
-    setShowAddDoctorModal(false);
-    Alert.alert('Saved', `${newDocCategory} ${doctorData.name} added successfully.`);
   };
 
   // Medicine Edit Form
@@ -229,12 +336,190 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
   const [medPotency, setMedPotency] = useState('200C');
   const [medStock, setMedStock] = useState('150');
 
-  const branchesData = [
-    { name: 'KPHB Branch', phone: '+91 90301 76176', target: '₹12,00,000', achieved: '₹9,80,000' },
-    { name: 'Nallagandla Branch', phone: '+91 91321 76176', target: '₹10,00,000', achieved: '₹8,40,000' },
-    { name: 'Dilshuknagar Branch', phone: '+91 98041 76176', target: '₹14,00,000', achieved: '₹11,50,000' },
-    { name: 'Chandanagar Branch', phone: '+91 95531 76176', target: '₹9,00,000', achieved: '₹7,20,000' },
+  // Daily Operations Date (Defaults to Today's date YYYY-MM-DD)
+  const [dailyOpsDate, setDailyOpsDate] = useState(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+  const [liveAppointments, setLiveAppointments] = useState<any[]>([]);
+  const [selectedBranchModal, setSelectedBranchModal] = useState<any | null>(null);
+  const [branchPatientFilter, setBranchPatientFilter] = useState<'all' | 'opted' | 'not_opted'>('all');
+
+  useEffect(() => {
+    if (!db) return;
+    let appsFromAppointments: any[] = [];
+    let appsFromAllPatients: any[] = [];
+
+    const mergeAndSet = () => {
+      const combinedMap = new Map<string, any>();
+
+      // 1. Add records from appointments collection
+      appsFromAppointments.forEach(item => {
+        if (item && item.id) {
+          combinedMap.set(item.id, item);
+        }
+      });
+
+      // 2. Merge from allpatients collection with smart deduplication
+      appsFromAllPatients.forEach(item => {
+        if (!item || !item.id) return;
+        if (combinedMap.has(item.id)) {
+          const existing = combinedMap.get(item.id);
+          combinedMap.set(item.id, { ...existing, ...item });
+        } else {
+          const cleanPhone = String(item.phoneNumber || item.phone || item.mobile || '').replace(/\D/g, '').slice(-10);
+          const date = String(item.appointmentDate || item.date || '').trim();
+
+          let isDuplicate = false;
+          if (cleanPhone && date) {
+            for (const existing of combinedMap.values()) {
+              const exPhone = String(existing.phoneNumber || existing.phone || existing.mobile || '').replace(/\D/g, '').slice(-10);
+              const exDate = String(existing.appointmentDate || existing.date || '').trim();
+              if (exPhone === cleanPhone && exDate === date) {
+                isDuplicate = true;
+                break;
+              }
+            }
+          }
+
+          if (!isDuplicate) {
+            combinedMap.set(item.id, item);
+          }
+        }
+      });
+
+      setLiveAppointments(Array.from(combinedMap.values()));
+    };
+
+    const unsubApp = onSnapshot(collection(db, 'appointments'), (snap) => {
+      appsFromAppointments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      mergeAndSet();
+    }, (err) => console.warn('Firestore mobile appointments listener error:', err));
+
+    const unsubPat = onSnapshot(collection(db, 'allpatients'), (snap) => {
+      appsFromAllPatients = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      mergeAndSet();
+    }, (err) => console.warn('Firestore mobile allpatients listener error:', err));
+
+    return () => {
+      unsubApp();
+      unsubPat();
+    };
+  }, []);
+
+  const FOUR_BRANCHES = [
+    { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', code: 'KPHB' },
+    { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', code: 'NALLAGANDLA' },
+    { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', code: 'DILSHUKNAGAR' },
+    { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', code: 'CHANDANAGAR' },
   ];
+
+  const extractRevenue = (a: any) => {
+    const candidates = [
+      a.totalPaid,
+      a.paidAmount,
+      a.amountPaid,
+      a.totalAmount,
+      a.totalFee,
+      a.amount,
+      a.targetAmount,
+      (Number(a.consultationFee || 0) + Number(a.medicineFee || 0) + Number(a.dietFee || 0))
+    ];
+    for (const c of candidates) {
+      if (c !== undefined && c !== null && c !== '') {
+        const num = Number(c);
+        if (!isNaN(num) && num > 0) return num;
+      }
+    }
+    return 0;
+  };
+
+  const isFollowUpOpted = (a: any) => {
+    const interval = String(a.followUpInterval || a.interval || '').trim().toLowerCase();
+    if (interval === 'no follow-up' || interval === 'none' || interval === 'no followup') {
+      return false;
+    }
+    if (a.followUpOpted === false || a.followup === false) {
+      return false;
+    }
+    if (a.followUpOpted === true || a.followup === true) {
+      return true;
+    }
+    if (interval && interval !== 'no follow-up' && interval !== 'none') {
+      return true;
+    }
+    if (a.preferredFollowUpDate || a.followUpDate || a.nextFollowUpDate) {
+      return true;
+    }
+    return false;
+  };
+
+  const isMatchingDate = (app: any, targetDate: string) => {
+    const raw = String(app.appointmentDate || app.date || app.bookingDate || app.dateString || app.createdAt || '').trim();
+    if (!raw) return false;
+    if (raw.startsWith(targetDate)) return true;
+
+    const parts = targetDate.split('-');
+    if (parts.length === 3) {
+      const [y, m, d] = parts;
+      const dInt = parseInt(d, 10);
+      const mInt = parseInt(m, 10);
+
+      if (raw.includes(`${d}-${m}-${y}`)) return true;
+      if (raw.includes(`${d}/${m}/${y}`)) return true;
+      if (raw.includes(`${dInt}-${mInt}-${y}`)) return true;
+      if (raw.includes(`${dInt}/${mInt}/${y}`)) return true;
+      if (raw.includes(`${y}/${m}/${d}`)) return true;
+    }
+    return false;
+  };
+
+  const isMatchingBranch = (app: any, branchId: string) => {
+    const bStr = String(app.branch || app.branchName || app.targetBranch || app.clinicBranch || '').toLowerCase();
+    const bId = String(app.branchId || '');
+
+    if (branchId === 'kphb') {
+      return bStr.includes('kphb') || bStr.includes('kphp') || bId === 'XRrXPAWzn4fKiwT387PKBLQZg323';
+    }
+    if (branchId === 'nallagandla') {
+      return bStr.includes('nallagandla') || bId === '1qj75oZZlWgN8P02OAeRNjCVMhM2' || bId === 'pV2j0doYaX0Mmb3yUfNp';
+    }
+    if (branchId === 'dilshuknagar') {
+      return bStr.includes('dilshuk') || bStr.includes('dilsukh') || bId === 't7BiooFMRDU7DcgKFGnAPnJY0Qq2';
+    }
+    if (branchId === 'chandanagar') {
+      return bStr.includes('chanda') || bStr.includes('chandnagar') || bId === 'xS0281lEdPc0hUFrrNRPBMeQZsD3';
+    }
+    return false;
+  };
+
+  const branchDailyStats = FOUR_BRANCHES.map(b => {
+    const bApps = liveAppointments.filter(a => isMatchingBranch(a, b.id) && isMatchingDate(a, dailyOpsDate));
+    const revenue = bApps.reduce((acc, a) => acc + extractRevenue(a), 0);
+    const optedApps = bApps.filter(isFollowUpOpted);
+    const notOptedApps = bApps.filter(a => !isFollowUpOpted(a));
+
+    return {
+      ...b,
+      appointments: bApps,
+      appointmentCount: bApps.length,
+      revenue,
+      optedCount: optedApps.length,
+      notOptedCount: notOptedApps.length,
+      optedApps,
+      notOptedApps
+    };
+  });
+
+  const totalDayRevenue = branchDailyStats.reduce((sum, b) => sum + b.revenue, 0);
+  const totalDayAppointments = branchDailyStats.reduce((sum, b) => sum + b.appointmentCount, 0);
+  const totalDayOpted = branchDailyStats.reduce((sum, b) => sum + b.optedCount, 0);
+  const totalDayNotOpted = branchDailyStats.reduce((sum, b) => sum + b.notOptedCount, 0);
+
+  const handleShiftOpsDate = (days: number) => {
+    const d = new Date(dailyOpsDate);
+    d.setDate(d.getDate() + days);
+    setDailyOpsDate(d.toISOString().split('T')[0]);
+  };
 
   const handleSaveMedicine = () => {
     if (!medName) {
@@ -245,29 +530,651 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
     setMedName('');
   };
 
+  const BRANCH_NAME_MAP: Record<string, string> = {
+    'XRrXPAWzn4fKiwT387PKBLQZg323': 'KPHB',
+    't7BiooFMRDU7DcgKFGnAPnJY0Qq2': 'Dilshuknagar',
+    'xS0281lEdPc0hUFrrNRPBMeQZsD3': 'Chandanagar',
+    '1qj75oZZlWgN8P02OAeRNjCVMhM2': 'Nallagandla',
+    'pV2j0doYaX0Mmb3yUfNp': 'Nallagandla',
+    'kphb': 'KPHB',
+    'dilshuknagar': 'Dilshuknagar',
+    'chandanagar': 'Chandanagar',
+    'nallagandla': 'Nallagandla',
+  };
+
+  const resolveBranchName = (l: any) => {
+    if (l.branch && typeof l.branch === 'string' && l.branch.trim()) return l.branch;
+    if (l.branchName && typeof l.branchName === 'string' && l.branchName.trim()) return l.branchName;
+    if (l.branchId && BRANCH_NAME_MAP[l.branchId]) return BRANCH_NAME_MAP[l.branchId];
+    return 'Main Branch';
+  };
+
+  const resolveApplicantName = (l: any) => {
+    return l.staffName || l.applicant || l.name || 'Staff Member';
+  };
+
+  const resolveRoleName = (l: any) => {
+    if (l.staffRole) return l.staffRole === 'staff' ? 'Regular Staff' : l.staffRole;
+    if (l.role) return l.role;
+    return 'Regular Staff';
+  };
+
+  const resolvePeriod = (l: any) => {
+    const start = l.fromDate || l.startDate || l.from || '';
+    const end = l.toDate || l.endDate || l.to || '';
+    if (start && end) {
+      if (start === end) return start;
+      return `${start} → ${end}`;
+    }
+    return start || end || '-';
+  };
+
+  const resolveDuration = (l: any) => {
+    if (l.daysCount) return `${l.daysCount} Day${Number(l.daysCount) > 1 ? 's' : ''}`;
+    if (l.days) return `${l.days} Day${Number(l.days) > 1 ? 's' : ''}`;
+    if (l.leaveType === 'Half Day') return '0.5 Day';
+    if (l.leaveType === '1 Hour Permission') return '1 Hour';
+    const start = l.fromDate || l.startDate || l.from;
+    const end = l.toDate || l.endDate || l.to;
+    if (!start) return '1 Day';
+    if (start === end) return '1 Day';
+    try {
+      const parseD = (dStr: string) => {
+        if (dStr.includes('/')) {
+          const [d, m, y] = dStr.split('/').map(Number);
+          return new Date(y, m - 1, d);
+        }
+        if (dStr.includes('-')) {
+          const parts = dStr.split('-');
+          if (parts.length === 3 && parts[0].length <= 2) {
+            return new Date(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
+          }
+        }
+        return new Date(dStr);
+      };
+      const d1 = parseD(start);
+      const d2 = parseD(end);
+      const diffMs = d2.getTime() - d1.getTime();
+      const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
+      if (diffDays > 0) return `${diffDays} Day${diffDays > 1 ? 's' : ''}`;
+    } catch (e) { }
+    return '1 Day';
+  };
+
+  const normalizeStatus = (status?: string) => {
+    if (!status) return 'Pending';
+    const s = status.toLowerCase();
+    if (s === 'approved') return 'Approved';
+    if (s === 'rejected') return 'Rejected';
+    return 'Pending';
+  };
+
+  // Leave Requests State (Connected to Firestore 'leaves' collection)
+  const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!db) return;
+    const leavesRef = collection(db, 'leaves');
+    const unsub = onSnapshot(leavesRef, (snap) => {
+      const validDocs: any[] = [];
+      snap.forEach(d => {
+        validDocs.push({ id: d.id, _collection: 'leaves', ...d.data() });
+      });
+
+      // Sort by creation time descending
+      validDocs.sort((a, b) => {
+        const tA = new Date(a.createdAt || 0).getTime();
+        const tB = new Date(b.createdAt || 0).getTime();
+        return tB - tA;
+      });
+
+      setLeaveRequests(validDocs);
+    }, (err) => console.warn('Firestore mobile leaves error:', err));
+    return () => unsub();
+  }, []);
+
+  const handleUpdateLeaveStatus = async (id: string, newStatus: 'Approved' | 'Rejected', colName: string = 'leaves') => {
+    try {
+      if (db) {
+        await updateDoc(doc(db, colName, id), {
+          status: newStatus,
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: 'Admin / HR'
+        });
+        Alert.alert(
+          newStatus === 'Approved' ? 'Leave Approved ✅' : 'Leave Rejected ❌',
+          `Leave request has been marked as ${newStatus}.`
+        );
+      }
+    } catch (e) {
+      console.error('Error updating leave in Firestore:', e);
+      try {
+        const altCol = colName === 'leaves' ? 'leave_requests' : 'leaves';
+        await updateDoc(doc(db!, altCol, id), {
+          status: newStatus,
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: 'Admin / HR'
+        });
+        Alert.alert(
+          newStatus === 'Approved' ? 'Leave Approved ✅' : 'Leave Rejected ❌',
+          `Leave request has been marked as ${newStatus}.`
+        );
+      } catch (err2) {
+        Alert.alert('Error', 'Failed to update leave status.');
+      }
+    }
+  };
+
+  const pendingLeaveCount = leaveRequests.filter(r => normalizeStatus(r.status) === 'Pending').length;
+
+  const [pendingCleaningCount, setPendingCleaningCount] = useState(0);
+  useEffect(() => {
+    if (!db) return;
+    const unsubCleaning = onSnapshot(collection(db, 'branch_cleaning_submissions'), (snap) => {
+      const pCount = snap.docs.filter(d => d.data()?.status === 'Pending').length;
+      setPendingCleaningCount(pCount);
+    }, (err) => console.warn('Mobile cleaning submissions count listener error:', err));
+    return () => unsubCleaning();
+  }, []);
+
+  const renderTopSwitcher = () => (
+    <View style={{ marginBottom: 10, paddingHorizontal: 12, paddingTop: 6 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 2 }}>
+        {[
+          { id: 'analytics', label: 'Operations', icon: 'grid-outline' },
+          { id: 'employee_attendance', label: 'Attendance Report', icon: 'time-outline' },
+          { id: 'employee_works', label: 'Daily Works', icon: 'document-text-outline' },
+          { id: 'branch_cleaning', label: pendingCleaningCount > 0 ? `Cleaning & Sanitation (${pendingCleaningCount})` : 'Cleaning & Sanitation', icon: 'sparkles-outline' },
+          { id: 'leave_requests', label: pendingLeaveCount > 0 ? `Leaves (${pendingLeaveCount})` : 'Leaves', icon: 'calendar-outline' },
+          { id: 'staff', label: 'Staff Roster', icon: 'people-outline' },
+          { id: 'branches', label: 'Branches', icon: 'business-outline' },
+          { id: 'doctors', label: 'Doctor Timings', icon: 'medkit-outline' },
+        ].map(tab => (
+          <TouchableOpacity
+            key={tab.id}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 5,
+              paddingVertical: 7,
+              paddingHorizontal: 12,
+              borderRadius: 10,
+              backgroundColor: activeTab === tab.id ? '#258ec8' : '#ffffff',
+              borderWidth: 1,
+              borderColor: activeTab === tab.id ? '#258ec8' : '#cbd5e1'
+            }}
+            onPress={() => {
+              const nextId = tab.id as any;
+              setActiveTab(nextId);
+              if (onNavigateTab) {
+                onNavigateTab(nextId);
+              }
+            }}
+          >
+            <Ionicons name={tab.icon as any} size={14} color={activeTab === tab.id ? '#ffffff' : '#475569'} />
+            <Text style={{ fontSize: 12, fontWeight: '800', color: activeTab === tab.id ? '#ffffff' : '#475569' }}>
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </View>
+  );
+
+  if (activeTab === 'branch_cleaning') {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+        {renderTopSwitcher()}
+        <View style={{ flex: 1 }}>
+          <BranchCleaningScreen onBack={() => {
+            setActiveTab('analytics');
+            if (onNavigateTab) onNavigateTab('admin');
+          }} role={role} />
+        </View>
+      </View>
+    );
+  }
+
+  if (activeTab === 'employee_works') {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+        {renderTopSwitcher()}
+        <View style={{ flex: 1 }}>
+          <EmployeeDailyWorksScreen onBack={() => setActiveTab('analytics')} />
+        </View>
+      </View>
+    );
+  }
+
+  if (activeTab === 'employee_attendance') {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+        {renderTopSwitcher()}
+        <View style={{ flex: 1 }}>
+          <AttendanceRosterScreen onBack={() => setActiveTab('analytics')} />
+        </View>
+      </View>
+    );
+  }
+
+  if (activeTab === 'branches') {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+        {renderTopSwitcher()}
+        <View style={{ flex: 1 }}>
+          <ManageBranchesScreen onBack={() => setActiveTab('analytics')} />
+        </View>
+      </View>
+    );
+  }
+
+  if (activeTab === 'doctors') {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+        {renderTopSwitcher()}
+        <View style={{ flex: 1 }}>
+          <DoctorTimingsScreen />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+      {renderTopSwitcher()}
 
-      {/* TAB 1: ANALYTICS & REVENUE */}
+      {/* TAB 1: ANALYTICS & REVENUE - 4 BRANCHES DAILY OPERATIONS */}
       {activeTab === 'analytics' && (
-        <View style={{ gap: 12 }}>
-          <View style={styles.statCard}>
-            <Text style={styles.statLabel}>TOTAL REVENUE</Text>
-            <Text style={styles.statVal}>₹36,90,000</Text>
-            <Text style={styles.statSub}>+14.2% Growth vs Last Month</Text>
+        <View style={{ gap: 14 }}>
+          {/* DATE CONTROL & TITLE CARD */}
+          <View style={{
+            backgroundColor: '#ffffff',
+            borderRadius: 16,
+            padding: 14,
+            borderWidth: 1,
+            borderColor: '#e2e8f0',
+            shadowColor: '#0f172a',
+            shadowOffset: { width: 0, height: 1 },
+            shadowOpacity: 0.04,
+            shadowRadius: 3,
+            elevation: 1
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={{ backgroundColor: '#eff6ff', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 }}>
+                  <Text style={{ fontSize: 10, fontWeight: '800', color: '#258ec8' }}>4 CLINIC BRANCHES</Text>
+                </View>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: '#0f172a' }}>Daily Operations</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setDailyOpsDate(new Date().toISOString().split('T')[0])}
+                style={{ backgroundColor: '#258ec8', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}
+              >
+                <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '800' }}>Today</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* DATE CONTROLS ROW */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+              <TouchableOpacity
+                onPress={() => handleShiftOpsDate(-1)}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 8,
+                  backgroundColor: '#f8fafc',
+                  borderWidth: 1,
+                  borderColor: '#cbd5e1',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 2
+                }}
+              >
+                <Ionicons name="chevron-back" size={14} color="#475569" />
+                <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#475569' }}>Prev</Text>
+              </TouchableOpacity>
+
+              <View style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                backgroundColor: '#eff6ff',
+                paddingVertical: 7,
+                paddingHorizontal: 8,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: '#bfdbfe'
+              }}>
+                <Ionicons name="calendar-outline" size={14} color="#258ec8" />
+                <Text style={{ fontSize: 13, fontWeight: '800', color: '#0369a1' }}>
+                  {dailyOpsDate}
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                onPress={() => handleShiftOpsDate(1)}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 8,
+                  backgroundColor: '#f8fafc',
+                  borderWidth: 1,
+                  borderColor: '#cbd5e1',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 2
+                }}
+              >
+                <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#475569' }}>Next</Text>
+                <Ionicons name="chevron-forward" size={14} color="#475569" />
+              </TouchableOpacity>
+            </View>
           </View>
 
-          <View style={[styles.statCard, { borderColor: '#cbd5e1' }]}>
-            <Text style={[styles.statLabel, { color: '#258ec8' }]}>PENDING PAYMENTS</Text>
-            <Text style={[styles.statVal, { color: '#258ec8' }]}>₹1,45,000</Text>
-            <Text style={styles.statSub}>12 Pending Patient Invoices</Text>
+          {/* TOP 4 AGGREGATE SUMMARY CARDS (2x2 Grid) */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+            {/* 1. Total Revenue */}
+            <View style={[styles.statCard, { flex: 1, minWidth: '47%', padding: 12, borderColor: '#e2e8f0' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={[styles.statLabel, { fontSize: 10 }]}>TOTAL REVENUE</Text>
+                <Ionicons name="cash-outline" size={15} color="#258ec8" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#0f172a' }}>
+                ₹{totalDayRevenue.toLocaleString('en-IN')}
+              </Text>
+              <Text style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>All 4 branches</Text>
+            </View>
+
+            {/* 2. Total Appointments */}
+            <View style={[styles.statCard, { flex: 1, minWidth: '47%', padding: 12, borderColor: '#e2e8f0' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={[styles.statLabel, { fontSize: 10 }]}>APPOINTMENTS</Text>
+                <Ionicons name="people-outline" size={15} color="#9333ea" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#9333ea' }}>
+                {totalDayAppointments} Patients
+              </Text>
+              <Text style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Total booked</Text>
+            </View>
+
+            {/* 3. Follow-Up Opted */}
+            <View style={[styles.statCard, { flex: 1, minWidth: '47%', padding: 12, borderColor: '#dcfce7', backgroundColor: '#f0fdf4' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={[styles.statLabel, { fontSize: 10, color: '#16a34a' }]}>FOLLOW-UP OPTED</Text>
+                <Ionicons name="checkmark-circle" size={15} color="#16a34a" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#16a34a' }}>
+                {totalDayOpted} Patients
+              </Text>
+              <Text style={{ fontSize: 10, color: '#16a34a', marginTop: 2, fontWeight: '600' }}>✓ Scheduled follow-up</Text>
+            </View>
+
+            {/* 4. Follow-Up Not Opted */}
+            <View style={[styles.statCard, { flex: 1, minWidth: '47%', padding: 12, borderColor: '#fed7aa', backgroundColor: '#fff7ed' }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={[styles.statLabel, { fontSize: 10, color: '#ea580c' }]}>NOT OPTED</Text>
+                <Ionicons name="alert-circle" size={15} color="#ea580c" />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: '#ea580c' }}>
+                {totalDayNotOpted} Patients
+              </Text>
+              <Text style={{ fontSize: 10, color: '#ea580c', marginTop: 2, fontWeight: '600' }}>No interval set</Text>
+            </View>
           </View>
 
-          <View style={[styles.statCard, { borderColor: '#cbd5e1' }]}>
-            <Text style={[styles.statLabel, { color: '#16a34a' }]}>NUTRITION REVENUE</Text>
-            <Text style={[styles.statVal, { color: '#16a34a' }]}>₹4,85,000</Text>
-            <Text style={styles.statSub}>Homeopathic Supplements & Wellness</Text>
+          {/* SECTION HEADER */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+            <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>
+              Branch Performance Cards
+            </Text>
+            <Text style={{ fontSize: 11, color: '#64748b' }}>
+              Tap to inspect patients
+            </Text>
           </View>
+
+          {/* 4 DEDICATED BRANCH CARDS */}
+          {branchDailyStats.map(b => (
+            <View
+              key={b.id}
+              style={{
+                backgroundColor: '#ffffff',
+                borderWidth: 1,
+                borderColor: '#e2e8f0',
+                borderRadius: 16,
+                padding: 14,
+                shadowColor: '#0f172a',
+                shadowOffset: { width: 0, height: 1 },
+                shadowOpacity: 0.04,
+                shadowRadius: 3,
+                elevation: 1,
+                gap: 10
+              }}
+            >
+              {/* Branch Header */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="business-outline" size={16} color="#258ec8" />
+                    <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>
+                      {b.name}
+                    </Text>
+                  </View>
+                  <Text style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>
+                    📞 {b.phone}
+                  </Text>
+                </View>
+                <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 }}>
+                  <Text style={{ fontSize: 9.5, fontWeight: '800', color: '#0284c7' }}>LIVE ACTIVE</Text>
+                </View>
+              </View>
+
+              {/* 4 Metrics in 2x2 Grid */}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {/* 1. Today's Revenue */}
+                <View style={{ flex: 1, minWidth: '47%', backgroundColor: '#f8fafc', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#f1f5f9' }}>
+                  <Text style={{ fontSize: 9.5, fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Today's Revenue</Text>
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#258ec8', marginTop: 3 }}>
+                    ₹{b.revenue.toLocaleString('en-IN')}
+                  </Text>
+                </View>
+
+                {/* 2. Appointments */}
+                <View style={{ flex: 1, minWidth: '47%', backgroundColor: '#f8fafc', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#f1f5f9' }}>
+                  <Text style={{ fontSize: 9.5, fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Appointments</Text>
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a', marginTop: 3 }}>
+                    {b.appointmentCount} Patients
+                  </Text>
+                </View>
+
+                {/* 3. Follow-Up Opted */}
+                <View style={{ flex: 1, minWidth: '47%', backgroundColor: '#f0fdf4', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#dcfce7' }}>
+                  <Text style={{ fontSize: 9.5, fontWeight: '700', color: '#16a34a', textTransform: 'uppercase' }}>Follow-Up Opted</Text>
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#16a34a', marginTop: 3 }}>
+                    ✓ {b.optedCount} Patients
+                  </Text>
+                </View>
+
+                {/* 4. Not Opted */}
+                <View style={{ flex: 1, minWidth: '47%', backgroundColor: '#fff7ed', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#fed7aa' }}>
+                  <Text style={{ fontSize: 9.5, fontWeight: '700', color: '#ea580c', textTransform: 'uppercase' }}>Not Opted</Text>
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#ea580c', marginTop: 3 }}>
+                    ✕ {b.notOptedCount} Patients
+                  </Text>
+                </View>
+              </View>
+
+              {/* Action Button */}
+              {b.appointmentCount > 0 ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    setSelectedBranchModal(b);
+                    setBranchPatientFilter('all');
+                  }}
+                  style={{
+                    backgroundColor: '#eff6ff',
+                    borderWidth: 1,
+                    borderColor: '#bfdbfe',
+                    paddingVertical: 8,
+                    borderRadius: 10,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 6
+                  }}
+                >
+                  <Ionicons name="people-outline" size={14} color="#258ec8" />
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: '#258ec8' }}>
+                    View Patients & Follow-Ups ({b.appointmentCount})
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={{ paddingVertical: 6, alignItems: 'center' }}>
+                  <Text style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>
+                    No appointments booked for this date
+                  </Text>
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* TAB: FEE REQUESTS (EMPTY PAGE READY FOR FUTURE USER SPECS) */}
+      {activeTab === 'fee_requests' && (
+        <View style={{
+          backgroundColor: '#ffffff',
+          borderRadius: 16,
+          padding: 36,
+          borderWidth: 1,
+          borderColor: '#e2e8f0',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginTop: 8
+        }}>
+          <View style={{
+            width: 52,
+            height: 52,
+            borderRadius: 14,
+            backgroundColor: '#eff6ff',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginBottom: 12
+          }}>
+            <Ionicons name="document-text-outline" size={26} color="#258ec8" />
+          </View>
+          <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a', marginBottom: 4 }}>
+            Fee Requests
+          </Text>
+          <Text style={{ fontSize: 13, color: '#64748b', textAlign: 'center' }}>
+            This section is currently empty.
+          </Text>
+        </View>
+      )}
+
+      {/* TAB: LEAVE REQUESTS (CONNECTED EXCLUSIVELY TO FIRESTORE) */}
+      {activeTab === 'leave_requests' && (
+        <View style={{ gap: 10 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>
+              Staff Leave Applications ({Math.min(10, leaveRequests.length)}{leaveRequests.length > 10 ? ` of ${leaveRequests.length}` : ''})
+            </Text>
+            <View style={{ backgroundColor: '#eff6ff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+              <Text style={{ fontSize: 11, color: '#258ec8', fontWeight: '800' }}>FIRESTORE LIVE</Text>
+            </View>
+          </View>
+
+          {leaveRequests.length === 0 ? (
+            <View style={{
+              backgroundColor: '#ffffff',
+              borderRadius: 16,
+              padding: 32,
+              borderWidth: 1,
+              borderColor: '#e2e8f0',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginTop: 4
+            }}>
+              <Ionicons name="calendar-outline" size={32} color="#94a3b8" style={{ marginBottom: 8 }} />
+              <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a', marginBottom: 2 }}>
+                No Leave Requests
+              </Text>
+              <Text style={{ fontSize: 12, color: '#64748b', textAlign: 'center' }}>
+                All leave requests for the current month will appear here live from Firestore.
+              </Text>
+            </View>
+          ) : (
+            leaveRequests.slice(0, 10).map(l => {
+              const applicantName = resolveApplicantName(l);
+              const roleName = resolveRoleName(l);
+              const branchName = resolveBranchName(l);
+              const period = resolvePeriod(l);
+              const duration = resolveDuration(l);
+              const status = normalizeStatus(l.status);
+
+              return (
+                <View key={l.id} style={styles.card}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>{applicantName}</Text>
+                      <Text style={{ fontSize: 11.5, color: '#64748b' }}>{roleName} • {branchName}</Text>
+                      <Text style={{ fontSize: 12, color: '#258ec8', fontWeight: '700', marginTop: 3 }}>
+                        {l.leaveType || 'Leave'} ({duration})
+                      </Text>
+                      <Text style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
+                        📅 Period: {period}
+                      </Text>
+                      {l.joiningDate ? (
+                        <Text style={{ fontSize: 11.5, color: '#0284c7', fontWeight: '700', marginTop: 2 }}>
+                          🏢 Re-joining Date: {l.joiningDate}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <View style={{
+                      backgroundColor: status === 'Approved' ? '#f0fdf4' : status === 'Rejected' ? '#fef2f2' : '#fffbeb',
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 6
+                    }}>
+                      <Text style={{
+                        fontSize: 11,
+                        fontWeight: '800',
+                        color: status === 'Approved' ? '#16a34a' : status === 'Rejected' ? '#ef4444' : '#d97706'
+                      }}>
+                        {status}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {l.reason ? (
+                    <Text style={{ fontSize: 11.5, color: '#475569', marginTop: 8, backgroundColor: '#f8fafc', padding: 8, borderRadius: 8 }}>
+                      {l.reason}
+                    </Text>
+                  ) : null}
+
+                  {status === 'Pending' && (
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                      <TouchableOpacity
+                        style={{ flex: 1, backgroundColor: '#16a34a', paddingVertical: 8, borderRadius: 8, alignItems: 'center' }}
+                        onPress={() => handleUpdateLeaveStatus(l.id, 'Approved', l._collection || 'leaves')}
+                      >
+                        <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '800' }}>✓ Approve</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={{ flex: 1, backgroundColor: '#ef4444', paddingVertical: 8, borderRadius: 8, alignItems: 'center' }}
+                        onPress={() => handleUpdateLeaveStatus(l.id, 'Rejected', l._collection || 'leaves')}
+                      >
+                        <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '800' }}>✕ Reject</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              );
+            })
+          )}
         </View>
       )}
 
@@ -300,12 +1207,6 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
           </View>
         </View>
       )}
-
-      {/* TAB 2: BRANCHES & TARGETS */}
-      {activeTab === 'branches' && (
-        <ManageBranchesScreen onBack={() => setActiveTab('analytics')} />
-      )}
-
       {/* TAB 3: GLOBAL PATIENTS */}
       {activeTab === 'patients' && (
         <View style={styles.card}>
@@ -317,11 +1218,6 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
             Packages: Platinum Annual Wellness, Classical Care, Pediatric Care
           </Text>
         </View>
-      )}
-
-      {/* TAB 4: DOCTOR TIMINGS */}
-      {activeTab === 'doctors' && (
-        <DoctorTimingsScreen />
       )}
 
       {/* TAB 5: STAFF & WORKING HOURS (3 CATEGORY SHIFT SELECTOR) */}
@@ -340,9 +1236,10 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
           {/* Sub-Category Selector Pills */}
           <View style={{ flexDirection: 'row', gap: 6, marginBottom: 4 }}>
             {[
-              { id: 'staff', label: 'Staff Members' },
-              { id: 'reception', label: 'Reception Desk' },
-              { id: 'doctors', label: 'Doctors Directory' },
+              { id: 'staff', label: 'Staff' },
+              { id: 'reception', label: 'Reception' },
+              { id: 'doctors', label: 'Doctors' },
+              { id: 'hr', label: 'HR' },
             ].map(cat => (
               <TouchableOpacity
                 key={cat.id}
@@ -374,8 +1271,27 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
               </View>
 
               {liveStaffMembers.map(s => (
-                <View key={s.name} style={{ backgroundColor: '#ffffff', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
-                  <Text style={{ fontSize: 13.5, fontWeight: '800', color: '#0f172a' }}>{s.name} ({s.branch})</Text>
+                <View key={(s as any).id || s.name} style={{ backgroundColor: '#ffffff', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 13.5, fontWeight: '800', color: '#0f172a' }}>{s.name} ({s.branch})</Text>
+                    <TouchableOpacity
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 3,
+                        backgroundColor: '#fef2f2',
+                        paddingHorizontal: 8,
+                        paddingVertical: 4,
+                        borderRadius: 6,
+                        borderWidth: 1,
+                        borderColor: '#fee2e2'
+                      }}
+                      onPress={() => handleDeleteStaff((s as any).id, s.name)}
+                    >
+                      <Ionicons name="trash-outline" size={12} color="#ef4444" />
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#ef4444' }}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
                   {(s as any).phone && (s as any).phone !== '-' && (
                     <Text style={{ fontSize: 11.5, color: '#258ec8', fontWeight: '600', marginTop: 4 }}>Phone: +91 {(s as any).phone}</Text>
                   )}
@@ -418,21 +1334,79 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
           {staffCategory === 'doctors' && (
             <View style={styles.card}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
-                <Text style={styles.cardTitle}>Doctors Directory</Text>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: '#16a34a' }}>{liveDoctors.length} Doctors</Text>
+                <View>
+                  <Text style={styles.cardTitle}>Doctors Directory</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#16a34a' }}>{liveDoctors.length} Doctors</Text>
+                </View>
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: '#9333ea',
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 8,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4
+                  }}
+                  onPress={() => {
+                    setNewDocName('');
+                    setNewDocPhone('');
+                    setNewDocSalary('₹95,000');
+                    setShowAddDoctorModal(true);
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={14} color="#ffffff" />
+                  <Text style={{ color: '#ffffff', fontSize: 11.5, fontWeight: '800' }}>+ Add Doctor</Text>
+                </TouchableOpacity>
               </View>
 
               {liveDoctors.map(doc => {
                 const isHeadDoc = doc.category === 'Head Doctor' || doc.role === 'Head Doctor';
                 return (
-                  <View key={doc.name} style={{ backgroundColor: '#ffffff', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                  <View key={doc.id || doc.name} style={{ backgroundColor: '#ffffff', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ fontSize: 13, fontWeight: '800', color: '#0f172a' }}>{doc.name}</Text>
-                      <Text style={{ fontSize: 10.5, fontWeight: '800', color: isHeadDoc ? '#258ec8' : '#16a34a', backgroundColor: isHeadDoc ? '#eef5fc' : '#f0fdf4', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
-                        {doc.role}
-                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={{ fontSize: 10.5, fontWeight: '800', color: isHeadDoc ? '#258ec8' : '#9333ea', backgroundColor: isHeadDoc ? '#eef5fc' : '#faf5ff', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                          {doc.role}
+                        </Text>
+                        <TouchableOpacity
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 2,
+                            backgroundColor: '#f1f5f9',
+                            paddingHorizontal: 6,
+                            paddingVertical: 3,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: '#cbd5e1'
+                          }}
+                          onPress={() => handleOpenEditDoctor(doc)}
+                        >
+                          <Ionicons name="create-outline" size={11} color="#475569" />
+                          <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#475569' }}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 2,
+                            backgroundColor: '#fef2f2',
+                            paddingHorizontal: 6,
+                            paddingVertical: 3,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: '#fee2e2'
+                          }}
+                          onPress={() => handleDeleteDoctor(doc.id, doc.name)}
+                        >
+                          <Ionicons name="trash-outline" size={11} color="#ef4444" />
+                          <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#ef4444' }}>Delete</Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
-                    <Text style={{ fontSize: 11.5, color: '#258ec8', fontWeight: '600', marginTop: 4 }}>Phone: +91 {doc.phone}</Text>
+                    <Text style={{ fontSize: 11.5, color: '#258ec8', fontWeight: '600', marginTop: 4 }}>Phone: +91 {doc.phone || doc.mobile}</Text>
 
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#f1f5f9' }}>
                       <Text style={{ fontSize: 11, color: isHeadDoc ? '#64748b' : '#258ec8', fontWeight: '700' }}>
@@ -448,6 +1422,54 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
                   </View>
                 );
               })}
+            </View>
+          )}
+
+          {/* Section 4: HR Department (No salary, No login/logout, No branch - Just HR ID & Password) */}
+          {staffCategory === 'hr' && (
+            <View style={styles.card}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
+                <Text style={styles.cardTitle}>HR Department</Text>
+                <View style={{ backgroundColor: '#dcfce7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                  <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#15803d' }}>ACTIVE</Text>
+                </View>
+              </View>
+
+              <View style={{ backgroundColor: '#ffffff', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0', gap: 10 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>HR Management</Text>
+                  <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#0284c7', backgroundColor: '#e0f2fe', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                    Human Resources (HR)
+                  </Text>
+                </View>
+
+                <View style={{ paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f1f5f9', gap: 8 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '700' }}>HR Login ID / Email:</Text>
+                    <View style={{ backgroundColor: '#f1f5f9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
+                      <Text style={{ fontSize: 12, color: '#0f172a', fontWeight: '800' }}>hr@sph.com</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '700' }}>Portal Password:</Text>
+                    <View style={{ backgroundColor: '#f1f5f9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
+                      <Text style={{ fontSize: 12, color: '#0f172a', fontWeight: '800' }}>hr@sph123</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, color: '#64748b', fontWeight: '700' }}>Access Level:</Text>
+                    <Text style={{ fontSize: 11.5, color: '#15803d', fontWeight: '800' }}>Full Operations & Admin Access</Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={{ marginTop: 10, padding: 10, backgroundColor: '#f8fafc', borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                <Text style={{ fontSize: 11, color: '#64748b', lineHeight: 16 }}>
+                  HR account has complete module access across Web and Mobile matching the Admin control suite.
+                </Text>
+              </View>
             </View>
           )}
         </View>
@@ -706,13 +1728,13 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
         </View>
       </Modal>
 
-      {/* ADD DOCTOR MODAL */}
-      <Modal visible={showAddDoctorModal} transparent animationType="slide">
+      {/* ADD / EDIT DOCTOR MODAL */}
+      <Modal visible={showAddDoctorModal || showEditDoctorModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Add New Doctor</Text>
-              <TouchableOpacity onPress={() => setShowAddDoctorModal(false)}>
+              <Text style={styles.modalTitle}>{showEditDoctorModal ? 'Edit Doctor' : 'Add New Doctor'}</Text>
+              <TouchableOpacity onPress={() => { setShowAddDoctorModal(false); setShowEditDoctorModal(false); }}>
                 <Ionicons name="close" size={20} color="#64748b" />
               </TouchableOpacity>
             </View>
@@ -797,7 +1819,158 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab }) => {
             )}
 
             <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#a8ce3a' }]} onPress={handleSaveNewDoctor}>
-              <Text style={styles.saveBtnText}>Save Doctor</Text>
+              <Text style={styles.saveBtnText}>{showEditDoctorModal ? 'Update Doctor' : 'Save Doctor'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL: BRANCH PATIENT BREAKDOWN & FOLLOW-UPS */}
+      <Modal
+        visible={!!selectedBranchModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setSelectedBranchModal(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+            {/* Modal Header */}
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalTitle}>{selectedBranchModal?.name}</Text>
+                <Text style={{ fontSize: 11.5, color: '#64748b' }}>
+                  Patients on {dailyOpsDate} • 📞 {selectedBranchModal?.phone}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setSelectedBranchModal(null)} style={{ padding: 4 }}>
+                <Ionicons name="close" size={22} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Filter Tabs */}
+            {selectedBranchModal && (
+              <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12 }}>
+                <TouchableOpacity
+                  onPress={() => setBranchPatientFilter('all')}
+                  style={[styles.chipBtn, branchPatientFilter === 'all' && styles.chipBtnActive]}
+                >
+                  <Text style={[styles.chipBtnText, branchPatientFilter === 'all' && styles.chipBtnTextActive]}>
+                    All ({selectedBranchModal.appointmentCount})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setBranchPatientFilter('opted')}
+                  style={[styles.chipBtn, branchPatientFilter === 'opted' && { backgroundColor: '#16a34a', borderColor: '#16a34a' }]}
+                >
+                  <Text style={[styles.chipBtnText, branchPatientFilter === 'opted' && { color: '#ffffff' }]}>
+                    Opted ({selectedBranchModal.optedCount})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setBranchPatientFilter('not_opted')}
+                  style={[styles.chipBtn, branchPatientFilter === 'not_opted' && { backgroundColor: '#ea580c', borderColor: '#ea580c' }]}
+                >
+                  <Text style={[styles.chipBtnText, branchPatientFilter === 'not_opted' && { color: '#ffffff' }]}>
+                    Not Opted ({selectedBranchModal.notOptedCount})
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Patient List */}
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 380 }}>
+              {selectedBranchModal && (() => {
+                const list = branchPatientFilter === 'opted'
+                  ? selectedBranchModal.optedApps
+                  : branchPatientFilter === 'not_opted'
+                    ? selectedBranchModal.notOptedApps
+                    : selectedBranchModal.appointments;
+
+                if (!list || list.length === 0) {
+                  return (
+                    <View style={{ padding: 24, alignItems: 'center' }}>
+                      <Text style={{ fontSize: 13, color: '#94a3b8' }}>
+                        No patients matching this filter
+                      </Text>
+                    </View>
+                  );
+                }
+
+                return (
+                  <View style={{ gap: 8 }}>
+                    {list.map((a: any, idx: number) => {
+                      const opted = isFollowUpOpted(a);
+                      const amt = extractRevenue(a);
+                      const patientName = a.patientName || a.name || `Patient #${idx + 1}`;
+                      const phone = a.phone || a.mobile || '-';
+                      const docName = a.doctor || a.doctorName || 'General Doctor';
+                      const time = a.appointmentTime || a.time || '-';
+
+                      return (
+                        <View
+                          key={a.id || idx}
+                          style={{
+                            backgroundColor: '#f8fafc',
+                            borderRadius: 12,
+                            padding: 12,
+                            borderWidth: 1,
+                            borderColor: '#e2e8f0',
+                            gap: 4
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Text style={{ fontSize: 13.5, fontWeight: '800', color: '#0f172a' }}>
+                              {patientName}
+                            </Text>
+                            <View style={{
+                              backgroundColor: opted ? '#f0fdf4' : '#fff7ed',
+                              borderWidth: 1,
+                              borderColor: opted ? '#bbf7d0' : '#fed7aa',
+                              paddingHorizontal: 8,
+                              paddingVertical: 2,
+                              borderRadius: 6
+                            }}>
+                              <Text style={{
+                                fontSize: 10,
+                                fontWeight: '800',
+                                color: opted ? '#16a34a' : '#ea580c'
+                              }}>
+                                {opted ? '✓ Opted' : '✕ Not Opted'}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 }}>
+                            <Text style={{ fontSize: 11.5, color: '#64748b' }}>
+                              📞 {phone} • {time}
+                            </Text>
+                            <Text style={{ fontSize: 12, fontWeight: '800', color: '#258ec8' }}>
+                              {amt > 0 ? `₹${amt.toLocaleString('en-IN')}` : 'Fee Pending'}
+                            </Text>
+                          </View>
+
+                          <Text style={{ fontSize: 11, color: '#64748b' }}>
+                            Doctor: {docName}
+                          </Text>
+
+                          {opted && (a.preferredFollowUpDate || a.followUpDate || a.followUpInterval) && (
+                            <Text style={{ fontSize: 10.5, color: '#16a34a', fontWeight: '700' }}>
+                              Follow-Up: {a.preferredFollowUpDate || a.followUpDate || a.followUpInterval}
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
+            </ScrollView>
+
+            <TouchableOpacity
+              onPress={() => setSelectedBranchModal(null)}
+              style={[styles.saveBtn, { marginTop: 12, backgroundColor: '#f1f5f9' }]}
+            >
+              <Text style={[styles.saveBtnText, { color: '#475569' }]}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>

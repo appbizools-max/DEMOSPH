@@ -1,16 +1,418 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Calendar as CalendarIcon, Clock, User, Phone, Mail, Stethoscope, Video,
   CheckCircle2, ChevronDown, Check, Home, Megaphone, ArrowRight, ShieldCheck, Info,
-  ChevronLeft, ChevronRight, X, Building2, Lock, Search, Printer
+  ChevronLeft, ChevronRight, X, Building2, Lock, Search, Printer, UserX
 } from 'lucide-react';
 import { createDocument, db, sendBookingWhatsAppNotification } from '@app/shared';
 import { collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
 import { generateRegistrationId, getBranchShortcut } from '../../../utils/idGenerator';
+import { createBookingNotificationInFirestore } from '../../../utils/fcmWebTrigger';
+import { getPatientVisitState } from '../../../utils/patientVisitState';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
+import {
+  DoctorNoShowOverride,
+  getActiveDoctorNoShow,
+  filterSlotsByNoShow,
+  normalizeToISODate,
+  getCanonicalDoctorName
+} from '../DoctorNoShow/doctorRosterHelper';
 
 let GLOBAL_WEB_PATIENTS_CACHE: any[] = [];
 let GLOBAL_WEB_ALLPATIENTS_CACHE: any[] = [];
 let GLOBAL_WEB_APPTS_CACHE: any[] = [];
+
+export const CLINIC_BRANCHES = [
+  'KPHB Branch',
+  'Nallagandla Branch',
+  'Dilshuknagar Branch',
+  'Chandanagar Branch',
+];
+
+const WebAnalogClockModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  selectedTimeSlot: string;
+  onSelectTime: (timeStr: string) => void;
+}> = ({ isOpen, onClose, selectedTimeSlot, onSelectTime }) => {
+  const [mode, setMode] = useState<'hours' | 'minutes'>('hours');
+  const [selectedHour, setSelectedHour] = useState(10);
+  const [selectedMinute, setSelectedMinute] = useState(0);
+  const [ampm, setAmPm] = useState<'AM' | 'PM'>('AM');
+  const clockRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (selectedTimeSlot) {
+      const parts = selectedTimeSlot.trim().split(' ');
+      if (parts.length === 2) {
+        const [hStr, mStr] = parts[0].split(':');
+        const h = parseInt(hStr, 10);
+        const m = parseInt(mStr, 10);
+        if (!isNaN(h)) setSelectedHour(h === 0 ? 12 : h > 12 ? h - 12 : h);
+        if (!isNaN(m)) setSelectedMinute(m);
+        setAmPm(parts[1].toUpperCase() === 'PM' ? 'PM' : 'AM');
+      }
+    }
+  }, [selectedTimeSlot, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleClockClickOrTouch = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!clockRef.current) return;
+    const rect = clockRef.current.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    let clientX = 0;
+    let clientY = 0;
+    if ('touches' in e && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else if ('clientX' in e) {
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
+    }
+
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    let angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+    if (angleDeg < 0) angleDeg += 360;
+
+    if (mode === 'hours') {
+      let h = Math.round(angleDeg / 30);
+      if (h === 0) h = 12;
+      if (h > 12) h = 12;
+      setSelectedHour(h);
+      setMode('minutes');
+    } else {
+      let m = Math.round(angleDeg / 6) % 60;
+      setSelectedMinute(m);
+    }
+  };
+
+  const handleConfirm = () => {
+    const formattedH = String(selectedHour).padStart(2, '0');
+    const formattedM = String(selectedMinute).padStart(2, '0');
+    const timeStr = `${formattedH}:${formattedM} ${ampm}`;
+    onSelectTime(timeStr);
+    onClose();
+  };
+
+  const getHourCoords = (h: number) => {
+    const angle = (h * 30 - 90) * (Math.PI / 180);
+    const r = 74;
+    const cx = 100;
+    const cy = 100;
+    return {
+      x: cx + r * Math.cos(angle) - 18,
+      y: cy + r * Math.sin(angle) - 18,
+      endX: cx + r * Math.cos(angle),
+      endY: cy + r * Math.sin(angle),
+    };
+  };
+
+  const getMinuteCoords = (m: number) => {
+    const angle = (m * 6 - 90) * (Math.PI / 180);
+    const r = 74;
+    const cx = 100;
+    const cy = 100;
+    return {
+      x: cx + r * Math.cos(angle) - 18,
+      y: cy + r * Math.sin(angle) - 18,
+      endX: cx + r * Math.cos(angle),
+      endY: cy + r * Math.sin(angle),
+    };
+  };
+
+  const hours = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  const minutes = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+
+  const activeHandCoords = mode === 'hours'
+    ? getHourCoords(selectedHour)
+    : getMinuteCoords(selectedMinute);
+
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(15, 23, 42, 0.65)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 9999,
+      padding: '20px'
+    }}>
+      <div style={{
+        background: '#ffffff',
+        borderRadius: '24px',
+        width: '100%',
+        maxWidth: '340px',
+        overflow: 'hidden',
+        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)'
+      }}>
+        {/* Header */}
+        <div style={{
+          background: '#0284c7',
+          padding: '18px 20px',
+          textAlign: 'center',
+          color: '#ffffff'
+        }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#bae6fd', textTransform: 'uppercase', letterSpacing: '1px' }}>
+            Select Online Time
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: '6px', margin: '6px 0' }}>
+            <span
+              onClick={() => setMode('hours')}
+              style={{
+                fontSize: '36px',
+                fontWeight: 900,
+                color: mode === 'hours' ? '#ffffff' : '#93c5fd',
+                borderBottom: mode === 'hours' ? '2px solid #ffffff' : 'none',
+                cursor: 'pointer'
+              }}
+            >
+              {String(selectedHour).padStart(2, '0')}
+            </span>
+
+            <span style={{ fontSize: '36px', fontWeight: 900, color: '#ffffff' }}>:</span>
+
+            <span
+              onClick={() => setMode('minutes')}
+              style={{
+                fontSize: '36px',
+                fontWeight: 900,
+                color: mode === 'minutes' ? '#ffffff' : '#93c5fd',
+                borderBottom: mode === 'minutes' ? '2px solid #ffffff' : 'none',
+                cursor: 'pointer'
+              }}
+            >
+              {String(selectedMinute).padStart(2, '0')}
+            </span>
+
+            <div style={{ marginLeft: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <button
+                type="button"
+                onClick={() => setAmPm('AM')}
+                style={{
+                  background: ampm === 'AM' ? '#ffffff' : 'rgba(255,255,255,0.2)',
+                  color: ampm === 'AM' ? '#0284c7' : '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  fontSize: '11px',
+                  fontWeight: 900,
+                  cursor: 'pointer'
+                }}
+              >
+                AM
+              </button>
+              <button
+                type="button"
+                onClick={() => setAmPm('PM')}
+                style={{
+                  background: ampm === 'PM' ? '#ffffff' : 'rgba(255,255,255,0.2)',
+                  color: ampm === 'PM' ? '#0284c7' : '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  fontSize: '11px',
+                  fontWeight: 900,
+                  cursor: 'pointer'
+                }}
+              >
+                PM
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'inline-flex', background: 'rgba(255,255,255,0.2)', borderRadius: '12px', padding: '3px', gap: '4px' }}>
+            <button
+              type="button"
+              onClick={() => setMode('hours')}
+              style={{
+                background: mode === 'hours' ? '#ffffff' : 'transparent',
+                color: mode === 'hours' ? '#0284c7' : '#ffffff',
+                border: 'none',
+                borderRadius: '9px',
+                padding: '4px 14px',
+                fontSize: '11px',
+                fontWeight: 800,
+                cursor: 'pointer'
+              }}
+            >
+              HOURS
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('minutes')}
+              style={{
+                background: mode === 'minutes' ? '#ffffff' : 'transparent',
+                color: mode === 'minutes' ? '#0284c7' : '#ffffff',
+                border: 'none',
+                borderRadius: '9px',
+                padding: '4px 14px',
+                fontSize: '11px',
+                fontWeight: 800,
+                cursor: 'pointer'
+              }}
+            >
+              MINUTES
+            </button>
+          </div>
+        </div>
+
+        {/* Clock Face Body */}
+        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div
+            ref={clockRef}
+            onClick={handleClockClickOrTouch}
+            style={{
+              width: '200px',
+              height: '200px',
+              borderRadius: '50%',
+              background: '#f8fafc',
+              border: '2px solid #e2e8f0',
+              position: 'relative',
+              cursor: 'pointer'
+            }}
+          >
+            {/* Center Pivot */}
+            <div style={{
+              position: 'absolute',
+              top: '96px',
+              left: '96px',
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: '#0284c7',
+              zIndex: 10
+            }} />
+
+            {/* Pointer Hand */}
+            <div style={{
+              position: 'absolute',
+              top: '100px',
+              left: '100px',
+              width: `${Math.sqrt(Math.pow(activeHandCoords.endX - 100, 2) + Math.pow(activeHandCoords.endY - 100, 2))}px`,
+              height: '2px',
+              background: '#0284c7',
+              transformOrigin: '0% 50%',
+              transform: `rotate(${Math.atan2(activeHandCoords.endY - 100, activeHandCoords.endX - 100)}rad)`,
+              zIndex: 2,
+              pointerEvents: 'none'
+            }} />
+
+            {/* Radially Placed Numbers */}
+            {mode === 'hours' ? (
+              hours.map((h) => {
+                const coords = getHourCoords(h);
+                const isSelected = selectedHour === h;
+                return (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedHour(h);
+                      setMode('minutes');
+                    }}
+                    style={{
+                      position: 'absolute',
+                      left: `${coords.x}px`,
+                      top: `${coords.y}px`,
+                      width: '36px',
+                      height: '36px',
+                      borderRadius: '50%',
+                      background: isSelected ? '#0284c7' : 'transparent',
+                      color: isSelected ? '#ffffff' : '#334155',
+                      border: 'none',
+                      fontSize: '13px',
+                      fontWeight: isSelected ? 900 : 700,
+                      cursor: 'pointer',
+                      zIndex: 5
+                    }}
+                  >
+                    {h}
+                  </button>
+                );
+              })
+            ) : (
+              minutes.map((m) => {
+                const coords = getMinuteCoords(m);
+                const isSelected = selectedMinute === m;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setSelectedMinute(m)}
+                    style={{
+                      position: 'absolute',
+                      left: `${coords.x}px`,
+                      top: `${coords.y}px`,
+                      width: '36px',
+                      height: '36px',
+                      borderRadius: '50%',
+                      background: isSelected ? '#0284c7' : 'transparent',
+                      color: isSelected ? '#ffffff' : '#334155',
+                      border: 'none',
+                      fontSize: '11.5px',
+                      fontWeight: isSelected ? 900 : 700,
+                      cursor: 'pointer',
+                      zIndex: 5
+                    }}
+                  >
+                    {String(m).padStart(2, '0')}
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px', marginTop: '20px', width: '100%' }}>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                flex: 1,
+                padding: '12px',
+                borderRadius: '12px',
+                background: '#f1f5f9',
+                border: 'none',
+                color: '#64748b',
+                fontWeight: 700,
+                fontSize: '13px',
+                cursor: 'pointer'
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirm}
+              style={{
+                flex: 1,
+                padding: '12px',
+                borderRadius: '12px',
+                background: '#0284c7',
+                border: 'none',
+                color: '#ffffff',
+                fontWeight: 800,
+                fontSize: '13px',
+                cursor: 'pointer'
+              }}
+            >
+              OK / Set Time
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 const WEB_PATIENTS_CACHE_KEY = '@sph_web_patients_cache_v2';
 const WEB_APPTS_CACHE_KEY = '@sph_web_appts_cache_v2';
 
@@ -116,7 +518,7 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
   },
   {
     id: 'doc-2',
-    name: 'Dr. CH. Rama Krishna',
+    name: 'Dr. Ramakrishna Chanduri',
     phone: '9804176176',
     role: 'Homeopathy Physician',
     branchSchedules: [
@@ -226,13 +628,28 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
 
 interface BookAppointmentPageProps {
   currentBranch?: string;
+  userRole?: string;
   onNavigate?: (tab: string) => void;
 }
 
 export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   currentBranch = "KPHB Branch",
+  userRole,
   onNavigate
 }) => {
+  const isHR = userRole === 'hr' || userRole === 'admin' || currentBranch === 'All Branches' || currentBranch === 'HR' || currentBranch === 'Admin';
+
+  const [selectedBranch, setSelectedBranch] = useState<string>(() => {
+    if (isHR) return '';
+    return currentBranch;
+  });
+
+  useEffect(() => {
+    if (!isHR && currentBranch) {
+      setSelectedBranch(currentBranch);
+    }
+  }, [currentBranch, isHR]);
+
   // Section 1: Patient Details
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [patientName, setPatientName] = useState('');
@@ -398,6 +815,7 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   const [appointmentDate, setAppointmentDate] = useState(getTodayFormatted);
   const [selectedDoctor, setSelectedDoctor] = useState('');
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('');
+  const [clockModalOpen, setClockModalOpen] = useState(false);
 
   // Firestore Live Doctors List
   const [allDoctorsList, setAllDoctorsList] = useState<Doctor[]>(DEFAULT_DOCTORS_SEED);
@@ -441,6 +859,33 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     }
   }, []);
 
+  // Firestore Live Doctor No Shows List
+  const [noShowsList, setNoShowsList] = useState<DoctorNoShowOverride[]>([]);
+  useEffect(() => {
+    if (!db) return;
+    try {
+      const q = collection(db, 'doctor_no_shows');
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const list: DoctorNoShowOverride[] = snapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<DoctorNoShowOverride, 'id'>)
+        }));
+        setNoShowsList(list);
+      }, (err) => {
+        console.warn('Firestore doctor_no_shows listener error in BookAppointment:', err);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Firestore doctor_no_shows subscribe notice:', e);
+    }
+  }, []);
+
+  // Compute if selectedDoctor has an active No Show for appointmentDate at selectedBranch
+  const activeNoShowForSelectedDoc = useMemo(() => {
+    if (!selectedDoctor || !selectedBranch) return undefined;
+    return getActiveDoctorNoShow(noShowsList, selectedDoctor, selectedBranch, appointmentDate);
+  }, [noShowsList, selectedDoctor, selectedBranch, appointmentDate]);
+
   // Helper to convert DD-MM-YYYY to DayName
   const getSelectedDayName = (dateStr: string): DayName => {
     if (!dateStr) return 'Sat';
@@ -461,29 +906,37 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   const selectedDayName = getSelectedDayName(appointmentDate);
 
   // Dynamically filter doctors available for the selected branch and selected day
-  const availableDoctors = allDoctorsList.filter((doc) => {
-    const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-
-    if (doc.branchSchedules && doc.branchSchedules.length > 0) {
-      const matchBs = doc.branchSchedules.find((bs) => {
-        const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-        return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
-      });
-
-      if (!matchBs) return false;
-      const daySched = matchBs.daySchedules?.[selectedDayName];
-      if (!daySched) return false;
-
-      return daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0;
+  const availableDoctors = useMemo(() => {
+    if (consultationMode === 'Online') {
+      return allDoctorsList && allDoctorsList.length > 0 ? allDoctorsList : DEFAULT_DOCTORS_SEED;
     }
 
-    const docBranchStr = (doc.branch || doc.assignedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-    if (docBranchStr) {
-      return docBranchStr.includes(normCurrentBranch) || normCurrentBranch.includes(docBranchStr);
-    }
+    if (!selectedBranch) return [];
 
-    return false;
-  });
+    return allDoctorsList.filter((doc) => {
+      const normCurrentBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+
+      if (doc.branchSchedules && doc.branchSchedules.length > 0) {
+        const matchBs = doc.branchSchedules.find((bs) => {
+          const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+          return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
+        });
+
+        if (!matchBs) return false;
+        const daySched = matchBs.daySchedules?.[selectedDayName];
+        if (!daySched) return false;
+
+        return daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0;
+      }
+
+      const docBranchStr = (doc.branch || doc.assignedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+      if (docBranchStr) {
+        return docBranchStr.includes(normCurrentBranch) || normCurrentBranch.includes(docBranchStr);
+      }
+
+      return false;
+    });
+  }, [allDoctorsList, selectedBranch, selectedDayName, consultationMode]);
 
   // Auto-reset selectedDoctor if no longer available on changed date/branch
   useEffect(() => {
@@ -494,7 +947,7 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
         setSelectedTimeSlot('');
       }
     }
-  }, [appointmentDate, currentBranch, availableDoctors]);
+  }, [appointmentDate, currentBranch, availableDoctors, consultationMode]);
 
   // Firestore Live Patient History Collections (appointments, patients & allpatients) with 0ms Instant Device Cache
   const [existingAppointments, setExistingAppointments] = useState<any[]>(GLOBAL_WEB_APPTS_CACHE);
@@ -749,30 +1202,37 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   // Compute available 15-minute time slots (Regular + Temporary) for selected doctor
   const selectedDocObj = availableDoctors.find((d) => d.name === selectedDoctor);
   const timeSlotsList = useMemo(() => {
-    const defaultFallbackRanges: TimeSlot[] = [{
-      startHour: '10', startMinute: '00', startAmPm: 'AM',
-      endHour: '01', endMinute: '00', endAmPm: 'PM'
-    }];
-
     let regularSlots: string[] = [];
 
-    if (selectedDocObj && selectedDocObj.branchSchedules && selectedDocObj.branchSchedules.length > 0) {
-      const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-      const matchBs = selectedDocObj.branchSchedules.find((bs) => {
-        const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-        return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
-      });
+    if (consultationMode === 'Online') {
+      // 24 Hours Time Slots for Online Consultation (12:00 AM to 11:45 PM every 15 mins)
+      for (let mins = 0; mins < 24 * 60; mins += 15) {
+        regularSlots.push(formatMinutesToTimeStr(mins));
+      }
+    } else {
+      const defaultFallbackRanges: TimeSlot[] = [{
+        startHour: '10', startMinute: '00', startAmPm: 'AM',
+        endHour: '01', endMinute: '00', endAmPm: 'PM'
+      }];
 
-      if (matchBs && matchBs.daySchedules?.[selectedDayName]) {
-        const daySched = matchBs.daySchedules[selectedDayName];
-        if (daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0) {
-          regularSlots = generate15MinSlotsFromRanges(daySched.slots);
+      if (selectedDocObj && selectedDocObj.branchSchedules && selectedDocObj.branchSchedules.length > 0) {
+        const normCurrentBranch = (currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+        const matchBs = selectedDocObj.branchSchedules.find((bs) => {
+          const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+          return normBsBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normBsBranch);
+        });
+
+        if (matchBs && matchBs.daySchedules?.[selectedDayName]) {
+          const daySched = matchBs.daySchedules[selectedDayName];
+          if (daySched.status === 'Available' && daySched.slots && daySched.slots.length > 0) {
+            regularSlots = generate15MinSlotsFromRanges(daySched.slots);
+          }
         }
       }
-    }
 
-    if (regularSlots.length === 0) {
-      regularSlots = generate15MinSlotsFromRanges(defaultFallbackRanges);
+      if (regularSlots.length === 0) {
+        regularSlots = generate15MinSlotsFromRanges(defaultFallbackRanges);
+      }
     }
 
     // Find temporary slots for selected doctor, appointment date, and branch
@@ -800,8 +1260,18 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
 
     // Merge regular & temp slots, remove duplicates, and sort chronologically
     const combined = Array.from(new Set([...regularSlots, ...generatedTempSlots]));
-    return sortTimeSlotsChronologically(combined);
-  }, [selectedDocObj, selectedDoctor, currentBranch, selectedDayName, appointmentDate, tempSlotsList]);
+    const sorted = sortTimeSlotsChronologically(combined);
+
+    // Apply Doctor No-Show Override Filtering (Full Day, Date Range, Session, Time Range):
+    let availableList = sorted;
+    if (activeNoShowForSelectedDoc) {
+      const { availableSlots } = filterSlotsByNoShow(sorted, activeNoShowForSelectedDoc);
+      availableList = availableSlots;
+    }
+
+    // We return all valid slots without filtering out past slots so past slots remain visible but blocked in UI
+    return availableList;
+  }, [selectedDocObj, selectedDoctor, currentBranch, selectedDayName, appointmentDate, tempSlotsList, activeNoShowForSelectedDoc, consultationMode]);
 
   const normalizeTimeStr = (str: string): string => {
     if (!str) return '';
@@ -943,6 +1413,26 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
       return;
     }
 
+    // Prevent booking if doctor is on Full Day or Date Range No Show
+    if (activeNoShowForSelectedDoc && (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range')) {
+      alert(`Cannot book appointment. ${selectedDoctor} is marked as NO SHOW at ${currentBranch} on ${appointmentDate} (${activeNoShowForSelectedDoc.reason}). Please select another doctor or date.`);
+      return;
+    }
+
+    if (!selectedTimeSlot) {
+      alert('Please select an available Time Slot.');
+      return;
+    }
+
+    // Prevent booking if selected time slot is blocked by session or time range No Show
+    if (activeNoShowForSelectedDoc) {
+      const { availableSlots } = filterSlotsByNoShow([selectedTimeSlot], activeNoShowForSelectedDoc);
+      if (availableSlots.length === 0) {
+        alert(`The selected time slot ${selectedTimeSlot} is blocked by Doctor No Show (${activeNoShowForSelectedDoc.reason}). Please pick another slot.`);
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
       let generatedRegId = patientData.regID || patientData.patientId;
@@ -996,6 +1486,16 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
         doctorName: selectedDoctor,
         branch: currentBranch
       }).catch(err => console.error('WhatsApp booking notification error:', err));
+
+      // Trigger FCM Push Notification and 10-day Firestore retention cleanup
+      createBookingNotificationInFirestore({
+        patientName,
+        appointmentTime: selectedTimeSlot || '10:00 AM',
+        appointmentDate,
+        branch: currentBranch,
+        doctorName: selectedDoctor,
+        consultationMode
+      }).catch(err => console.warn('FCM booking notification notice:', err));
 
       // Open confirmation modal with details
       setConfirmedBooking(appPayload);
@@ -1522,23 +2022,61 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
               <label style={{ display: 'block', fontSize: '12.5px !important', fontWeight: 700, color: '#1e293b', marginBottom: '8px' }}>
                 Select Branch *
               </label>
-              <div style={{
-                background: '#f8fafc',
-                border: '1px solid #cbd5e1',
-                borderRadius: '12px',
-                padding: '0 14px',
-                height: '48px',
-                display: 'flex',
-                alignItems: 'center',
-                boxSizing: 'border-box'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <Building2 size={18} color="#258ec8" />
-                  <span style={{ fontSize: '13.5px !important', color: '#0f172a', fontWeight: 800 }}>
-                    {currentBranch}
-                  </span>
+              {isHR ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      background: '#ffffff',
+                      border: '1px solid #258ec8',
+                      borderRadius: '12px',
+                      padding: '0 14px',
+                      height: '48px',
+                      boxSizing: 'border-box',
+                      cursor: 'pointer'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <Building2 size={18} color="#258ec8" />
+                        <span style={{ fontSize: '13.5px !important', color: selectedBranch ? '#0f172a' : '#94a3b8', fontWeight: selectedBranch ? 800 : 500 }}>
+                          {selectedBranch || 'Select Branch'}
+                        </span>
+                      </div>
+                      <ChevronDown size={18} color="#94a3b8" />
+                    </div>
+                  </DropdownMenuTrigger>
+
+                  <DropdownMenuContent>
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>Select Branch</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup value={selectedBranch} onValueChange={(b) => { setSelectedBranch(b); setSelectedDoctor(''); setSelectedTimeSlot(''); }}>
+                        {CLINIC_BRANCHES.map(b => (
+                          <DropdownMenuRadioItem key={b} value={b}>{b}</DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <div style={{
+                  background: '#f8fafc',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '12px',
+                  padding: '0 14px',
+                  height: '48px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  boxSizing: 'border-box'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <Building2 size={18} color="#258ec8" />
+                    <span style={{ fontSize: '13.5px !important', color: '#0f172a', fontWeight: 800 }}>
+                      {selectedBranch || currentBranch}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* 2. Date Field */}
@@ -1617,11 +2155,31 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                       </div>
                     ) : (
                       <DropdownMenuRadioGroup value={selectedDoctor} onValueChange={setSelectedDoctor}>
-                        {availableDoctors.map(doc => (
-                          <DropdownMenuRadioItem key={doc.id} value={doc.name}>
-                            {doc.name}
-                          </DropdownMenuRadioItem>
-                        ))}
+                        {availableDoctors.map(doc => {
+                          const docNoShow = getActiveDoctorNoShow(noShowsList, doc.name, currentBranch, appointmentDate);
+                          const isFullDayBlocked = docNoShow && (docNoShow.type === 'date' || docNoShow.type === 'date_range');
+                          return (
+                            <DropdownMenuRadioItem key={doc.id} value={doc.name}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '10px' }}>
+                                <span style={{ color: isFullDayBlocked ? '#dc2626' : '#0f172a', fontWeight: isFullDayBlocked ? 700 : 500 }}>
+                                  {doc.name}
+                                </span>
+                                {docNoShow && (
+                                  <span style={{
+                                    fontSize: '10px',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    background: isFullDayBlocked ? '#fee2e2' : '#fef3c7',
+                                    color: isFullDayBlocked ? '#dc2626' : '#b45309',
+                                    fontWeight: 800
+                                  }}>
+                                    {isFullDayBlocked ? '🚫 NO SHOW' : `⚠️ ${docNoShow.type.toUpperCase()} BLOCKED`}
+                                  </span>
+                                )}
+                              </div>
+                            </DropdownMenuRadioItem>
+                          );
+                        })}
                       </DropdownMenuRadioGroup>
                     )}
                   </DropdownMenuGroup>
@@ -1679,13 +2237,99 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
               )}
             </div>
 
-            {!selectedDoctor ? (
+            {/* Doctor No Show Active Alert Banner */}
+            {activeNoShowForSelectedDoc && (
+              <div style={{
+                background: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#fef2f2' : '#fffbeb',
+                border: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '1.5px solid #fecaca' : '1.5px solid #fde68a',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                marginBottom: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px'
+              }}>
+                <div style={{
+                  background: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#fee2e2' : '#fef3c7',
+                  padding: '8px',
+                  borderRadius: '8px',
+                  color: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#dc2626' : '#d97706'
+                }}>
+                  <UserX size={18} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: '13px', color: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#991b1b' : '#92400e' }}>
+                    {(activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? 'Doctor No Show Active (Full Day Block)' : 'Partial No Show Active'}
+                  </div>
+                  <div style={{ fontSize: '11.5px', color: (activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range') ? '#b91c1c' : '#b45309', marginTop: '2px' }}>
+                    {selectedDoctor} is marked as NO SHOW at {currentBranch} on {appointmentDate} (Reason: <strong>{activeNoShowForSelectedDoc.reason}</strong>).
+                    {(activeNoShowForSelectedDoc.type === 'date' || activeNoShowForSelectedDoc.type === 'date_range')
+                      ? ' All appointment booking slots are closed for this doctor.'
+                      : ` Blocked slots for ${activeNoShowForSelectedDoc.type === 'session' ? `${activeNoShowForSelectedDoc.session?.toUpperCase()} Session` : `${activeNoShowForSelectedDoc.startTime} - ${activeNoShowForSelectedDoc.endTime}`} have been removed.`}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {consultationMode === 'Online' ? (
+              <div style={{
+                background: '#f8fafc',
+                borderRadius: '16px',
+                padding: '16px',
+                border: '1.5px solid #bae6fd',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                marginBottom: '14px'
+              }}>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: '#0369a1', marginBottom: '10px' }}>
+                  🌐 ONLINE CONSULTATION APPOINTMENT TIME
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setClockModalOpen(true)}
+                  style={{
+                    background: '#0284c7',
+                    color: '#ffffff',
+                    padding: '12px 20px',
+                    borderRadius: '14px',
+                    border: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    fontSize: '16px',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 6px -1px rgba(2, 132, 199, 0.3)'
+                  }}
+                >
+                  <Clock size={20} color="#ffffff" />
+                  {selectedTimeSlot || '10:00 AM'}
+                </button>
+
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px' }}>
+                  Click clock button to open Analog Clock Picker Popup
+                </div>
+
+                <WebAnalogClockModal
+                  isOpen={clockModalOpen}
+                  onClose={() => setClockModalOpen(false)}
+                  selectedTimeSlot={selectedTimeSlot}
+                  onSelectTime={(tStr) => {
+                    setSelectedTimeSlot(tStr);
+                  }}
+                />
+              </div>
+            ) : !selectedDoctor ? (
               <div style={{ background: '#f8fafc', border: '1px solid #f1f5f9', borderRadius: '12px', padding: '12px 14px', fontSize: '12px !important', color: '#64748b' }}>
                 Please select an available doctor to view time slots.
               </div>
             ) : timeSlotsList.length === 0 ? (
               <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '12px', padding: '12px 14px', fontSize: '12px !important', color: '#ef4444', fontWeight: 700 }}>
-                No active time slots configured for {selectedDoctor} on {selectedDayName}.
+                {activeNoShowForSelectedDoc
+                  ? `No booking slots available — ${selectedDoctor} is marked as NO SHOW on ${appointmentDate} (${activeNoShowForSelectedDoc.reason}).`
+                  : `No active time slots configured for ${selectedDoctor} on ${selectedDayName}.`}
               </div>
             ) : (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
@@ -1696,13 +2340,32 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                   const tempDocId = tempSlotMap[normKey] || tempSlotMap[slot.trim()];
                   const isTemp = !!tempDocId;
 
+                  const todayStr = new Date().toISOString().split('T')[0];
+                  const isToday = (appointmentDate === todayStr || normalizeToISODate(appointmentDate) === todayStr);
+                  let isPastSlot = false;
+                  if (isToday) {
+                    const now = new Date();
+                    const currentMins = now.getHours() * 60 + now.getMinutes();
+                    const parts = slot.trim().split(/\s+/);
+                    if (parts.length >= 2) {
+                      const [hStr, mStr] = parts[0].split(':');
+                      const ampm = parts[1].toUpperCase() as 'AM' | 'PM';
+                      const slotMins = parseTimeToMinutes(hStr, mStr, ampm);
+                      if (slotMins < currentMins) {
+                        isPastSlot = true;
+                      }
+                    }
+                  }
+
+                  const isDisabled = isFull || isPastSlot;
+
                   return (
                     <div key={slot} style={{ position: 'relative' }}>
                       <button
                         type="button"
-                        disabled={isFull}
+                        disabled={isDisabled}
                         onClick={() => {
-                          if (!isFull) {
+                          if (!isDisabled) {
                             setSelectedTimeSlot(slot);
                           }
                         }}
@@ -1711,26 +2374,26 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                             ? (isTemp ? '#ef4444' : '#258ec8')
                             : isTemp
                               ? '#fff5f5'
-                              : isFull
+                              : isDisabled
                                 ? '#f1f5f9'
                                 : '#ffffff',
                           color: isSelected
                             ? '#ffffff'
                             : isTemp
                               ? '#dc2626'
-                              : isFull
+                              : isDisabled
                                 ? '#94a3b8'
                                 : '#1e293b',
                           border: isSelected
                             ? (isTemp ? '2px solid #b91c1c' : '2px solid #258ec8')
                             : isTemp
                               ? '1.5px solid #ef4444'
-                              : isFull
+                              : isDisabled
                                 ? '1px dashed #cbd5e1'
                                 : '1px solid #cbd5e1',
                           borderRadius: '12px',
                           padding: '8px 14px',
-                          cursor: isFull ? 'not-allowed' : 'pointer',
+                          cursor: isDisabled ? 'not-allowed' : 'pointer',
                           transition: 'all 0.15s ease',
                           display: 'flex',
                           flexDirection: 'column',
@@ -1738,13 +2401,13 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                           justifyContent: 'center',
                           gap: '3px',
                           minWidth: '85px',
-                          opacity: isFull ? 0.65 : 1,
+                          opacity: isDisabled ? 0.6 : 1,
                         }}
                       >
                         <span style={{
                           fontSize: '12.5px !important',
                           fontWeight: 800,
-                          textDecoration: isFull ? 'line-through' : 'none'
+                          textDecoration: isDisabled ? 'line-through' : 'none'
                         }}>
                           {slot}
                         </span>
@@ -1758,23 +2421,27 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                               ? 'rgba(255, 255, 255, 0.25)'
                               : isTemp
                                 ? '#fee2e2'
-                                : isFull
+                                : isPastSlot
                                   ? '#fee2e2'
-                                  : remainingSlots === 1
-                                    ? '#fef3c7'
-                                    : '#e0f2fe',
+                                  : isFull
+                                    ? '#fee2e2'
+                                    : remainingSlots === 1
+                                      ? '#fef3c7'
+                                      : '#e0f2fe',
                             color: isSelected
                               ? '#ffffff'
                               : isTemp
                                 ? '#dc2626'
-                                : isFull
-                                  ? '#ef4444'
-                                  : remainingSlots === 1
-                                    ? '#b45309'
-                                    : '#0369a1'
+                                : isPastSlot
+                                  ? '#dc2626'
+                                  : isFull
+                                    ? '#ef4444'
+                                    : remainingSlots === 1
+                                      ? '#b45309'
+                                      : '#0369a1'
                           }}
                         >
-                          {isFull ? 'FULL' : `${remainingSlots} left`}
+                          {isPastSlot ? 'CLOSED' : (isFull ? 'FULL' : `${remainingSlots} left`)}
                         </span>
                       </button>
 
@@ -2032,9 +2699,34 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                   }}
                 >
                   <div>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>
-                      {prof.fullName}
-                    </div>
+                    {(() => {
+                      const vState = getPatientVisitState(
+                        { ...prof, patientName: prof.fullName, phone: prof.phone || checkedPhone, patientDocId: prof.id, regId: prof.registrationId },
+                        receptionDataStore.getAllCollectionsPool(),
+                        receptionDataStore.getPackageMembers()
+                      );
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>
+                            {prof.fullName}
+                          </span>
+                          <span style={{
+                            backgroundColor: vState.badgeBg,
+                            border: `1px solid ${vState.badgeBorder}`,
+                            color: vState.badgeColor,
+                            padding: '1.5px 6px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            letterSpacing: '0.3px',
+                            display: 'inline-flex',
+                            alignItems: 'center'
+                          }}>
+                            {vState.badgeText}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     <div style={{ fontSize: '12px', color: '#0284c7', marginTop: '2px' }}>
                       Reg ID: {prof.registrationId}
                     </div>

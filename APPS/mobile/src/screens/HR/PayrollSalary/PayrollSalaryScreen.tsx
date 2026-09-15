@@ -7,6 +7,7 @@ export const PayrollSalaryScreen: React.FC = () => {
     { name: 'Ashwini Begari', branch: 'Chandanagar', salary: '₹17,000', status: 'Processed' },
     { name: 'Vaishnavi Peri', branch: 'Nallagandla', salary: '₹17,000', status: 'Processed' },
     { name: 'Nandini Gottelli', branch: 'Dilshuknagar', salary: '₹15,000', status: 'Pending' },
+    { name: 'Aishwarya . M', branch: 'KPHB', salary: '₹14,000', status: 'Processed' },
   ];
 
   return (

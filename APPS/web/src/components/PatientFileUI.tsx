@@ -3,10 +3,54 @@ import {
   FileText, Clock, MapPin, Phone, Megaphone, AlertCircle, Plus,
   Upload, Trash2, ArrowLeft, Calendar, Check, ExternalLink, RefreshCcw,
   Sparkles, Stethoscope, Apple, Share2, Award, FolderPlus, X, CheckCircle2,
-  Printer, Eye, CreditCard, ChevronRight
+  Printer, Eye, CreditCard, ChevronRight, Maximize2
 } from 'lucide-react';
 import { db } from '@app/shared';
-import { collection, onSnapshot, addDoc, updateDoc, doc, arrayUnion } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, updateDoc, doc, arrayUnion, setDoc, getDoc, getDocs, query, where, limit } from 'firebase/firestore';
+import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
+import { getApp, getApps, initializeApp } from 'firebase/app';
+
+const getFirebaseStorage = () => {
+  try {
+    const app = getApps().length ? getApp() : initializeApp({
+      apiKey: "AIzaSyAohSNLyeS6bYtnk2QvB4HGo0LbHDw9b6Q",
+      authDomain: "spiritual-homeopathy-3b552.firebaseapp.com",
+      projectId: "spiritual-homeopathy-3b552",
+      storageBucket: "spiritual-homeopathy-3b552.firebasestorage.app",
+      messagingSenderId: "81822616559",
+      appId: "1:81822616559:web:98a0b9cd974938cc87841a"
+    });
+    return getStorage(app);
+  } catch (e) {
+    console.warn("Firebase storage init warning:", e);
+    return null;
+  }
+};
+
+const uploadPrescriptionToStorage = async (dataOrUri: string, patId?: string): Promise<string> => {
+  if (!dataOrUri) return '';
+  if (dataOrUri.startsWith('http://') || dataOrUri.startsWith('https://')) {
+    return dataOrUri;
+  }
+
+  try {
+    const storage = getFirebaseStorage();
+    if (!storage) throw new Error("Firebase storage not available");
+
+    const safePatId = (patId || 'unknown').toString().replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `prescriptions/${safePatId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
+    const fileRef = storageRef(storage, filename);
+
+    if (dataOrUri.startsWith('data:')) {
+      await uploadString(fileRef, dataOrUri, 'data_url');
+      const downloadUrl = await getDownloadURL(fileRef);
+      return downloadUrl;
+    }
+  } catch (err) {
+    console.warn("Storage upload notice:", err);
+  }
+  return dataOrUri;
+};
 
 export const DEFICIENCY_LIST = [
   'Vitamin A', 'Vitamin C', 'Vitamin E', 'Calcium', 'Magnesium',
@@ -82,6 +126,71 @@ export const DEFICIENCY_NUTRITION_MAP: Record<string, { eat: string[]; avoid: st
     eat: ['Whole Grains (Oats, Barley), Pineapples, Nuts', 'Leafy greens, Black tea, Legumes'],
     avoid: ['Refined processed foods']
   }
+};
+
+export const formatDoctorName = (name: string | null | undefined): string => {
+  if (!name || typeof name !== 'string' || !name.trim()) return 'Dr. Ramakrishna Chanduri';
+  let clean = name.trim();
+
+  // Strip all repeated "Dr." or "Dr" or "Dr.Dr." prefixes
+  clean = clean.replace(/^(dr\.?\s*)+/i, '').trim();
+
+  const lower = clean.toLowerCase();
+  if (lower.includes('ramakrishna') || lower.includes('rama krishna') || lower.includes('chanduri')) {
+    return 'Dr. Ramakrishna Chanduri';
+  }
+  if (lower.includes('prashanth') || lower.includes('vaidya')) {
+    return 'Dr. Prashanth K Vaidya';
+  }
+  if (lower.includes('padma') || lower.includes('priya')) {
+    return 'Dr. Padma Priya';
+  }
+  if (lower.includes('jobedah') || lower.includes('jobeadh') || lower.includes('parveez') || lower.includes('parveej')) {
+    return 'Dr. Jobedah Parveez';
+  }
+
+  // Capitalize words neatly
+  const titleCased = clean.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+  return `Dr. ${titleCased}`;
+};
+
+export const parseToYMD = (raw: any): string => {
+  if (!raw) return '';
+  let str = String(raw).trim();
+  if (!str) return '';
+  if (str.toLowerCase() === 'today') {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  if (str.includes('T')) {
+    str = str.split('T')[0];
+  }
+  const slashParts = str.split(/[/-]/);
+  if (slashParts.length === 3) {
+    if (slashParts[2].length === 4) {
+      return `${slashParts[2]}-${slashParts[1].padStart(2, '0')}-${slashParts[0].padStart(2, '0')}`;
+    }
+    if (slashParts[0].length === 4) {
+      return `${slashParts[0]}-${slashParts[1].padStart(2, '0')}-${slashParts[2].padStart(2, '0')}`;
+    }
+  }
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+  }
+  return str;
+};
+
+export const formatDisplayDate = (rawDate: any): string => {
+  const ymd = parseToYMD(rawDate);
+  if (!ymd) return 'Today';
+  const todayYMD = parseToYMD('today');
+  if (ymd === todayYMD) return 'Today';
+  const parts = ymd.split('-');
+  if (parts.length === 3 && parts[0].length === 4) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return rawDate || 'Today';
 };
 
 export const DISORDER_NUTRITION_MAP: Record<string, { eat: string[]; avoid: string[] }> = {
@@ -366,20 +475,22 @@ export interface PatientFileUIProps {
   patient: any;
   doctorName?: string;
   onClose?: () => void;
-  onSubmitConsultation?: (data: any) => Promise<void>;
+  onSubmitConsultation?: (data: any) => Promise<void> | void;
   onRegisterPackage?: (packageInfo: any) => void;
   isStandalonePage?: boolean;
   userRoleTitle?: string;
+  isDoctor?: boolean;
 }
 
 export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   patient,
-  doctorName = 'Dr. Prashanth K Vaidya',
+  doctorName = 'Dr. Ramakrishna Chanduri',
   onClose,
   onSubmitConsultation,
   onRegisterPackage,
   isStandalonePage = false,
   userRoleTitle = 'Dilshuknagar Receptionist',
+  isDoctor = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'clinical' | 'diet' | 'media' | 'package'>('clinical');
 
@@ -396,13 +507,20 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   const [drawPrescription, setDrawPrescription] = useState<'on' | 'off'>('off');
   const [physicalFile, setPhysicalFile] = useState<File | null>(null);
   const [followUpInterval, setFollowUpInterval] = useState('No Follow-up');
-  const [preferredFollowUpDate, setPreferredFollowUpDate] = useState('2026-10-07');
+  const [preferredFollowUpDate, setPreferredFollowUpDate] = useState(patient?.preferredFollowUpDate || patient?.followUpDate || '');
   const [pharmacyFee, setPharmacyFee] = useState('');
 
-  // Canvas State
+  // Canvas State & Enlarged Canvas State
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [canvasHasContent, setCanvasHasContent] = useState(false);
+  const [isEnlargeCanvasOpen, setIsEnlargeCanvasOpen] = useState(false);
+  const enlargedCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isDrawingEnlarged, setIsDrawingEnlarged] = useState(false);
+  const [penColor, setPenColor] = useState('#0284c7');
+  const [penWidth, setPenWidth] = useState(3.5);
+  const [isSavingEnlarged, setIsSavingEnlarged] = useState(false);
+  const [enlargeToast, setEnlargeToast] = useState('');
 
   // --- TAB 2: DIET PLAN STATE ---
   const [selectedDietPlan, setSelectedDietPlan] = useState('+ Create New Diet Plan');
@@ -416,7 +534,12 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   const [symptomsSigns, setSymptomsSigns] = useState('');
   const [foodsToEat, setFoodsToEat] = useState('');
   const [foodsToAvoid, setFoodsToAvoid] = useState('');
-  const [dietFeeAmount, setDietFeeAmount] = useState('');
+  const [dietFeeAmount, setDietFeeAmount] = useState<string>(
+    patient?.dietFeeAmount ? String(patient.dietFeeAmount) : (patient?.dietFee ? String(patient.dietFee) : (patient?.dietPlan?.dietFeeAmount ? String(patient.dietPlan.dietFeeAmount) : ''))
+  );
+
+  const [isDietSaved, setIsDietSaved] = useState(false);
+  const hasCustomLoadedMenuRef = useRef(false);
 
   // 30-Day Diet Plan State
   const [dietMenuDays, setDietMenuDays] = useState<DayDietItem[]>([]);
@@ -434,6 +557,7 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   };
 
   const toggleDeficiency = (item: string) => {
+    hasCustomLoadedMenuRef.current = false;
     const updated = { ...deficiencies, [item]: !deficiencies[item] };
     setDeficiencies(updated);
     const nut = generateNutritionSuggestions(updated, disorders);
@@ -442,6 +566,7 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   };
 
   const toggleDisorder = (item: string) => {
+    hasCustomLoadedMenuRef.current = false;
     const updated = { ...disorders, [item]: !disorders[item] };
     setDisorders(updated);
     const nut = generateNutritionSuggestions(deficiencies, updated);
@@ -449,9 +574,103 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
     setFoodsToAvoid(nut.avoid);
   };
 
+  const applyDietPlanData = (diet: any) => {
+    if (!diet) return;
+    if (diet.selectedDietPlan) setSelectedDietPlan(diet.selectedDietPlan);
+    if (diet.age) setAge(diet.age);
+    if (diet.height) {
+      setHeight(diet.height);
+      if (diet.weight) setBmi(calculateBmi(diet.height, diet.weight));
+    }
+    if (diet.weight) {
+      setWeight(diet.weight);
+      if (diet.height) setBmi(calculateBmi(diet.height, diet.weight));
+    }
+    if (diet.bmi) setBmi(diet.bmi);
+    if (diet.otherDisorders !== undefined) setOtherDisorders(diet.otherDisorders);
+    if (diet.symptomsSigns !== undefined) setSymptomsSigns(diet.symptomsSigns);
+    if (diet.foodsToEat !== undefined) setFoodsToEat(diet.foodsToEat);
+    if (diet.foodsToAvoid !== undefined) setFoodsToAvoid(diet.foodsToAvoid);
+    if (diet.dietFeeAmount !== undefined) setDietFeeAmount(diet.dietFeeAmount);
+
+    if (Array.isArray(diet.deficiencies)) {
+      const dMap: Record<string, boolean> = {};
+      diet.deficiencies.forEach((k: string) => { dMap[k] = true; });
+      setDeficiencies(dMap);
+    } else if (diet.deficiencies && typeof diet.deficiencies === 'object') {
+      setDeficiencies(diet.deficiencies);
+    }
+
+    if (Array.isArray(diet.disorders)) {
+      const disMap: Record<string, boolean> = {};
+      diet.disorders.forEach((k: string) => { disMap[k] = true; });
+      setDisorders(disMap);
+    } else if (diet.disorders && typeof diet.disorders === 'object') {
+      setDisorders(diet.disorders);
+    }
+
+    if (diet.dietMenuDays && Array.isArray(diet.dietMenuDays) && diet.dietMenuDays.length > 0) {
+      hasCustomLoadedMenuRef.current = true;
+      setDietMenuDays(diet.dietMenuDays);
+    }
+  };
+
   useEffect(() => {
+    if (hasCustomLoadedMenuRef.current) return;
     setDietMenuDays(generate30DayDietPlanMenu(deficiencies, disorders));
   }, [deficiencies, disorders]);
+
+  // Real-time Firestore Sync for Diet Plan (Web <-> Mobile)
+  useEffect(() => {
+    if (patient?.dietPlan) {
+      applyDietPlanData(patient.dietPlan);
+    }
+
+    if (!db) return;
+    const cleanRegId = (regId || phone || patient?.id || '').replace(/[\/\s#]/g, '_');
+    const unsubList: (() => void)[] = [];
+
+    if (cleanRegId) {
+      const unsubDiet = onSnapshot(doc(db, 'diet_plans', cleanRegId), (snap) => {
+        if (snap.exists()) {
+          applyDietPlanData(snap.data());
+        }
+      }, (err) => console.log('Diet plan doc sync err:', err));
+      unsubList.push(unsubDiet);
+    }
+
+    if (patient?.id) {
+      const unsubApp = onSnapshot(doc(db, 'appointments', patient.id), (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data?.dietPlan) {
+            applyDietPlanData(data.dietPlan);
+          }
+          if (Array.isArray(data?.uploadedPrescriptions)) {
+            setUploadedImages(prev => Array.from(new Set([...prev, ...data.uploadedPrescriptions])));
+          }
+        }
+      }, (err) => console.log('Appt live sync err:', err));
+      unsubList.push(unsubApp);
+    }
+
+    const loadFromQuery = async () => {
+      try {
+        if (regId) {
+          const q = query(collection(db, 'diet_plans'), where('regId', '==', regId), limit(1));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            applyDietPlanData(querySnap.docs[0].data());
+          }
+        }
+      } catch (e) { }
+    };
+    loadFromQuery();
+
+    return () => {
+      unsubList.forEach(u => u());
+    };
+  }, [patient?.id, regId, phone]);
 
   // --- TAB 3: SHARE MEDIA STATE ---
   const [sharedMediaList, setSharedMediaList] = useState<string[]>([]);
@@ -466,7 +685,11 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   const [packageEndDate, setPackageEndDate] = useState('2026-12-07');
 
   // Uploaded Prescriptions State
-  const [uploadedImages, setUploadedImages] = useState<string[]>([]);
+  const [uploadedImages, setUploadedImages] = useState<string[]>(() => {
+    if (Array.isArray(patient?.uploadedPrescriptions)) return patient.uploadedPrescriptions;
+    if (patient?.canvasPrescriptionUrl) return [patient.canvasPrescriptionUrl];
+    return [];
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -478,15 +701,38 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       reader.onload = async (event) => {
         if (event.target?.result) {
           const base64Url = event.target.result as string;
-          setUploadedImages((prev) => [...prev, base64Url]);
+          let cloudUrl = base64Url;
+          try {
+            cloudUrl = await uploadPrescriptionToStorage(base64Url, patient?.id || patient?.patientId || regId);
+          } catch (e) {
+            console.warn("Storage upload err:", e);
+          }
+
+          if (cloudUrl.startsWith('data:') && cloudUrl.length > 400000) {
+            alert("Image exceeds database limit. Please upload a smaller image file.");
+            return;
+          }
+
+          setUploadedImages((prev) => {
+            if (prev.includes(cloudUrl)) return prev;
+            return [...prev, cloudUrl];
+          });
 
           // Save directly to Firebase Firestore if patient appointment document exists
-          if (patient?.id) {
+          if (patient?.id && db) {
             try {
               const appRef = doc(db, 'appointments', patient.id);
               await updateDoc(appRef, {
-                uploadedPrescriptions: arrayUnion(base64Url),
+                uploadedPrescriptions: arrayUnion(cloudUrl),
                 updatedAt: new Date().toISOString()
+              }).catch(() => { });
+
+              await updateDoc(doc(db, 'allpatients', patient.id), {
+                uploadedPrescriptions: arrayUnion(cloudUrl)
+              }).catch(() => { });
+
+              await updateDoc(doc(db, 'patients', patient.id), {
+                uploadedPrescriptions: arrayUnion(cloudUrl)
               }).catch(() => { });
             } catch (err) {
               console.log('Firebase upload note:', err);
@@ -498,12 +744,38 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
     });
   };
 
+  const handleRemoveWebImage = async (idx: number) => {
+    const updated = uploadedImages.filter((_, i) => i !== idx);
+    setUploadedImages(updated);
+
+    if (patient?.id && db) {
+      try {
+        const appRef = doc(db, 'appointments', patient.id);
+        await updateDoc(appRef, {
+          uploadedPrescriptions: updated,
+          updatedAt: new Date().toISOString()
+        }).catch(() => { });
+
+        await updateDoc(doc(db, 'allpatients', patient.id), {
+          uploadedPrescriptions: updated
+        }).catch(() => { });
+
+        await updateDoc(doc(db, 'patients', patient.id), {
+          uploadedPrescriptions: updated
+        }).catch(() => { });
+      } catch (err) {
+        console.log('Firebase remove image error:', err);
+      }
+    }
+  };
+
   const [saving, setSaving] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
   // --- MEDICAL HISTORY & PAST VISITS FETCHING ---
   const [patientVisits, setPatientVisits] = useState<any[]>([]);
   const [selectedVisitModal, setSelectedVisitModal] = useState<any | null>(null);
+  const [showAllVisitsModal, setShowAllVisitsModal] = useState(false);
   const [fullPrescriptionPreview, setFullPrescriptionPreview] = useState<string | null>(null);
 
   useEffect(() => {
@@ -551,23 +823,42 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       const collectionsToListen = ['appointments', 'medicine_requests', 'prescriptions', 'allpatients', 'patients'];
       const unsubs: Array<() => void> = [];
       const storeMap = new Map<string, any>();
+      const todayYMD = parseToYMD('today');
 
-      const getTimestamp = (item: any) => {
-        const val = item?.createdAt;
+      const getTimestamp = (item: any): number => {
+        const val = item?.createdAt || item?.savedAt || item?.updatedAt || item?.date;
         if (!val) return 0;
-        if (typeof val === 'number') return val;
-        if (typeof val === 'string') return new Date(val).getTime() || 0;
+        if (typeof val === 'number') return isNaN(val) ? 0 : val;
+        if (typeof val === 'string') {
+          const t = new Date(val).getTime();
+          return isNaN(t) ? 0 : t;
+        }
         if (typeof val === 'object') {
           if (typeof val.seconds === 'number') return val.seconds * 1000;
-          if (typeof val.toDate === 'function') return val.toDate().getTime();
+          if (typeof val.toDate === 'function') {
+            const t = val.toDate().getTime();
+            return isNaN(t) ? 0 : t;
+          }
         }
         return 0;
+      };
+
+      const getSortWeight = (item: any): number => {
+        if (item.normalizedDate === todayYMD || item.visitDate === 'Today') {
+          return 9999999999999; // Always at the very top (Present / Today first!)
+        }
+        if (item.normalizedDate) {
+          const t = new Date(item.normalizedDate).getTime();
+          if (!isNaN(t) && t > 0) return t;
+        }
+        return getTimestamp(item);
       };
 
       const updateVisitsState = () => {
         if (!isMounted) return;
         const allList = Array.from(storeMap.values());
-        allList.sort((a, b) => getTimestamp(b) - getTimestamp(a));
+        // Present / Today visits first, then newest descending
+        allList.sort((a, b) => getSortWeight(b) - getSortWeight(a));
         setPatientVisits(allList);
       };
 
@@ -577,28 +868,63 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
           const unsub = onSnapshot(colRef, (snapshot) => {
             snapshot.forEach((docSnap) => {
               const data = docSnap.data();
+              if (!data) return;
+
               const docPhone = String(data.phone || data.phoneNumber || data.mobile || data.mobileNumber || data.contact || data.contactNumber || data.phoneNo || '').replace(/\D/g, '').slice(-10);
 
               const docRegs = [
                 data.registrationId, data.regId, data.patientId, data.regNo,
-                data.registrationNo, data.uhid, data.patient_id, data.appointmentId, docSnap.id
+                data.registrationNo, data.uhid, data.patient_id
               ].map(r => String(r || '').trim().toLowerCase()).filter(Boolean);
 
               const docName = String(data.patientName || data.name || data.fullName || data.patient_name || data.patient || '').trim().toLowerCase();
+              const incomingApptId = String(data.appointmentId || data.apptId || '').trim();
 
-              const isPhoneMatch = docPhone && phoneCandidates.includes(docPhone);
-              const isRegMatch = docRegs.some(r => regCandidates.includes(r));
-              const isIdMatch = regCandidates.some(r => r === docSnap.id || r === String(data.appointmentId || '').toLowerCase() || r === String(data.patientId || '').toLowerCase());
-
-              const isNameMatch = nameCandidates.some(n =>
-                (n && docName && (n.includes(docName) || docName.includes(n))) ||
-                (firstName && firstName.length >= 3 && docName.includes(firstName))
+              // Explicit ID / document linking
+              const isLinkedDoc = Boolean(
+                (patient?.id && (docSnap.id === patient.id || incomingApptId === patient.id)) ||
+                regCandidates.includes(docSnap.id.toLowerCase()) ||
+                (incomingApptId && regCandidates.includes(incomingApptId.toLowerCase()))
               );
 
-              const isMatch = isPhoneMatch || isRegMatch || isIdMatch || isNameMatch;
+              // Strict Phone and Reg matching
+              const isPhoneMatch = Boolean(docPhone && docPhone.length === 10 && phoneCandidates.includes(docPhone));
+              const isRegMatch = docRegs.some(r => regCandidates.includes(r));
+
+              // Determine if this document strictly belongs to this patient
+              let isMatch = false;
+              if (isPhoneMatch) {
+                isMatch = true;
+              } else if (isRegMatch || isLinkedDoc) {
+                isMatch = true;
+              } else if (phoneCandidates.length === 0 && regCandidates.length === 0 && nameCandidates.length > 0) {
+                // Only fall back to exact full name if patient has neither phone nor reg ID
+                isMatch = Boolean(docName && nameCandidates.includes(docName));
+              }
 
               if (isMatch) {
-                const visitKey = data.appointmentId || docSnap.id;
+                // Parse standardized YYYY-MM-DD for accurate deduplication across collections
+                let rawDate = data.appointmentDate || data.date || data.scheduledDate || data.visitDate || data.createdAt;
+                let normDate = parseToYMD(rawDate);
+                if (!normDate || normDate.toLowerCase() === 'today') {
+                  normDate = todayYMD;
+                }
+
+                const normBranch = String(data.branch || data.branchName || branchName || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+
+                // Find existing visit in storeMap representing the same day/visit (merge duplicates!)
+                let matchedKey: string | null = null;
+                for (const [key, ex] of storeMap.entries()) {
+                  const isApptMatch = incomingApptId && (ex.id === incomingApptId || ex.appointmentId === incomingApptId);
+                  const isDocIdMatch = ex.id === docSnap.id || ex.appointmentId === docSnap.id;
+                  const isSameDate = normDate && ex.normalizedDate === normDate;
+                  if (isApptMatch || isDocIdMatch || isSameDate) {
+                    matchedKey = key;
+                    break;
+                  }
+                }
+
+                const visitKey = matchedKey || (normDate ? `visit_${normDate}` : (incomingApptId || docSnap.id));
                 const existing = storeMap.get(visitKey);
 
                 const rawImages: string[] = [];
@@ -645,12 +971,20 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                   ...formattedRawImages
                 ]));
 
+                const rawDoc = data.doctorName || data.doctor || existing?.doctorName || patient?.doctorName || patient?.doctor || doctorName;
+                const docNameFormatted = formatDoctorName(rawDoc);
+
+                const displayDate = normDate === todayYMD ? 'Today' : formatDisplayDate(normDate);
+
                 storeMap.set(visitKey, {
-                  id: visitKey,
-                  visitDate: data.appointmentDate || data.date || data.scheduledDate || existing?.visitDate || 'Today',
+                  id: existing?.id || incomingApptId || docSnap.id || visitKey,
+                  appointmentId: existing?.appointmentId || incomingApptId || docSnap.id,
+                  normalizedDate: normDate,
+                  normalizedBranch: normBranch || existing?.normalizedBranch,
+                  visitDate: displayDate,
                   visitTime: data.appointmentTime || data.time || existing?.visitTime || '10:00 AM',
-                  doctorName: data.doctorName || data.doctor || existing?.doctorName || doctorName || 'Dr. Prashanth K Vaidya',
-                  branch: data.branch || data.branchName || existing?.branch || branchName || 'Main Branch',
+                  doctorName: docNameFormatted,
+                  branch: data.branch || data.branchName || existing?.branch || branchName || 'Dilshuknagar Branch',
                   consultationMode: data.consultationMode || existing?.consultationMode || 'In-Clinic',
                   paidAmount: data.paidAmount || data.amountPaid || data.totalMedicineFee || data.consultationFee || data.totalAmount || existing?.paidAmount || '500',
                   paymentStatus: data.paymentStatus || existing?.paymentStatus || 'paid',
@@ -698,28 +1032,33 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   ];
 
   // Canvas Handlers
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     setIsDrawing(true);
     const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
     ctx.beginPath();
-    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.moveTo((clientX - rect.left) * (canvas.width / rect.width), (clientY - rect.top) * (canvas.height / rect.height));
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     if (!isDrawing) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
-    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    ctx.lineTo((clientX - rect.left) * (canvas.width / rect.width), (clientY - rect.top) * (canvas.height / rect.height));
     ctx.strokeStyle = '#0284c7';
     ctx.lineWidth = 2.5;
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.stroke();
     setCanvasHasContent(true);
   };
@@ -737,6 +1076,129 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
     setCanvasHasContent(false);
   };
 
+  // Enlarged Canvas Handlers
+  const handleOpenEnlargeCanvas = () => {
+    setDrawPrescription('on');
+    setIsEnlargeCanvasOpen(true);
+    setEnlargeToast('');
+    setTimeout(() => {
+      const eCanvas = enlargedCanvasRef.current;
+      if (!eCanvas) return;
+      const ctx = eCanvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, eCanvas.width, eCanvas.height);
+      if (canvasRef.current && canvasHasContent) {
+        ctx.drawImage(canvasRef.current, 0, 0, eCanvas.width, eCanvas.height);
+      }
+    }, 150);
+  };
+
+  const startDrawingEnlarged = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = enlargedCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    setIsDrawingEnlarged(true);
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    ctx.beginPath();
+    ctx.moveTo((clientX - rect.left) * (canvas.width / rect.width), (clientY - rect.top) * (canvas.height / rect.height));
+  };
+
+  const drawEnlarged = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawingEnlarged) return;
+    const canvas = enlargedCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    ctx.lineTo((clientX - rect.left) * (canvas.width / rect.width), (clientY - rect.top) * (canvas.height / rect.height));
+    ctx.strokeStyle = penColor;
+    ctx.lineWidth = penWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  };
+
+  const stopDrawingEnlarged = () => {
+    setIsDrawingEnlarged(false);
+  };
+
+  const clearEnlargedCanvas = () => {
+    const canvas = enlargedCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  };
+
+  const handleSaveAndUpdateEnlargedPrescription = async () => {
+    const eCanvas = enlargedCanvasRef.current;
+    if (!eCanvas) return;
+
+    setIsSavingEnlarged(true);
+    try {
+      const dataUrl = eCanvas.toDataURL('image/png');
+
+      // 1. Synchronize to mini canvas preview
+      const miniCanvas = canvasRef.current;
+      if (miniCanvas) {
+        const mCtx = miniCanvas.getContext('2d');
+        if (mCtx) {
+          mCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+          mCtx.drawImage(eCanvas, 0, 0, miniCanvas.width, miniCanvas.height);
+        }
+      }
+      setCanvasHasContent(true);
+      setDrawPrescription('on');
+
+      // 2. Upload to Firebase Storage or use dataUrl
+      const targetDocId = patient?.id || patient?.appointmentId || patient?.patientId || regId;
+      let finalUrl = dataUrl;
+      try {
+        finalUrl = await uploadPrescriptionToStorage(dataUrl, targetDocId);
+      } catch (e) {
+        console.warn("Storage upload notice:", e);
+      }
+
+      // 3. Update the prescription portion (uploadedImages)
+      setUploadedImages((prev) => {
+        const filtered = prev.filter(item => !item.startsWith('data:image/png'));
+        return [finalUrl, ...filtered];
+      });
+
+      // 4. Update Firestore directly if targetDocId exists so it's immediately persisted
+      if (db && targetDocId) {
+        const targetCol = patient?.collectionName || 'appointments';
+        const cols = Array.from(new Set([targetCol, 'appointments', 'allpatients', 'patients']));
+        for (const col of cols) {
+          try {
+            await updateDoc(doc(db, col, targetDocId), {
+              canvasPrescriptionUrl: finalUrl,
+              uploadedPrescriptions: arrayUnion(finalUrl),
+              updatedAt: new Date().toISOString()
+            });
+          } catch (e) { }
+        }
+      }
+
+      setEnlargeToast('Prescription drawing saved & updated in prescription portion! ✓');
+      setTimeout(() => {
+        setEnlargeToast('');
+        setIsEnlargeCanvasOpen(false);
+      }, 1000);
+    } catch (err) {
+      console.error('Error saving enlarged prescription:', err);
+    } finally {
+      setIsSavingEnlarged(false);
+    }
+  };
+
   const handleSaveConsultation = async () => {
     setSaving(true);
 
@@ -750,13 +1212,43 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       }
     }
 
-    const finalUploadedList = [...uploadedImages];
+    const targetDocId = patient?.id || patient?.appointmentId || patient?.patientId || regId;
+
+    let finalCanvasUrl: string | null = null;
     if (canvasDataUrl) {
-      finalUploadedList.unshift(canvasDataUrl);
+      try {
+        finalCanvasUrl = await uploadPrescriptionToStorage(canvasDataUrl, targetDocId);
+      } catch (e) {
+        finalCanvasUrl = canvasDataUrl;
+      }
     }
 
+    const finalUploadedList: string[] = [];
+    for (const item of uploadedImages) {
+      if (!item) continue;
+      if (typeof item === 'string' && item.startsWith('data:')) {
+        try {
+          const cloudUrl = await uploadPrescriptionToStorage(item, targetDocId);
+          if (cloudUrl.startsWith('data:') && cloudUrl.length > 400000) {
+            console.warn("Skipping oversized prescription image (>400KB)");
+            continue;
+          }
+          finalUploadedList.push(cloudUrl);
+        } catch (e) {
+          if (item.length <= 400000) finalUploadedList.push(item);
+        }
+      } else {
+        finalUploadedList.push(item);
+      }
+    }
+
+    if (finalCanvasUrl && !finalUploadedList.includes(finalCanvasUrl)) {
+      finalUploadedList.unshift(finalCanvasUrl);
+    }
+    setUploadedImages(finalUploadedList);
+
     const payload = {
-      patientId: patient?.id || patient?.patientId || regId,
+      patientId: targetDocId,
       patientName,
       regId,
       phone,
@@ -766,29 +1258,55 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       pharmacyFee,
       drawPrescription,
       uploadedPrescriptions: finalUploadedList,
-      canvasPrescriptionUrl: canvasDataUrl,
+      canvasPrescriptionUrl: finalCanvasUrl,
     };
 
     // Save directly into Firebase Firestore (prescriptions & appointments)
     try {
       if (db) {
-        await addDoc(collection(db, 'prescriptions'), {
-          ...payload,
-          createdAt: new Date().toISOString()
-        });
-
         const targetDocId = patient?.id || patient?.appointmentId || patient?.patientId;
         const targetCol = patient?.collectionName || 'appointments';
+        const docNameToSave = formatDoctorName(doctorName || patient?.doctorName || patient?.doctor);
+
+        const numDietFee = Number(dietFeeAmount) || 0;
+        const numPharmacyFee = Number(pharmacyFee) || 0;
+        const numConsultationFee = Number(patient?.consultationFee || patient?.fee || patient?.consultationFeeAmount) || 0;
+        const totalCalculated = numPharmacyFee + numDietFee + numConsultationFee;
+
+        await addDoc(collection(db, 'prescriptions'), {
+          ...payload,
+          appointmentId: targetDocId,
+          appointmentDate: patient?.appointmentDate || patient?.date || new Date().toISOString().split('T')[0],
+          doctorName: docNameToSave,
+          doctor: docNameToSave,
+          branch: branchName,
+          consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
+          medicineFee: numPharmacyFee,
+          pharmacyFee: numPharmacyFee,
+          totalMedicineFee: numPharmacyFee,
+          dietFee: numDietFee,
+          totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
+          createdAt: new Date().toISOString()
+        });
 
         if (targetDocId) {
           const updatePayload = {
             uploadedPrescriptions: finalUploadedList,
             diagnosisNotes,
-            pharmacyFee,
+            consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
+            medicineFee: numPharmacyFee,
+            pharmacyFee: numPharmacyFee,
+            totalMedicineFee: numPharmacyFee,
+            dietFee: numDietFee,
+            dietFeeAmount: dietFeeAmount,
+            totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
             followUpInterval,
             preferredFollowUpDate,
+            doctorName: docNameToSave,
+            doctor: docNameToSave,
             status: 'collect_fee',
-            paymentStatus: pharmacyFee ? 'pending' : 'paid',
+            paymentStatus: 'pending',
+            paymentPending: true,
             feeCollectionNeeded: true,
             updatedAt: new Date().toISOString()
           };
@@ -808,16 +1326,15 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
     if (onSubmitConsultation) {
       await onSubmitConsultation(payload);
     }
-    setToastMessage('Sent to Reception! Consultation saved & patient sent to Reception for Fee Collection.');
-    setTimeout(() => {
-      setToastMessage('');
-      if (onClose) onClose();
-    }, 1800);
+    if (onClose) {
+      onClose();
+    }
     setSaving(false);
   };
 
   const handleSaveDietPlan = async () => {
     setSaving(true);
+    setIsDietSaved(false);
     const activeDefs = Object.keys(deficiencies).filter(k => deficiencies[k]);
     const activeDis = Object.keys(disorders).filter(k => disorders[k]);
 
@@ -846,41 +1363,130 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
 
     try {
       if (db) {
+        const cleanRegId = (regId || phone || patient?.id || 'unknown').replace(/[\/\s#]/g, '_');
+        
+        // 1. Direct document upsert in diet_plans for instant cross-device synchronization
+        await setDoc(doc(db, 'diet_plans', cleanRegId), {
+          ...dietPayload,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
+        // 2. Historical audit record
         await addDoc(collection(db, 'diet_plans'), {
           ...dietPayload,
           createdAt: new Date().toISOString()
-        });
+        }).catch(() => {});
 
+        // 3. Sync to appointments, allpatients, and patients
         if (patient?.id) {
-          const appRef = doc(db, 'appointments', patient.id);
-          await updateDoc(appRef, {
+          const numDietFee = Number(dietFeeAmount) || 0;
+          const appUpdate = {
             dietPlan: dietPayload,
+            dietFee: numDietFee,
+            dietFeeAmount: dietFeeAmount,
             updatedAt: new Date().toISOString()
-          }).catch(() => { });
+          };
+
+          const appRef = doc(db, 'appointments', patient.id);
+          await updateDoc(appRef, appUpdate).catch(() => { });
+          await updateDoc(doc(db, 'allpatients', patient.id), appUpdate).catch(() => {});
+          await updateDoc(doc(db, 'patients', patient.id), appUpdate).catch(() => {});
         }
       }
     } catch (err) {
       console.error("Firestore diet plan save error:", err);
     }
 
-    setToastMessage('Diet Plan & 30-Day Menu saved directly to Firebase!');
-    setTimeout(() => {
-      setToastMessage('');
-    }, 2500);
     setSaving(false);
+    setIsDietSaved(true);
+    setToastMessage('✅ Diet Plan & 30-Day Menu saved! Redirecting to Clinical Form...');
+
+    // Smooth transition back to the main Clinical Form tab
+    setTimeout(() => {
+      setActiveTab('clinical');
+    }, 900);
+
+    setTimeout(() => {
+      setIsDietSaved(false);
+      setToastMessage('');
+    }, 2800);
   };
 
-  const handleCreatePackage = () => {
-    const pkgData = {
-      totalPackageAmount,
-      initialAdvancePaid,
-      packagePurpose,
-      packageDuration,
-      packageStartDate,
-      packageEndDate,
-    };
-    if (onRegisterPackage) onRegisterPackage(pkgData);
-    setToastMessage('Package Membership Created Successfully!');
+  const handleCreatePackage = async () => {
+    try {
+      const numTotal = Number(totalPackageAmount) || 0;
+      const numAdvance = Number(initialAdvancePaid) || 0;
+      const cleanPhone = (phone || '').replace(/\D/g, '').slice(-10);
+      const targetDocId = String(patient?.patientDocId || patient?.id || patient?.patientId || regId);
+      const cleanReg = regId || patient?.regId || `SPH-${Date.now().toString().slice(-4)}`;
+      const pkgDocId = `PKG_${targetDocId.replace(/\W/g, '_')}`;
+
+      let months = 3;
+      if (packageDuration.includes('1 Month')) months = 1;
+      else if (packageDuration.includes('2 Month')) months = 2;
+      else if (packageDuration.includes('3 Month')) months = 3;
+      else if (packageDuration.includes('6 Month')) months = 6;
+      else if (packageDuration.includes('1 Year')) months = 12;
+
+      const startDateObj = packageStartDate ? new Date(packageStartDate) : new Date();
+      const expiryDateObj = packageEndDate ? new Date(packageEndDate) : new Date(startDateObj.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+
+      const pkgData = {
+        id: pkgDocId,
+        patientDocId: targetDocId,
+        patientId: cleanReg,
+        patientName: patientName,
+        phone: cleanPhone,
+        branch: branchName,
+        branchName: branchName,
+        doctorName: doctorName,
+        packageName: 'Package',
+        purpose: packagePurpose || 'Package',
+        duration: packageDuration,
+        durationMonths: months,
+        startDate: startDateObj.toISOString(),
+        paymentDate: startDateObj.toISOString(),
+        expiryDate: expiryDateObj.toISOString(),
+        totalAmount: numTotal,
+        paidAmount: numAdvance,
+        remainingAmount: Math.max(0, numTotal - numAdvance),
+        status: 'Active',
+        paymentHistory: numAdvance > 0 ? [
+          {
+            date: startDateObj.toISOString(),
+            amount: numAdvance,
+            paymentMode: 'Advance',
+            note: 'Package Advance Registered'
+          }
+        ] : [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (db) {
+        await setDoc(doc(db, 'package_members', pkgDocId), pkgData);
+        if (targetDocId) {
+          const updateObj = {
+            hasActivePackage: true,
+            isPackageMember: true,
+            packageTotalAmount: numTotal,
+            packageAdvancePaid: numAdvance,
+            packageRemainingAmount: Math.max(0, numTotal - numAdvance),
+            packageDuration,
+            packageExpiryDate: expiryDateObj.toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          await updateDoc(doc(db, 'appointments', targetDocId), updateObj).catch(() => {});
+          await updateDoc(doc(db, 'allpatients', targetDocId), updateObj).catch(() => {});
+        }
+      }
+
+      if (onRegisterPackage) onRegisterPackage(pkgData);
+      setToastMessage('Package Membership Created & Saved Successfully!');
+    } catch (e) {
+      console.error("Error creating package membership:", e);
+      setToastMessage('Error saving package membership');
+    }
     setTimeout(() => setToastMessage(''), 2500);
   };
 
@@ -1114,8 +1720,8 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                 </span>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '340px', overflowY: 'auto' }}>
-                {patientVisits.map((visit) => (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {patientVisits.slice(0, 2).map((visit) => (
                   <div
                     key={visit.id}
                     onClick={() => setSelectedVisitModal(visit)}
@@ -1152,6 +1758,35 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                     </div>
                   </div>
                 ))}
+
+                {patientVisits.length > 2 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllVisitsModal(true)}
+                    style={{
+                      backgroundColor: '#f0f9ff',
+                      border: '1.5px dashed #0284c7',
+                      color: '#0284c7',
+                      padding: '9px 12px',
+                      borderRadius: '8px',
+                      fontSize: '11.5px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      width: '100%',
+                      textAlign: 'center',
+                      marginTop: '4px',
+                      transition: 'all 0.2s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#e0f2fe')}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#f0f9ff')}
+                  >
+                    ⏱ View All {patientVisits.length} Past Visits in Popup ➔
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1173,10 +1808,20 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
 
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
               {uploadedImages.map((img, idx) => (
-                <div key={idx} style={{ position: 'relative', width: '64px', height: '64px', borderRadius: '8px', overflow: 'hidden', border: '1px solid #cbd5e1' }}>
-                  <img src={img} alt="Prescription Scan" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div key={idx} style={{ position: 'relative', width: '68px', height: '68px', borderRadius: '8px', overflow: 'hidden', border: '1.5px solid #cbd5e1', cursor: 'pointer' }}>
+                  <img
+                    src={img}
+                    alt="Prescription Scan"
+                    onClick={() => setFullPrescriptionPreview(img)}
+                    title="Click to view full preview"
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
                   <button
-                    onClick={() => setUploadedImages(uploadedImages.filter((_, i) => i !== idx))}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveWebImage(idx);
+                    }}
+                    title="Delete Prescription"
                     style={{
                       position: 'absolute',
                       top: '2px',
@@ -1185,13 +1830,14 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                       color: '#fff',
                       border: 'none',
                       borderRadius: '50%',
-                      width: '16px',
-                      height: '16px',
-                      fontSize: '10px',
+                      width: '18px',
+                      height: '18px',
+                      fontSize: '11px',
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center'
+                      justifyContent: 'center',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.3)'
                     }}
                   >
                     ×
@@ -1317,7 +1963,7 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
               </div>
 
               {/* Draw Prescription (Optional) */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a' }}>
                   Draw Prescription (Optional)
                 </span>
@@ -1337,14 +1983,61 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                     onChange={() => setDrawPrescription('off')}
                   /> Off
                 </label>
+                <button
+                  type="button"
+                  onClick={handleOpenEnlargeCanvas}
+                  style={{
+                    backgroundColor: '#0284c7',
+                    color: '#ffffff',
+                    border: 'none',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    boxShadow: '0 1px 3px rgba(2, 132, 199, 0.2)'
+                  }}
+                >
+                  <Maximize2 size={12} /> ⛶ Enlarge Canvas
+                </button>
               </div>
 
               {/* Canvas Pad (Visible if Draw Prescription is On) */}
               {drawPrescription === 'on' && (
                 <div style={{ border: '2px dashed #0284c7', borderRadius: '10px', padding: '10px', backgroundColor: '#f0f9ff' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                     <span style={{ fontSize: '11px', fontWeight: 700, color: '#0284c7' }}>✍️ Freehand Canvas Prescription Drawing Pad</span>
-                    <button onClick={clearCanvas} style={{ backgroundColor: '#ffffff', border: '1px solid #cbd5e1', padding: '2px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}>Clear</button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={handleOpenEnlargeCanvas}
+                        style={{
+                          backgroundColor: '#0284c7',
+                          color: '#ffffff',
+                          border: 'none',
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          fontSize: '10.5px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px'
+                        }}
+                      >
+                        <Maximize2 size={11} /> ⛶ Enlarge
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearCanvas}
+                        style={{ backgroundColor: '#ffffff', border: '1px solid #cbd5e1', padding: '2px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }}
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
                   <canvas
                     ref={canvasRef}
@@ -1354,7 +2047,10 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                     onMouseMove={draw}
                     onMouseUp={stopDrawing}
                     onMouseLeave={stopDrawing}
-                    style={{ backgroundColor: '#ffffff', width: '100%', borderRadius: '6px', cursor: 'crosshair' }}
+                    onTouchStart={startDrawing}
+                    onTouchMove={draw}
+                    onTouchEnd={stopDrawing}
+                    style={{ backgroundColor: '#ffffff', width: '100%', borderRadius: '6px', cursor: 'crosshair', touchAction: 'none' }}
                   />
                 </div>
               )}
@@ -1445,7 +2141,10 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                       Preferred Follow-up Date
                     </label>
                     <input
-                      type="date"
+                      type={preferredFollowUpDate ? "date" : "text"}
+                      onFocus={(e) => { e.target.type = "date"; }}
+                      onBlur={(e) => { if (!e.target.value) e.target.type = "text"; }}
+                      placeholder="Please choose your date"
                       value={preferredFollowUpDate}
                       onChange={(e) => setPreferredFollowUpDate(e.target.value)}
                       style={{
@@ -1454,7 +2153,8 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                         borderRadius: '8px',
                         border: '1px solid #cbd5e1',
                         fontSize: '12px',
-                        outline: 'none'
+                        outline: 'none',
+                        color: preferredFollowUpDate ? '#0f172a' : '#64748b'
                       }}
                     />
                   </div>
@@ -1505,7 +2205,9 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                     transition: 'all 0.15s ease'
                   }}
                 >
-                  {saving ? 'Sending to Reception...' : 'Send to Reception & Collect Fee'}
+                  {isDoctor
+                    ? (saving ? 'Submitting Prescription...' : 'Submit Prescription & Send to Reception ✓')
+                    : (saving ? 'Sending to Reception...' : 'Send to Reception & Collect Fee')}
                 </button>
               </div>
 
@@ -1753,21 +2455,22 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
                   onClick={handleSaveDietPlan}
                   disabled={saving}
                   style={{
-                    backgroundColor: '#0284c7',
+                    backgroundColor: isDietSaved ? '#16a34a' : saving ? '#64748b' : '#0284c7',
                     color: '#ffffff',
                     border: 'none',
                     padding: '10px 24px',
                     borderRadius: '8px',
                     fontSize: '13px',
                     fontWeight: 800,
-                    cursor: 'pointer',
-                    boxShadow: '0 2px 8px rgba(2, 132, 199, 0.3)',
+                    cursor: saving ? 'not-allowed' : 'pointer',
+                    boxShadow: isDietSaved ? '0 2px 10px rgba(22, 163, 74, 0.4)' : '0 2px 8px rgba(2, 132, 199, 0.3)',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '6px'
+                    gap: '6px',
+                    transition: 'all 0.25s ease'
                   }}
                 >
-                  {saving ? 'Saving...' : '💾 Save Diet Plan & 30-Day Menu'}
+                  {saving ? '⏳ Saving Diet Plan...' : isDietSaved ? '✅ Diet Plan Saved!' : '💾 Save Diet Plan & 30-Day Menu'}
                 </button>
               </div>
 
@@ -1996,6 +2699,141 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
         </div>
       )}
 
+      {/* ALL PAST VISITS FULL POPUP MODAL */}
+      {showAllVisitsModal && (
+        <div
+          onClick={() => setShowAllVisitsModal(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(15, 23, 42, 0.65)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 999998,
+            padding: '20px'
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: '#ffffff',
+              borderRadius: '20px',
+              padding: '24px',
+              maxWidth: '650px',
+              width: '100%',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+              border: '1px solid #e2e8f0'
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '14px', borderBottom: '1px solid #e2e8f0', marginBottom: '16px' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  ⏱ Complete Medical History ({patientVisits.length} Visits)
+                </h2>
+                <span style={{ fontSize: '12px', color: '#64748b' }}>
+                  Patient: {patientName} • {regId}
+                </span>
+              </div>
+              <button
+                onClick={() => setShowAllVisitsModal(false)}
+                style={{
+                  background: '#f1f5f9',
+                  border: 'none',
+                  borderRadius: '50%',
+                  width: '32px',
+                  height: '32px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#475569'
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Scrollable Visits List */}
+            <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
+              {patientVisits.map((visit, index) => (
+                <div
+                  key={visit.id || index}
+                  onClick={() => {
+                    setSelectedVisitModal(visit);
+                  }}
+                  style={{
+                    backgroundColor: '#ffffff',
+                    borderRadius: '12px',
+                    border: '1.5px solid #cbd5e1',
+                    padding: '12px 16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    boxShadow: '0 1px 4px rgba(15, 23, 42, 0.04)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px'
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#0284c7')}
+                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#cbd5e1')}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#0f172a', background: '#f1f5f9', padding: '3px 10px', borderRadius: '6px' }}>
+                      📅 {visit.visitDate}
+                    </span>
+                    <span style={{ fontSize: '12.5px', fontWeight: 700, color: '#0369a1' }}>
+                      📍 {visit.branch}
+                    </span>
+                  </div>
+                  {visit.doctorName && (
+                    <span style={{ fontSize: '11.5px', color: '#475569', fontWeight: 600 }}>
+                      👨‍⚕️ {formatDoctorName(visit.doctorName)}
+                    </span>
+                  )}
+                  {visit.diagnosisNotes && (
+                    <span style={{ fontSize: '11px', color: '#64748b' }}>
+                      🩺 Notes: {visit.diagnosisNotes.slice(0, 80)}{visit.diagnosisNotes.length > 80 ? '...' : ''}
+                    </span>
+                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '2px', paddingTop: '6px', borderTop: '1px dashed #e2e8f0' }}>
+                    <span style={{ fontSize: '11px', color: '#0284c7', fontWeight: 700 }}>
+                      View Full Prescription & Details ➔
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer */}
+            <div style={{ paddingTop: '16px', borderTop: '1px solid #e2e8f0', marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowAllVisitsModal(false)}
+                style={{
+                  backgroundColor: '#0284c7',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '9px 20px',
+                  borderRadius: '8px',
+                  fontSize: '12.5px',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* VISIT DETAILS & PRESCRIPTION POPUP MODAL */}
       {selectedVisitModal && (
         <div
@@ -2085,7 +2923,7 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
               <div style={{ height: '1px', background: '#f1f5f9' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>Attending Doctor</span>
-                <span style={{ fontSize: '13px', color: '#0284c7', fontWeight: 800 }}>{selectedVisitModal.doctorName}</span>
+                <span style={{ fontSize: '13px', color: '#0284c7', fontWeight: 800 }}>{formatDoctorName(selectedVisitModal.doctorName)}</span>
               </div>
               <div style={{ height: '1px', background: '#f1f5f9' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2631,6 +3469,259 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
           </tbody>
         </table>
       </div>
+
+      {/* ENLARGED DRAWING CANVAS MODAL */}
+      {isEnlargeCanvasOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.75)',
+          backdropFilter: 'blur(5px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 99999,
+          padding: '20px'
+        }}>
+          <div style={{
+            backgroundColor: '#ffffff',
+            borderRadius: '16px',
+            width: '100%',
+            maxWidth: '960px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            border: '1px solid #cbd5e1'
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '14px 20px',
+              backgroundColor: '#f8fafc',
+              borderBottom: '1px solid #e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '8px', backgroundColor: '#e0f2fe', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Maximize2 size={18} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#0f172a' }}>
+                    ✍️ Draw Prescription (Enlarged Canvas Pad)
+                  </h3>
+                  <span style={{ fontSize: '11.5px', color: '#64748b' }}>
+                    Patient: <strong>{patientName}</strong> • Reg ID: <strong style={{ color: '#0284c7' }}>{regId}</strong>
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsEnlargeCanvasOpen(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '6px',
+                  borderRadius: '6px',
+                  color: '#64748b'
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Drawing Toolbar */}
+            <div style={{
+              padding: '10px 20px',
+              backgroundColor: '#ffffff',
+              borderBottom: '1px solid #f1f5f9',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '12px'
+            }}>
+              {/* Colors */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>Ink Color:</span>
+                {[
+                  { name: 'Blue', hex: '#0284c7' },
+                  { name: 'Black', hex: '#0f172a' },
+                  { name: 'Red', hex: '#dc2626' },
+                  { name: 'Green', hex: '#16a34a' }
+                ].map((c) => (
+                  <button
+                    key={c.hex}
+                    type="button"
+                    onClick={() => setPenColor(c.hex)}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '50%',
+                      backgroundColor: c.hex,
+                      border: penColor === c.hex ? '2.5px solid #0284c7' : '2px solid transparent',
+                      outline: penColor === c.hex ? '2px solid #bae6fd' : 'none',
+                      cursor: 'pointer'
+                    }}
+                    title={c.name}
+                  />
+                ))}
+              </div>
+
+              {/* Thickness */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>Pen Size:</span>
+                {[
+                  { label: 'Fine', width: 2 },
+                  { label: 'Normal', width: 3.5 },
+                  { label: 'Bold', width: 5.5 }
+                ].map((size) => (
+                  <button
+                    key={size.width}
+                    type="button"
+                    onClick={() => setPenWidth(size.width)}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      border: penWidth === size.width ? '1.5px solid #0284c7' : '1px solid #e2e8f0',
+                      backgroundColor: penWidth === size.width ? '#f0f9ff' : '#ffffff',
+                      color: penWidth === size.width ? '#0284c7' : '#475569',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {size.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Clear */}
+              <button
+                type="button"
+                onClick={clearEnlargedCanvas}
+                style={{
+                  backgroundColor: '#fff1f2',
+                  border: '1px solid #fecdd3',
+                  color: '#e11d48',
+                  padding: '4px 12px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+              >
+                <Trash2 size={13} /> Clear Canvas
+              </button>
+            </div>
+
+            {/* Canvas Area */}
+            <div style={{ padding: '16px 20px', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'center' }}>
+              <canvas
+                ref={enlargedCanvasRef}
+                width={920}
+                height={480}
+                onMouseDown={startDrawingEnlarged}
+                onMouseMove={drawEnlarged}
+                onMouseUp={stopDrawingEnlarged}
+                onMouseLeave={stopDrawingEnlarged}
+                onTouchStart={startDrawingEnlarged}
+                onTouchMove={drawEnlarged}
+                onTouchEnd={stopDrawingEnlarged}
+                style={{
+                  width: '100%',
+                  height: '480px',
+                  backgroundColor: '#ffffff',
+                  borderRadius: '10px',
+                  border: '2px solid #cbd5e1',
+                  boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.03)',
+                  cursor: 'crosshair',
+                  touchAction: 'none'
+                }}
+              />
+            </div>
+
+            {/* Footer / Action Bar */}
+            <div style={{
+              padding: '12px 20px',
+              backgroundColor: '#ffffff',
+              borderTop: '1px solid #e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '12px'
+            }}>
+              <div style={{ fontSize: '12px', color: '#64748b' }}>
+                {enlargeToast ? (
+                  <span style={{ color: '#16a34a', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                    <CheckCircle2 size={16} /> {enlargeToast}
+                  </span>
+                ) : (
+                  <span>💡 Draw medicines & instructions, then click <strong>Save & Update Prescription</strong>.</span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsEnlargeCanvasOpen(false)}
+                  style={{
+                    padding: '7px 14px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    backgroundColor: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    color: '#475569',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveAndUpdateEnlargedPrescription}
+                  disabled={isSavingEnlarged}
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: '8px',
+                    fontSize: '12.5px',
+                    fontWeight: 800,
+                    backgroundColor: '#16a34a',
+                    color: '#ffffff',
+                    border: 'none',
+                    cursor: isSavingEnlarged ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 8px rgba(22, 163, 74, 0.3)'
+                  }}
+                >
+                  {isSavingEnlarged ? (
+                    <>Saving & Updating...</>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={16} />
+                      Save & Update Prescription
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

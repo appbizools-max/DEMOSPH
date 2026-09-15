@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { StyleSheet, Text, View, SafeAreaView, TouchableOpacity, Platform, Alert, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -22,11 +22,17 @@ import { CleaningPhotosScreen } from './src/screens/Reception/CleaningPhotos/Cle
 // Admin, HR, Doctor & Staff Screens
 import { AdminScreen } from './src/screens/Admin/AdminScreen';
 import { HRScreen } from './src/screens/HR/HRScreen';
+import { BranchCleaningScreen } from './src/screens/Admin/BranchCleaning/BranchCleaningScreen';
 import { DoctorScreen } from './src/screens/Doctor/DoctorScreen';
 import { StaffScreen } from './src/screens/Staff/StaffScreen';
 import { PatientFileMobileScreen } from './src/screens/PatientFile/PatientFileMobileScreen';
 
 import { UserRole, signOutUser } from '@app/shared';
+import { getSafeDb, collection, query, where, onSnapshot, doc } from './src/utils/firebaseSafe';
+import { registerFCMForStaff, setupFCMForegroundListeners, cleanupOldNotifications, requestAppPermissions, triggerSystemPushNotification } from './src/utils/fcmService';
+import {
+  CleaningSchedule, CleaningSubmission, normalizeBranchName, checkBranchLockoutStatus, getTodayDateString
+} from './src/utils/cleaningService';
 
 const MOBILE_AUTH_KEY = '@sph_auth_session';
 
@@ -38,11 +44,54 @@ const resolveDoctorName = (phone: string, storedName?: string): string => {
   if (digits.includes('8125260176')) return 'Dr. Prashanth K Vaidya';
   if (digits.includes('9903119766')) return 'Dr. Jobedah Parveez';
   if (digits.includes('9490808582')) return 'Dr. Padma Priya';
-  if (digits.includes('1111111111')) return 'Dr. Ramakrishna Chanduri';
+  if (digits.includes('1111111111') || digits.includes('9804176176')) return 'Dr. Ramakrishna Chanduri';
   return storedName || 'Homeopathy Physician';
 };
 
-export default function App() {
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error('[SPH_ERROR_BOUNDARY] Caught JS error:', error, errorInfo);
+  }
+
+  handleRestart = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#fef2f2', padding: 24, justifyContent: 'center', alignItems: 'center' }}>
+          <Ionicons name="warning-outline" size={64} color="#dc2626" style={{ marginBottom: 16 }} />
+          <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#991b1b', marginBottom: 8, textAlign: 'center' }}>
+            Application Error
+          </Text>
+          <Text style={{ fontSize: 13, color: '#7f1d1d', textAlign: 'center', marginBottom: 20, paddingHorizontal: 16 }}>
+            {String(this.state.error && this.state.error.message ? this.state.error.message : this.state.error || 'An unexpected error occurred.')}
+          </Text>
+          <TouchableOpacity
+            onPress={this.handleRestart}
+            style={{ backgroundColor: '#dc2626', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8 }}
+          >
+            <Text style={{ color: '#ffffff', fontWeight: 'bold', fontSize: 16 }}>Try Reloading</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function MainApp() {
+  console.log('[SPH_APP] Rendering App component!');
   const [activeTab, setActiveTab] = useState<string>('auth');
   const [tabHistory, setTabHistory] = useState<string[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -52,15 +101,75 @@ export default function App() {
   const [userName, setUserName] = useState('');
   const [branchName, setBranchName] = useState('Nallagandla');
   const [branchPhone, setBranchPhone] = useState('9553176176');
+  const [staffId, setStaffId] = useState('1');
   const [isLoadingSession, setIsLoadingSession] = useState(true);
 
   const [selectedPatient, setSelectedPatient] = useState<any>(null);
+  const [checkoutPatient, setCheckoutPatient] = useState<any>(null);
+
+  // Weekly Cleaning Lockout Guard
+  const [cleaningSchedule, setCleaningSchedule] = useState<CleaningSchedule>({
+    branch: normalizeBranchName(branchName),
+    assignedDate: getTodayDateString()
+  });
+  const [cleaningSubmissions, setCleaningSubmissions] = useState<CleaningSubmission[]>([]);
+
+  useEffect(() => {
+    if (userRole === 'admin' || userRole === 'hr' || userRole === 'doctor' || userRole === 'staff') return;
+    const activeDb = getSafeDb();
+    if (!activeDb) return;
+    const normBranch = normalizeBranchName(branchName);
+
+    const schedRef = doc(activeDb, 'branch_cleaning_schedules', normBranch);
+    const unsubSched = onSnapshot(schedRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setCleaningSchedule({
+          branch: normBranch,
+          assignedDate: data.assignedDate || getTodayDateString(),
+          updatedAt: data.updatedAt,
+          updatedBy: data.updatedBy
+        });
+      } else {
+        setCleaningSchedule({ branch: normBranch, assignedDate: getTodayDateString() });
+      }
+    }, (err) => console.warn('Mobile cleaning sched error:', err));
+
+    const subColRef = collection(activeDb, 'branch_cleaning_submissions');
+    const q = query(subColRef, where('branch', '==', normBranch));
+    const unsubSubs = onSnapshot(q, (snap) => {
+      const list: CleaningSubmission[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+      setCleaningSubmissions(list);
+    }, (err) => console.warn('Mobile cleaning subs error:', err));
+
+    return () => {
+      unsubSched();
+      unsubSubs();
+    };
+  }, [userRole, branchName]);
+
+  const cleaningLockout = useMemo(() => {
+    if (userRole === 'admin' || userRole === 'hr' || userRole === 'doctor' || userRole === 'staff') {
+      return { isBlocked: false, reason: '' };
+    }
+    return checkBranchLockoutStatus(cleaningSchedule.assignedDate, cleaningSubmissions, new Date());
+  }, [userRole, cleaningSchedule.assignedDate, cleaningSubmissions]);
+
+  const isCleaningBlocked = cleaningLockout.isBlocked;
 
   // Navigation Stack Helper
   const navigateToTab = (newTab: string, patientData?: any) => {
+    if (isCleaningBlocked && newTab !== 'reception_cleaning') {
+      Alert.alert(
+        'Action Required: Cleaning Overdue',
+        'Your branch clinic cleaning photos are overdue. Access is locked until 5 to 7 photos are uploaded and approved by HR.'
+      );
+      setActiveTab('reception_cleaning');
+      return;
+    }
     let target = newTab;
     if (target === 'Dashboard' || target === 'dashboard' || target === 'reception') {
-      target = userRole === 'admin' ? 'admin' : userRole === 'doctor' ? 'doctor' : userRole === 'staff' ? 'staff' : 'reception_dashboard';
+      target = (userRole === 'admin' || userRole === 'hr') ? 'admin' : userRole === 'doctor' ? 'doctor' : userRole === 'staff' ? 'staff' : 'reception_dashboard';
     }
     if (patientData) {
       setSelectedPatient(patientData);
@@ -77,7 +186,7 @@ export default function App() {
       setActiveTab(prevTab);
       return true;
     } else if (activeTab !== 'reception_dashboard' && activeTab !== 'reception' && activeTab !== 'admin' && activeTab !== 'auth') {
-      const defaultHome = userRole === 'admin' ? 'admin' : userRole === 'doctor' ? 'doctor' : userRole === 'staff' ? 'staff' : 'reception_dashboard';
+      const defaultHome = (userRole === 'admin' || userRole === 'hr') ? 'admin' : userRole === 'doctor' ? 'doctor' : userRole === 'staff' ? 'staff' : 'reception_dashboard';
       setActiveTab(defaultHome);
       return true;
     }
@@ -107,10 +216,9 @@ export default function App() {
             setUserName(resolvedName);
             setBranchName(parsed.branchName || 'Nallagandla');
             setBranchPhone(parsed.branchPhone || '9553176176');
-            if (parsed.role === 'admin') {
+            if (parsed.staffId) setStaffId(parsed.staffId);
+            if (parsed.role === 'admin' || parsed.role === 'hr') {
               setActiveTab('admin');
-            } else if (parsed.role === 'hr') {
-              setActiveTab('hr');
             } else if (parsed.role === 'doctor') {
               setActiveTab('doctor');
             } else if (parsed.role === 'staff') {
@@ -118,6 +226,9 @@ export default function App() {
             } else {
               setActiveTab('reception_dashboard');
             }
+
+            // Register FCM device token and subscribe to role/branch topics
+            registerFCMForStaff(parsed.role, parsed.branchName || 'Nallagandla', resolvedName).catch(() => { });
           }
         }
       } catch (e) {
@@ -127,7 +238,60 @@ export default function App() {
       }
     };
     restoreSession();
+
+    // 10-Day Rolling Cleanup check on startup
+    cleanupOldNotifications().catch(() => { });
+
+    // Request Notification & Location permissions with 2000ms delay to ensure Android native Activity is focused
+    const permTimer = setTimeout(() => {
+      requestAppPermissions().catch(() => { });
+    }, 2000);
+
+    // Foreground FCM message and notification click listener
+    const unsubFCM = setupFCMForegroundListeners();
+    return () => {
+      clearTimeout(permTimer);
+      unsubFCM();
+    };
   }, []);
+
+  // Real-time Firestore notification alert for Reception (matching branch) and HR / Admin (all branches)
+  useEffect(() => {
+    const activeDb = getSafeDb();
+    if (!userRole || activeTab === 'auth' || !activeDb) return;
+    const startTimeISO = new Date(Date.now() - 15000).toISOString();
+    try {
+      const notiCol = collection(activeDb, 'notifications');
+      const qNoti = query(notiCol, where('createdAt', '>=', startTimeISO));
+      const unsubscribe = onSnapshot(qNoti, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const noti = change.doc.data();
+            const rawBranch = (noti.branch || noti.targetBranch || '').toLowerCase().replace(/branch/gi, '').trim();
+            const currentNormBranch = (branchName || '').toLowerCase().replace(/branch/gi, '').trim();
+
+            const isHR = userRole === 'admin' || userRole === 'hr';
+            const isBranchReception = userRole === 'reception' && (rawBranch.includes(currentNormBranch) || currentNormBranch.includes(rawBranch));
+
+            if (isHR || isBranchReception) {
+              // Real Android System Push Notification in Status Bar & Swipe-Down Shade (NO IN-APP POPUP!)
+              triggerSystemPushNotification(
+                noti.title || 'Appointment Booked',
+                noti.body || `Appointment has been booked for ${noti.patientName} at ${noti.appointmentTime} (${noti.branch})`,
+                noti
+              ).catch(() => { });
+            }
+          }
+        });
+      }, (err) => {
+        console.warn('Notifications real-time listener notice:', err);
+      });
+
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Notification listener setup notice:', e);
+    }
+  }, [userRole, branchName, activeTab]);
 
   const handleLoginSuccess = async (data: LoginSuccessData) => {
     const resolvedName = data.role === 'doctor' ? resolveDoctorName(data.branchPhone, data.userName) : (data.userName || 'Branch User');
@@ -137,6 +301,7 @@ export default function App() {
         userName: resolvedName,
         branchName: data.branchName,
         branchPhone: data.branchPhone,
+        staffId: data.staffId || '',
       }));
     } catch (e) { }
 
@@ -144,12 +309,17 @@ export default function App() {
     setUserName(resolvedName);
     setBranchName(data.branchName);
     setBranchPhone(data.branchPhone);
+    if (data.staffId) setStaffId(data.staffId);
     setTabHistory([]);
 
-    if (data.role === 'admin') {
+    // Prompt for system permissions upon login
+    requestAppPermissions().catch(() => { });
+
+    // Register FCM for logged-in staff role & branch
+    registerFCMForStaff(data.role, data.branchName, resolvedName).catch(() => { });
+
+    if (data.role === 'admin' || data.role === 'hr') {
       setActiveTab('admin');
-    } else if (data.role === 'hr') {
-      setActiveTab('hr');
     } else if (data.role === 'doctor') {
       setActiveTab('doctor');
     } else if (data.role === 'staff') {
@@ -185,24 +355,41 @@ export default function App() {
     }
 
     if (activeTab === 'reception_book') {
-      return <BookAppointmentScreen currentBranch={branchName} onNavigate={(tab: string) => navigateToTab(tab)} onBack={handleGoBack} />;
+      return <BookAppointmentScreen currentBranch={branchName} userRole={userRole} onNavigate={(tab: string) => navigateToTab(tab)} onBack={handleGoBack} />;
     }
 
     if (activeTab === 'patient_file' || activeTab === 'reception_patient_file') {
       return (
         <PatientFileMobileScreen
           patient={selectedPatient}
+          currentBranch={branchName}
+          doctorName={resolveDoctorName(branchPhone, userName)}
+          isDoctor={userRole === 'doctor'}
           onBack={handleGoBack}
+          onSaveConsultation={(payload) => {
+            const fullPatient = { ...selectedPatient, ...payload };
+            if (userRole === 'doctor') {
+              // Doctor consultation completed: close patient file immediately and return to doctor queue
+              setSelectedPatient(null);
+              setActiveTab('doctor');
+              Alert.alert('Consultation Completed', `Prescription saved & ${fullPatient.patientName || 'patient'} sent to Reception for Fee Collection!`);
+            } else {
+              // Reception / Staff: close patient file and directly open fee collection modal for this person!
+              setSelectedPatient(null);
+              setCheckoutPatient(fullPatient);
+              setActiveTab('reception_dashboard');
+            }
+          }}
         />
       );
     }
 
     if (userRole === 'admin') {
-      return <AdminScreen currentTab={activeTab} />;
+      return <AdminScreen currentTab={activeTab} onNavigateTab={navigateToTab} />;
     }
 
     if (userRole === 'hr') {
-      return <HRScreen />;
+      return <HRScreen currentTab={activeTab} onNavigateTab={navigateToTab} />;
     }
 
     if (userRole === 'doctor') {
@@ -219,29 +406,67 @@ export default function App() {
     }
 
     if (userRole === 'staff') {
-      return <StaffScreen />;
+      return (
+        <StaffScreen
+          staffId={staffId || ''}
+          staffName={userName || 'Staff Member'}
+          branchName={branchName || 'SPH Clinic'}
+          onLogout={handleSignOut}
+        />
+      );
     }
 
     switch (activeTab) {
       // Reception Modules
       case 'reception':
       case 'reception_dashboard':
-        return <ReceptionDashboardScreen currentBranch={branchName} onNavigate={navigateToTab} />;
+        return (
+          <ReceptionDashboardScreen
+            currentBranch={branchName}
+            onNavigate={navigateToTab}
+            initialPatientForCheckout={checkoutPatient}
+            onClearInitialCheckout={() => setCheckoutPatient(null)}
+          />
+        );
       case 'reception_patients':
-        return <AllPatientsScreen />;
+        return <AllPatientsScreen onNavigate={navigateToTab} currentBranch={branchName} />;
       case 'reception_followups':
         return <FollowUpsScreen onNavigate={navigateToTab} currentBranch={branchName} />;
       case 'reception_billing':
         return <ProductBillingScreen />;
+      case 'reception_medicines':
+      case 'medicine_requests':
+        return <MedicineRequestsScreen />;
       case 'reception_noshow':
-        return <DoctorNoShowScreen />;
+        return <DoctorNoShowScreen currentBranch={branchName} />;
       case 'reception_media':
         return <MediaManagerScreen />;
       case 'reception_cleaning':
-        return <CleaningPhotosScreen />;
+        return (
+          <CleaningPhotosScreen
+            currentBranch={branchName}
+            isOverdueLocked={isCleaningBlocked}
+            onSubmittedSuccess={() => setActiveTab('reception_cleaning')}
+          />
+        );
+      case 'branch_cleaning':
+      case 'admin_cleaning':
+      case 'cleaning':
+        return (
+          <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+            <BranchCleaningScreen onBack={handleGoBack} role={(userRole as any) === 'hr' ? 'hr' : 'admin'} />
+          </View>
+        );
 
       default:
-        return <ReceptionDashboardScreen currentBranch={branchName} onNavigate={navigateToTab} />;
+        return (
+          <ReceptionDashboardScreen
+            currentBranch={branchName}
+            onNavigate={navigateToTab}
+            initialPatientForCheckout={checkoutPatient}
+            onClearInitialCheckout={() => setCheckoutPatient(null)}
+          />
+        );
     }
   };
 
@@ -263,7 +488,7 @@ export default function App() {
     { id: 'logout', label: 'Logout', iconType: 'ionicons', iconName: 'log-out-outline' },
   ];
 
-  const bottomNavItems = userRole === 'admin' ? adminBottomNavItems : receptionBottomNavItems;
+  const bottomNavItems = (userRole === 'admin' || userRole === 'hr') ? adminBottomNavItems : receptionBottomNavItems;
 
   const handleBottomTabPress = (id: string) => {
     if (id === 'logout') {
@@ -283,6 +508,9 @@ export default function App() {
 
   const getSubPageTitle = (tab: string) => {
     switch (tab) {
+      case 'employee_works':
+      case 'admin_employee_works':
+        return 'Employee Daily Works';
       case 'branches':
       case 'admin_branches':
         return 'Manage Branches & Targets';
@@ -323,6 +551,13 @@ export default function App() {
         return 'Doctor No Show';
       case 'reception_media':
         return 'Media Manager';
+      case 'branch_cleaning':
+      case 'admin_cleaning':
+      case 'cleaning':
+        return 'Branch Cleaning & Sanitation';
+      case 'employee_attendance':
+      case 'admin_attendance':
+        return 'Staff Attendance Report';
       case 'reception_cleaning':
         return 'Cleaning Photos';
       default:
@@ -330,12 +565,48 @@ export default function App() {
     }
   };
 
+  // Compulsory Weekly Cleaning Lockout Guard for Reception
+  if (isCleaningBlocked && userRole !== 'admin' && userRole !== 'hr' && userRole !== 'doctor' && userRole !== 'staff' && activeTab !== 'auth') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar style="dark" />
+        <View style={{ flex: 1 }}>
+          <View style={{
+            backgroundColor: '#fee2e2',
+            paddingVertical: 10,
+            paddingHorizontal: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderBottomWidth: 1,
+            borderBottomColor: '#fca5a5'
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+              <Ionicons name="lock-closed" size={16} color="#dc2626" />
+              <Text style={{ fontSize: 12, fontWeight: '800', color: '#991b1b' }}>
+                Reception Locked: Clinic Cleaning Required
+              </Text>
+            </View>
+            <TouchableOpacity onPress={handleSignOut}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#dc2626' }}>Logout</Text>
+            </TouchableOpacity>
+          </View>
+          <CleaningPhotosScreen
+            currentBranch={branchName}
+            isOverdueLocked={true}
+            onSubmittedSuccess={() => setActiveTab('reception_cleaning')}
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
 
       {/* Top Main Dashboard Header Bar */}
-      {!isAuthScreen && userRole !== 'doctor' && (activeTab === 'reception_dashboard' || activeTab === 'reception' || activeTab === 'admin' || activeTab === 'analytics') && (
+      {!isAuthScreen && userRole !== 'doctor' && userRole !== 'staff' && (activeTab === 'reception_dashboard' || activeTab === 'reception' || activeTab === 'admin' || activeTab === 'analytics') && (
         <View style={styles.topHeader}>
           {/* Left Side: Hamburger Menu + Avatar Circle + Branch/User Info */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -347,12 +618,16 @@ export default function App() {
               <Ionicons name="person" size={20} color="#258ec8" />
             </View>
 
-            {userRole === 'admin' ? (
+            {userRole === 'admin' || userRole === 'hr' ? (
               <View>
-                <Text style={styles.branchTitle}>Spiritual Homeo</Text>
+                <Text style={styles.branchTitle}>
+                  {userName && userName.includes('@') ? userName : (userRole === 'hr' ? 'hr@sph.com' : 'admin@sph.com')}
+                </Text>
                 <View style={styles.tagRow}>
-                  <View style={styles.roleBadge}>
-                    <Text style={styles.roleBadgeText}>ADMIN</Text>
+                  <View style={[styles.roleBadge, userRole === 'hr' && { backgroundColor: '#f0fdf4' }]}>
+                    <Text style={[styles.roleBadgeText, userRole === 'hr' && { color: '#166534' }]}>
+                      {userRole === 'hr' ? 'HR MANAGEMENT' : 'ADMIN'}
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -402,7 +677,7 @@ export default function App() {
       )}
 
       {/* Sub-Page Professional Navigation Header with Back Arrow < and Page Title */}
-      {!isAuthScreen && userRole !== 'doctor' && (activeTab !== 'reception_dashboard' && activeTab !== 'reception' && activeTab !== 'admin' && activeTab !== 'analytics') && (
+      {!isAuthScreen && userRole !== 'doctor' && userRole !== 'staff' && (activeTab !== 'reception_dashboard' && activeTab !== 'reception' && activeTab !== 'admin' && activeTab !== 'analytics') && (
         <View style={styles.subPageHeader}>
           <TouchableOpacity style={styles.headerBackBtn} onPress={handleGoBack}>
             <Ionicons name="arrow-back" size={22} color="#0f172a" />
@@ -421,15 +696,17 @@ export default function App() {
       )}
 
       {/* Mobile Reception Side Drawer */}
-      <ReceptionSideDrawer
-        visible={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        activeTab={activeTab}
-        setActiveTab={navigateToTab}
-        userRole={userRole}
-        branchName={branchName}
-        onSignOut={handleSignOut}
-      />
+      {drawerOpen && userRole !== 'staff' && (
+        <ReceptionSideDrawer
+          visible={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          activeTab={activeTab}
+          setActiveTab={navigateToTab}
+          userRole={userRole}
+          branchName={branchName}
+          onSignOut={handleSignOut}
+        />
+      )}
 
       {/* Main Screen Content */}
       <View style={{ flex: 1 }}>
@@ -437,7 +714,7 @@ export default function App() {
       </View>
 
       {/* Edge-to-Edge Full Width Bottom Navigation Bar */}
-      {!isAuthScreen && userRole !== 'doctor' && (
+      {!isAuthScreen && userRole !== 'doctor' && userRole !== 'staff' && (
         <View style={styles.fullBottomNavContainer}>
           {bottomNavItems.map((item) => {
             const isActive = activeTab === item.id ||
@@ -475,6 +752,14 @@ export default function App() {
         </View>
       )}
     </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <MainApp />
+    </ErrorBoundary>
   );
 }
 

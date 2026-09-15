@@ -1,245 +1,763 @@
-import React, { useState } from 'react';
-import { Users, Search, UserPlus, Phone, Calendar, ChevronRight, FileText } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Users, Search, Calendar, MapPin, Phone, MessageSquare,
+  FileText, Clock, X, RefreshCw, ChevronRight, UserCheck
+} from 'lucide-react';
+import { db } from '@app/shared';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
+import { getPatientVisitState } from '../../../utils/patientVisitState';
 
-interface PatientRecord {
+export interface PatientRecord {
   id: string;
   name: string;
   phone: string;
-  age: number;
-  gender: string;
-  registeredDate: string;
-  lastVisit: string;
-  status: 'active' | 'completed' | 'follow_up';
+  age?: number | string;
+  gender?: string;
+  branchName: string;
+  appointmentDate: string; // YYYY-MM-DD or ISO
+  appointmentTime?: string;
+  doctorName?: string;
+  status: 'active' | 'completed' | 'follow_up' | 'awaiting_payment' | string;
+  regId?: string;
+  raw?: any;
 }
 
-const mockPatients: PatientRecord[] = [
-  { id: 'PAT-901', name: 'Sarah Jenkins', phone: '+91 98765 43210', age: 34, gender: 'Female', registeredDate: '2026-08-15', lastVisit: 'Today', status: 'active' },
-  { id: 'PAT-902', name: 'Ramesh Kumar', phone: '+91 91234 56789', age: 45, gender: 'Male', registeredDate: '2026-07-20', lastVisit: 'Today', status: 'follow_up' },
-  { id: 'PAT-903', name: 'Anita Sharma', phone: '+91 99887 76655', age: 29, gender: 'Female', registeredDate: '2026-06-10', lastVisit: '2 days ago', status: 'completed' },
-  { id: 'PAT-904', name: 'Michael Chang', phone: '+91 94455 66778', age: 52, gender: 'Male', registeredDate: '2026-05-04', lastVisit: '1 week ago', status: 'active' }
+interface AllPatientsPageProps {
+  currentBranch?: string;
+  onNavigate?: (tab: string, data?: any) => void;
+}
+
+// --- Date & Branch Helpers ---
+const getFormattedDateStr = (dateObj: Date): string => {
+  const yyyy = dateObj.getFullYear();
+  const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const dd = String(dateObj.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const normalizeDateToISO = (dateStr: string): string => {
+  if (!dateStr) return '';
+  const clean = String(dateStr).trim();
+  if (clean.includes('T')) return clean.split('T')[0];
+  if (clean.includes('/') || (clean.includes('-') && clean.split('-')[0].length <= 2)) {
+    const parts = clean.split(/[\/\-]/);
+    if (parts.length === 3) {
+      let dd = parts[0].padStart(2, '0');
+      let mm = parts[1].padStart(2, '0');
+      let yyyy = parts[2];
+      if (parts[0].length === 4) {
+        yyyy = parts[0];
+        mm = parts[1].padStart(2, '0');
+        dd = parts[2].padStart(2, '0');
+      }
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+  return clean;
+};
+
+const normalizeBranchName = (b: string): string => {
+  return (b || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+};
+
+const getBranchShortcut = (str: string): string => {
+  if (str.includes('kphb') || str.includes('kukatpally')) return 'kphb';
+  if (str.includes('nalla') || str.includes('nallagandla')) return 'nalla';
+  if (str.includes('chanda') || str.includes('chnr') || str.includes('chandanagar')) return 'chanda';
+  if (str.includes('dilshuk') || str.includes('dilsukh') || str.includes('dsnr') || str.includes('dshnr')) return 'dsnr';
+  return str;
+};
+
+const isBranchMatching = (b1: string, b2?: string): boolean => {
+  if (!b2 || b2 === 'all' || b2 === 'All Branches') return true;
+  const n1 = normalizeBranchName(b1);
+  const n2 = normalizeBranchName(b2);
+  if (n1 === n2 || n1.includes(n2) || n2.includes(n1)) return true;
+  return getBranchShortcut(n1) === getBranchShortcut(n2);
+};
+
+// Seed Fallback Data
+const INITIAL_PATIENTS: PatientRecord[] = [
+  { id: 'PAT-101', name: 'Rajesh Kumar', phone: '+91 98490 12345', age: 38, gender: 'Male', branchName: 'KPHB Branch', appointmentDate: getFormattedDateStr(new Date()), appointmentTime: '10:00 AM', doctorName: 'Dr. Srinivas', status: 'active', regId: 'SPH-KPHB-0101' },
+  { id: 'PAT-102', name: 'Sneha Reddy', phone: '+91 91210 67890', age: 29, gender: 'Female', branchName: 'Nallagandla Branch', appointmentDate: getFormattedDateStr(new Date()), appointmentTime: '11:15 AM', doctorName: 'Dr. Ananya', status: 'follow_up', regId: 'SPH-NALLA-0102' },
+  { id: 'PAT-103', name: 'Venkatesh Rao', phone: '+91 94400 45678', age: 45, gender: 'Male', branchName: 'Dilshuknagar Branch', appointmentDate: getFormattedDateStr(new Date(Date.now() - 86400000)), appointmentTime: '02:30 PM', doctorName: 'Dr. Srinivas', status: 'completed', regId: 'SPH-DSNR-0103' },
+  { id: 'PAT-104', name: 'Ananya Sharma', phone: '+91 99887 11223', age: 31, gender: 'Female', branchName: 'Chandanagar Branch', appointmentDate: getFormattedDateStr(new Date(Date.now() - 86400000)), appointmentTime: '04:00 PM', doctorName: 'Dr. Ramesh', status: 'awaiting_payment', regId: 'SPH-CHNR-0104' },
+  { id: 'PAT-105', name: 'Kiran Verma', phone: '+91 98765 00011', age: 50, gender: 'Male', branchName: 'KPHB Branch', appointmentDate: '2026-09-01', appointmentTime: '11:30 AM', doctorName: 'Dr. Ananya', status: 'completed', regId: 'SPH-KPHB-0105' }
 ];
 
-export const AllPatientsPage: React.FC = () => {
+export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch = 'KPHB Branch', onNavigate }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [patients, setPatients] = useState<PatientRecord[]>(mockPatients);
-  const [showRegisterModal, setShowRegisterModal] = useState(false);
-  const [newPatientName, setNewPatientName] = useState('');
-  const [newPatientPhone, setNewPatientPhone] = useState('');
+  const [dateFilterMode, setDateFilterMode] = useState<'today' | 'yesterday' | 'all'>('today');
+  const [patients, setPatients] = useState<PatientRecord[]>(INITIAL_PATIENTS);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const filteredPatients = patients.filter(p => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    p.phone.includes(searchTerm) || 
-    p.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const todayStr = getFormattedDateStr(new Date());
+  const yesterdayStr = getFormattedDateStr(new Date(Date.now() - 86400000));
 
-  const handleRegisterPatient = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newPatientName.trim()) return;
+  // --- Real-time Firestore Sync ---
+  useEffect(() => {
+    let unsubAll: (() => void) | null = null;
+    let unsubApp: (() => void) | null = null;
+    let isMounted = true;
+    setIsLoading(true);
 
-    const newRecord: PatientRecord = {
-      id: `PAT-${Math.floor(905 + Math.random() * 90)}`,
-      name: newPatientName,
-      phone: newPatientPhone || '+91 90000 00000',
-      age: 30,
-      gender: 'General',
-      registeredDate: new Date().toISOString().split('T')[0],
-      lastVisit: 'Just now',
-      status: 'active'
+    let allList: PatientRecord[] = [];
+    let appList: PatientRecord[] = [];
+
+    const mapDocToPatient = (id: string, data: any): PatientRecord => {
+      const bName = data.branch || data.branchName || currentBranch || 'KPHB Branch';
+      const cleanPhone = String(data.phoneNumber || data.phone || '').trim();
+      const pName = data.patientName || data.name || data.fullName || 'Patient';
+      const regId = data.registrationId || data.regId || data.patientId || id;
+      const rawDate = data.appointmentDate || data.date || data.createdAt || todayStr;
+
+      let status = 'active';
+      const s = String(data.status || '').toLowerCase().trim();
+      const p = String(data.paymentStatus || '').toLowerCase().trim();
+      if (s === 'completed' || s === 'done' || s === 'paid' || p === 'paid') {
+        status = 'completed';
+      } else if (s === 'follow_up' || s === 'followup' || data.followUpOpted === true) {
+        status = 'follow_up';
+      } else if (s === 'collect_fee' || s === 'awaiting_payment' || p === 'pending') {
+        status = 'awaiting_payment';
+      }
+
+      return {
+        id,
+        name: pName,
+        phone: cleanPhone,
+        age: data.age || data.patientAge,
+        gender: data.gender || 'Male',
+        branchName: bName,
+        appointmentDate: normalizeDateToISO(String(rawDate)),
+        appointmentTime: data.appointmentTime || data.time || '10:00 AM',
+        doctorName: data.doctorName || data.doctor,
+        status,
+        regId,
+        raw: data
+      };
     };
 
-    setPatients([newRecord, ...patients]);
-    setNewPatientName('');
-    setNewPatientPhone('');
-    setShowRegisterModal(false);
+    const mergeAndSet = () => {
+      if (!isMounted) return;
+      const combinedMap = new Map<string, PatientRecord>();
+
+      allList.forEach(p => {
+        if (!combinedMap.has(p.id)) combinedMap.set(p.id, p);
+      });
+
+      appList.forEach(p => {
+        if (!combinedMap.has(p.id)) {
+          combinedMap.set(p.id, p);
+        } else {
+          const existing = combinedMap.get(p.id)!;
+          combinedMap.set(p.id, { ...existing, ...p, raw: { ...existing.raw, ...p.raw } });
+        }
+      });
+
+      // Include seed fallback matching current branch
+      INITIAL_PATIENTS.forEach(seed => {
+        if (!combinedMap.has(seed.id)) {
+          if (!currentBranch || isBranchMatching(seed.branchName, currentBranch)) {
+            combinedMap.set(seed.id, seed);
+          }
+        }
+      });
+
+      setPatients(Array.from(combinedMap.values()));
+      setIsLoading(false);
+    };
+
+    try {
+      unsubAll = onSnapshot(collection(db, 'allpatients'), (snap) => {
+        const list: PatientRecord[] = [];
+        snap.forEach(docSnap => {
+          const item = mapDocToPatient(docSnap.id, docSnap.data());
+          if (!currentBranch || isBranchMatching(item.branchName, currentBranch)) {
+            list.push(item);
+          }
+        });
+        allList = list;
+        mergeAndSet();
+      }, (err) => {
+        console.warn('allpatients snapshot notice:', err);
+        mergeAndSet();
+      });
+
+      unsubApp = onSnapshot(collection(db, 'appointments'), (snap) => {
+        const list: PatientRecord[] = [];
+        snap.forEach(docSnap => {
+          const item = mapDocToPatient(docSnap.id, docSnap.data());
+          if (!currentBranch || isBranchMatching(item.branchName, currentBranch)) {
+            list.push(item);
+          }
+        });
+        appList = list;
+        mergeAndSet();
+      }, (err) => {
+        console.warn('appointments snapshot notice:', err);
+        mergeAndSet();
+      });
+    } catch (e) {
+      console.warn('Subscription error:', e);
+      setPatients(INITIAL_PATIENTS.filter(p => !currentBranch || isBranchMatching(p.branchName, currentBranch)));
+      setIsLoading(false);
+    }
+
+    return () => {
+      isMounted = false;
+      if (unsubAll) unsubAll();
+      if (unsubApp) unsubApp();
+    };
+  }, [currentBranch]);
+
+  // --- Session Counts ---
+  const counts = useMemo(() => {
+    let today = 0;
+    let yesterday = 0;
+    let total = 0;
+
+    patients.forEach(p => {
+      if (currentBranch && !isBranchMatching(p.branchName, currentBranch)) return;
+      total++;
+      const pDate = normalizeDateToISO(p.appointmentDate);
+      if (pDate === todayStr) today++;
+      if (pDate === yesterdayStr) yesterday++;
+    });
+
+    return { today, yesterday, total };
+  }, [patients, currentBranch, todayStr, yesterdayStr]);
+
+  // --- Filtering Engine ---
+  const filteredPatients = useMemo(() => {
+    return patients.filter((patient) => {
+      // 1. Strictly locked to this branch
+      if (currentBranch && !isBranchMatching(patient.branchName, currentBranch)) {
+        return false;
+      }
+
+      const patientDate = normalizeDateToISO(patient.appointmentDate);
+
+      // 2. Date Session filter (Today, Yesterday, All)
+      if (dateFilterMode === 'today') {
+        if (patientDate !== todayStr) return false;
+      } else if (dateFilterMode === 'yesterday') {
+        if (patientDate !== yesterdayStr) return false;
+      }
+
+      // 3. Search query filter (Name, Phone, ID)
+      if (searchTerm.trim() !== '') {
+        const queryStr = searchTerm.toLowerCase().trim();
+        const matchesName = patient.name.toLowerCase().includes(queryStr);
+        const matchesPhone = patient.phone.includes(queryStr);
+        const matchesId = (patient.regId || patient.id).toLowerCase().includes(queryStr);
+        if (!matchesName && !matchesPhone && !matchesId) return false;
+      }
+
+      return true;
+    });
+  }, [patients, dateFilterMode, currentBranch, searchTerm, todayStr, yesterdayStr]);
+
+  // --- Handlers ---
+  const handleOpenPatientFile = (patient: PatientRecord) => {
+    if (onNavigate) {
+      onNavigate('reception_patient_file', {
+        id: patient.id,
+        patientName: patient.name,
+        name: patient.name,
+        phone: patient.phone,
+        phoneNumber: patient.phone,
+        registrationId: patient.regId || patient.id,
+        regId: patient.regId || patient.id,
+        branch: patient.branchName,
+        doctorName: patient.doctorName,
+        appointmentDate: patient.appointmentDate,
+        ...patient.raw
+      });
+    } else {
+      window.alert(`Patient: ${patient.name} (${patient.regId || patient.id})`);
+    }
+  };
+
+  const handleCall = (phone: string) => {
+    if (!phone) return;
+    window.location.href = `tel:${phone}`;
+  };
+
+  const handleWhatsApp = (phone: string, name: string) => {
+    if (!phone) return;
+    const clean = phone.replace(/\D/g, '').slice(-10);
+    const msg = encodeURIComponent(`Hello ${name}, regarding your appointment at Spiritual Homeopathy Clinic.`);
+    window.open(`https://wa.me/91${clean}?text=${msg}`, '_blank');
+  };
+
+  const getStatusBadge = (status: string) => {
+    const s = (status || 'active').toLowerCase();
+    if (s === 'completed' || s === 'done' || s === 'paid') {
+      return { bg: '#dcfce7', text: '#15803d', border: '#bbf7d0', label: 'Completed ✓' };
+    }
+    if (s === 'follow_up' || s === 'followup') {
+      return { bg: '#fef9c3', text: '#a16207', border: '#fef08a', label: 'Follow Up' };
+    }
+    if (s === 'awaiting_payment' || s === 'pending' || s === 'collect_fee') {
+      return { bg: '#fee2e2', text: '#b91c1c', border: '#fecaca', label: 'Pay Pending' };
+    }
+    return { bg: '#e0f2fe', text: '#0369a1', border: '#bae6fd', label: 'Active' };
   };
 
   return (
-    <div style={{ padding: '32px 24px', maxWidth: '1200px', margin: '0 auto' }}>
-      {/* Page Title & Register Button */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px', flexWrap: 'wrap', gap: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ background: 'rgba(168, 206, 58, 0.18)', padding: '12px', borderRadius: '14px', border: '1px solid rgba(168, 206, 58, 0.35)' }}>
-            <Users color="#638012" size={26} />
+    <div style={{ padding: '24px 20px', maxWidth: '1300px', margin: '0 auto', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+      {/* Top Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '22px', flexWrap: 'wrap', gap: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+          <div style={{
+            background: 'linear-gradient(135deg, rgba(37,142,200,0.12), rgba(168,206,58,0.18))',
+            padding: '12px',
+            borderRadius: '16px',
+            border: '1px solid rgba(37,142,200,0.25)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <Users color="#258ec8" size={26} />
           </div>
           <div>
-            <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#1e293b' }}>
-              Reception • All Registered Patients
-            </h1>
-            <p style={{ color: '#64748b', fontSize: '14px', marginTop: '2px' }}>
-              Directory of all patients, medical history, and quick registration
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.02em' }}>
+                Reception • All Patients
+              </h1>
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                background: '#f1f5f9',
+                border: '1px solid #e2e8f0',
+                padding: '3px 10px',
+                borderRadius: '20px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#475569'
+              }}>
+                <MapPin size={12} color="#258ec8" />
+                {currentBranch || 'KPHB Branch'}
+              </span>
+            </div>
+            <p style={{ color: '#64748b', fontSize: '13px', margin: '4px 0 0 0' }}>
+              Patient directory and appointment sessions for your branch
             </p>
           </div>
         </div>
 
-        <button 
-          onClick={() => setShowRegisterModal(true)}
-          style={{
-            background: '#258ec8',
-            color: '#ffffff',
-            border: 'none',
-            padding: '12px 20px',
-            borderRadius: '10px',
-            fontWeight: 700,
-            fontSize: '14px',
-            cursor: 'pointer',
-            display: 'flex',
+        {/* Real-time Indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{
+            display: 'inline-flex',
             alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 4px 14px rgba(37, 142, 200, 0.25)'
-          }}
-        >
-          <UserPlus size={16} /> Register New Patient
-        </button>
+            gap: '6px',
+            background: '#ecfdf5',
+            color: '#059669',
+            border: '1px solid #a7f3d0',
+            padding: '5px 12px',
+            borderRadius: '20px',
+            fontSize: '12px',
+            fontWeight: 700
+          }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }} />
+            Branch Live Sync
+          </span>
+        </div>
       </div>
 
-      {/* Search Bar */}
+      {/* Date Sessions Filter Pills & Search Bar Row */}
       <div style={{
         background: '#ffffff',
         border: '1px solid #e2e8f0',
         borderRadius: '16px',
-        padding: '16px',
-        marginBottom: '24px',
-        boxShadow: '0 4px 14px rgba(0, 0, 0, 0.03)',
+        padding: '16px 20px',
+        marginBottom: '20px',
+        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.03)',
         display: 'flex',
-        alignItems: 'center'
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '16px'
       }}>
-        <Search size={18} color="#64748b" style={{ marginRight: '12px' }} />
-        <input 
-          type="text" 
-          placeholder="Search patient by name, mobile number, or ID (e.g. PAT-901)..." 
-          style={{ border: 'none', outline: 'none', width: '100%', fontSize: '14px', color: '#0f172a' }}
-          value={searchTerm}
-          onChange={e => setSearchTerm(e.target.value)}
-        />
-      </div>
+        {/* Date Session Filter Tabs: Today, Yesterday, All Patients */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={() => setDateFilterMode('today')}
+            style={{
+              padding: '9px 16px',
+              borderRadius: '10px',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              transition: 'all 0.2s ease',
+              border: dateFilterMode === 'today' ? '1px solid #258ec8' : '1px solid #e2e8f0',
+              background: dateFilterMode === 'today' ? '#258ec8' : '#ffffff',
+              color: dateFilterMode === 'today' ? '#ffffff' : '#475569',
+              boxShadow: dateFilterMode === 'today' ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
+            }}
+          >
+            <Calendar size={14} color={dateFilterMode === 'today' ? '#ffffff' : '#64748b'} />
+            Today
+            <span style={{
+              background: dateFilterMode === 'today' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
+              color: dateFilterMode === 'today' ? '#ffffff' : '#0f172a',
+              padding: '2px 8px',
+              borderRadius: '12px',
+              fontSize: '11px',
+              fontWeight: 800
+            }}>
+              {counts.today}
+            </span>
+          </button>
 
-      {/* Patient Records List */}
-      <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '20px', padding: '20px', boxShadow: '0 4px 14px rgba(0, 0, 0, 0.03)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
-          <thead>
-            <tr style={{ borderBottom: '2px solid #f1f5f9', textAlign: 'left', color: '#64748b', fontSize: '12px', fontWeight: 700 }}>
-              <th style={{ padding: '12px 10px' }}>PATIENT ID & NAME</th>
-              <th style={{ padding: '12px 10px' }}>MOBILE NUMBER</th>
-              <th style={{ padding: '12px 10px' }}>AGE / GENDER</th>
-              <th style={{ padding: '12px 10px' }}>LAST VISIT</th>
-              <th style={{ padding: '12px 10px' }}>STATUS</th>
-              <th style={{ padding: '12px 10px', textAlign: 'right' }}>DETAILS</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredPatients.map(patient => (
-              <tr key={patient.id} style={{ borderBottom: '1px solid #f8fafc' }}>
-                <td style={{ padding: '14px 10px' }}>
-                  <div style={{ fontWeight: 700, color: '#1e293b' }}>{patient.name}</div>
-                  <div style={{ fontSize: '12px', color: '#258ec8', fontWeight: 600 }}>{patient.id}</div>
-                </td>
-                <td style={{ padding: '14px 10px', color: '#475569', fontWeight: 500 }}>{patient.phone}</td>
-                <td style={{ padding: '14px 10px', color: '#64748b' }}>{patient.age} yrs • {patient.gender}</td>
-                <td style={{ padding: '14px 10px', color: '#64748b' }}>{patient.lastVisit}</td>
-                <td style={{ padding: '14px 10px' }}>
-                  <span style={{
-                    background: patient.status === 'active' ? 'rgba(37, 142, 200, 0.12)' : 'rgba(168, 206, 58, 0.2)',
-                    color: patient.status === 'active' ? '#258ec8' : '#638012',
-                    padding: '4px 10px',
-                    borderRadius: '12px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    textTransform: 'capitalize'
-                  }}>
-                    {patient.status.replace('_', ' ')}
-                  </span>
-                </td>
-                <td style={{ padding: '14px 10px', textAlign: 'right' }}>
-                  <button style={{
-                    background: '#f1f5f9',
-                    border: 'none',
-                    color: '#258ec8',
-                    padding: '6px 12px',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}>
-                    View History
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          <button
+            type="button"
+            onClick={() => setDateFilterMode('yesterday')}
+            style={{
+              padding: '9px 16px',
+              borderRadius: '10px',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              transition: 'all 0.2s ease',
+              border: dateFilterMode === 'yesterday' ? '1px solid #258ec8' : '1px solid #e2e8f0',
+              background: dateFilterMode === 'yesterday' ? '#258ec8' : '#ffffff',
+              color: dateFilterMode === 'yesterday' ? '#ffffff' : '#475569',
+              boxShadow: dateFilterMode === 'yesterday' ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
+            }}
+          >
+            <Clock size={14} color={dateFilterMode === 'yesterday' ? '#ffffff' : '#64748b'} />
+            Yesterday
+            <span style={{
+              background: dateFilterMode === 'yesterday' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
+              color: dateFilterMode === 'yesterday' ? '#ffffff' : '#0f172a',
+              padding: '2px 8px',
+              borderRadius: '12px',
+              fontSize: '11px',
+              fontWeight: 800
+            }}>
+              {counts.yesterday}
+            </span>
+          </button>
 
-      {/* Registration Modal Overlay */}
-      {showRegisterModal && (
+          <button
+            type="button"
+            onClick={() => setDateFilterMode('all')}
+            style={{
+              padding: '9px 16px',
+              borderRadius: '10px',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              transition: 'all 0.2s ease',
+              border: dateFilterMode === 'all' ? '1px solid #258ec8' : '1px solid #e2e8f0',
+              background: dateFilterMode === 'all' ? '#258ec8' : '#ffffff',
+              color: dateFilterMode === 'all' ? '#ffffff' : '#475569',
+              boxShadow: dateFilterMode === 'all' ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
+            }}
+          >
+            <Users size={14} color={dateFilterMode === 'all' ? '#ffffff' : '#64748b'} />
+            All Patients
+            <span style={{
+              background: dateFilterMode === 'all' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
+              color: dateFilterMode === 'all' ? '#ffffff' : '#0f172a',
+              padding: '2px 8px',
+              borderRadius: '12px',
+              fontSize: '11px',
+              fontWeight: 800
+            }}>
+              {counts.total}
+            </span>
+          </button>
+        </div>
+
+        {/* Search Bar Input */}
         <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.5)',
-          backdropFilter: 'blur(4px)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 200,
-          padding: '20px'
+          background: '#f8fafc',
+          border: '1px solid #cbd5e1',
+          borderRadius: '10px',
+          padding: '8px 14px',
+          width: '320px',
+          maxWidth: '100%',
+          transition: 'all 0.2s ease'
         }}>
-          <div style={{
-            background: '#ffffff',
-            borderRadius: '24px',
-            padding: '32px',
-            maxWidth: '440px',
-            width: '100%',
-            boxShadow: '0 20px 50px rgba(0,0,0,0.15)'
-          }}>
-            <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#1e293b', marginBottom: '16px' }}>
-              Register New Patient
-            </h2>
-            <form onSubmit={handleRegisterPatient} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: '6px' }}>Patient Full Name</label>
-                <input 
-                  type="text" 
-                  placeholder="Enter full name..." 
-                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                  value={newPatientName}
-                  onChange={e => setNewPatientName(e.target.value)}
-                  required
-                />
-              </div>
+          <Search size={16} color="#64748b" style={{ marginRight: '8px', flexShrink: 0 }} />
+          <input
+            type="text"
+            placeholder="Search patient by name, mobile, ID..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              outline: 'none',
+              width: '100%',
+              fontSize: '13px',
+              color: '#0f172a'
+            }}
+          />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+            >
+              <X size={14} color="#94a3b8" />
+            </button>
+          )}
+        </div>
+      </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: '6px' }}>Mobile Number</label>
-                <input 
-                  type="tel" 
-                  placeholder="+91 Mobile number..." 
-                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '14px', outline: 'none' }}
-                  value={newPatientPhone}
-                  onChange={e => setNewPatientPhone(e.target.value)}
-                  required
-                />
-              </div>
+      {/* Patient Records Table */}
+      <div style={{
+        background: '#ffffff',
+        border: '1px solid #e2e8f0',
+        borderRadius: '18px',
+        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.03)',
+        overflow: 'hidden'
+      }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', textAlign: 'left' }}>
+            <thead>
+              <tr style={{
+                background: '#f8fafc',
+                borderBottom: '2px solid #e2e8f0',
+                color: '#475569',
+                fontSize: '11px',
+                fontWeight: 800,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em'
+              }}>
+                <th style={{ padding: '14px 18px' }}>Patient Info</th>
+                <th style={{ padding: '14px 14px' }}>Mobile & Quick Connect</th>
+                <th style={{ padding: '14px 14px' }}>Date & Time</th>
+                <th style={{ padding: '14px 14px' }}>Doctor</th>
+                <th style={{ padding: '14px 14px' }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredPatients.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ padding: '48px 20px', textAlign: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                      <Users size={36} color="#cbd5e1" />
+                      <div style={{ fontWeight: 700, color: '#334155', fontSize: '15px' }}>
+                        No patients found for this filter
+                      </div>
+                      <div style={{ color: '#64748b', fontSize: '13px', maxWidth: '380px' }}>
+                        {searchTerm
+                          ? `No matches found for "${searchTerm}". Try checking your spelling or clear the search.`
+                          : `No registered patients scheduled under "${dateFilterMode.toUpperCase()}" session for ${currentBranch}.`}
+                      </div>
+                      {searchTerm && (
+                        <button
+                          onClick={() => setSearchTerm('')}
+                          style={{
+                            marginTop: '8px',
+                            background: '#f1f5f9',
+                            border: '1px solid #cbd5e1',
+                            padding: '6px 14px',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            color: '#258ec8',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Clear Search
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ) : (() => {
+                const pool = receptionDataStore.getAllCollectionsPool();
+                const pkgs = receptionDataStore.getPackageMembers();
+                return filteredPatients.map((patient, index) => {
+                  const badge = getStatusBadge(patient.status);
+                  let visitState: any = null;
+                  try {
+                    visitState = getPatientVisitState(patient.raw || patient, pool, pkgs);
+                  } catch (e) {}
 
-              <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
-                <button 
-                  type="button" 
-                  onClick={() => setShowRegisterModal(false)}
-                  style={{ flex: 1, background: '#f1f5f9', border: 'none', color: '#64748b', height: '44px', borderRadius: '10px', fontWeight: 700, cursor: 'pointer' }}
-                >
-                  Cancel
-                </button>
-                <button 
-                  type="submit" 
-                  style={{ flex: 1, background: '#258ec8', border: 'none', color: '#ffffff', height: '44px', borderRadius: '10px', fontWeight: 700, cursor: 'pointer' }}
-                >
-                  Save Patient
-                </button>
-              </div>
-            </form>
+                  return (
+                    <tr
+                      key={patient.id || index}
+                      style={{
+                        borderBottom: '1px solid #f1f5f9',
+                        transition: 'background 0.15s ease'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#f8fafc')}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    >
+                      {/* Name & ID */}
+                      <td style={{ padding: '14px 18px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700, color: '#0f172a', fontSize: '14px' }}>
+                            {patient.name}
+                          </span>
+                          {visitState && (
+                            <span style={{
+                              background: visitState.badgeBg,
+                              color: visitState.badgeColor,
+                              border: `1px solid ${visitState.badgeBorder}`,
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              letterSpacing: '0.03em'
+                            }}>
+                              {visitState.badgeText}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
+                          <span style={{
+                            background: '#eff6ff',
+                            color: '#258ec8',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: 800,
+                            fontFamily: 'monospace'
+                          }}>
+                            {patient.regId || patient.id}
+                          </span>
+                          {patient.age ? (
+                            <span style={{ fontSize: '12px', color: '#64748b' }}>
+                              • {patient.age} yrs
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+
+                      {/* Mobile & Connect */}
+                      <td style={{ padding: '14px 14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontWeight: 600, color: '#334155' }}>
+                            {patient.phone || 'No phone'}
+                          </span>
+                          {patient.phone && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <button
+                                type="button"
+                                title="Call patient"
+                                onClick={() => handleCall(patient.phone)}
+                                style={{
+                                  background: '#eff6ff',
+                                  border: '1px solid #bfdbfe',
+                                  color: '#258ec8',
+                                  borderRadius: '6px',
+                                  padding: '4px 6px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center'
+                                }}
+                              >
+                                <Phone size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                title="Chat on WhatsApp"
+                                onClick={() => handleWhatsApp(patient.phone, patient.name)}
+                                style={{
+                                  background: '#f0fdf4',
+                                  border: '1px solid #bbf7d0',
+                                  color: '#16a34a',
+                                  borderRadius: '6px',
+                                  padding: '4px 6px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center'
+                                }}
+                              >
+                                <MessageSquare size={13} />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Date & Time */}
+                      <td style={{ padding: '14px 14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#1e293b', fontWeight: 600 }}>
+                          <Calendar size={13} color="#64748b" />
+                          {patient.appointmentDate}
+                        </div>
+                        {patient.appointmentTime && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#64748b', fontSize: '11px', marginTop: '2px' }}>
+                            <Clock size={11} />
+                            {patient.appointmentTime}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Doctor */}
+                      <td style={{ padding: '14px 14px' }}>
+                        <div style={{ color: '#334155', fontWeight: 600 }}>
+                          {patient.doctorName || 'Unassigned'}
+                        </div>
+                      </td>
+
+                      {/* Status */}
+                      <td style={{ padding: '14px 14px' }}>
+                        <span style={{
+                          background: badge.bg,
+                          color: badge.text,
+                          border: `1px solid ${badge.border}`,
+                          padding: '4px 10px',
+                          borderRadius: '12px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          display: 'inline-block'
+                        }}>
+                          {badge.label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer summary */}
+        <div style={{
+          padding: '12px 20px',
+          background: '#f8fafc',
+          borderTop: '1px solid #e2e8f0',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '12px',
+          color: '#64748b'
+        }}>
+          <div>
+            Showing <strong>{filteredPatients.length}</strong> of <strong>{patients.length}</strong> patients for {currentBranch}
+          </div>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <span>Session Mode: <strong style={{ color: '#258ec8', textTransform: 'capitalize' }}>{dateFilterMode}</strong></span>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

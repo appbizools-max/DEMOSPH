@@ -7,9 +7,11 @@ import { collection, onSnapshot } from 'firebase/firestore';
 interface PatientFilePageProps {
   onBack?: () => void;
   initialPatient?: any;
+  onSubmitConsultation?: (data: any) => void;
+  isDoctor?: boolean;
 }
 
-export const PatientFilePage: React.FC<PatientFilePageProps> = ({ onBack, initialPatient }) => {
+export const PatientFilePage: React.FC<PatientFilePageProps> = ({ onBack, initialPatient, onSubmitConsultation, isDoctor = false }) => {
   const [patients, setPatients] = useState<any[]>([
     {
       id: 'demo-1',
@@ -202,6 +204,8 @@ export const PatientFilePage: React.FC<PatientFilePageProps> = ({ onBack, initia
           <PatientFileUI
             patient={activePatient}
             onClose={onBack}
+            onSubmitConsultation={onSubmitConsultation}
+            isDoctor={isDoctor}
             isStandalonePage={true}
           />
         </div>

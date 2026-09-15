@@ -19,7 +19,7 @@ import {
   UploadCloud
 } from 'lucide-react';
 import { db } from '@app/shared';
-import { collection, onSnapshot, updateDoc, doc, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, updateDoc, doc, addDoc, query, limit } from 'firebase/firestore';
 import { PatientFileUI } from '../../../components/PatientFileUI';
 
 interface DoctorDashboardPageProps {
@@ -79,6 +79,42 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
     year: 'numeric',
   });
 
+  const getTodayISO = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = (now.getMonth() + 1).toString().padStart(2, '0');
+    const day = now.getDate().toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const isTodayDate = (a: any) => {
+    const todayISO = getTodayISO();
+    const rawDate = a.appointmentDate || a.date || a.bookingDate || a.dateString || a.slotDate;
+    if (!rawDate) {
+      if (a.createdAt) {
+        return String(a.createdAt).startsWith(todayISO);
+      }
+      return false;
+    }
+    const clean = String(rawDate).trim();
+    if (!clean) return false;
+
+    if (clean === todayISO || clean.startsWith(todayISO)) return true;
+
+    // DD-MM-YYYY, DD/MM/YYYY, D/M/YYYY
+    const partsISO = todayISO.split('-'); // [YYYY, MM, DD]
+    if (partsISO.length === 3) {
+      const [y, m, d] = partsISO;
+      const ddmmyyyyHyphen = `${d}-${m}-${y}`;
+      const ddmmyyyySlash = `${d}/${m}/${y}`;
+      const dmySlash = `${parseInt(d, 10)}/${parseInt(m, 10)}/${y}`;
+      const dmyHyphen = `${parseInt(d, 10)}-${parseInt(m, 10)}-${y}`;
+      if (clean === ddmmyyyyHyphen || clean === ddmmyyyySlash || clean === dmySlash || clean === dmyHyphen) return true;
+    }
+
+    return false;
+  };
+
   const isActualAppointment = (item: any, colName: string) => {
     if (colName === 'appointments') return true;
     const hasApptDate = Boolean(item.appointmentDate || item.date || item.slotDate);
@@ -107,6 +143,8 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
         const statusStr = (item.status || '').toLowerCase();
         if (statusStr === 'cancelled' || statusStr === 'rejected') return false;
         if (!isActualAppointment(item, item.collectionName)) return false;
+        // Strictly filter to TODAY'S consultations only
+        if (!isTodayDate(item)) return false;
 
         const docName = (item.doctorName || item.doctor || '').toLowerCase();
         const curDocName = (doctorName || '').toLowerCase();
@@ -123,9 +161,29 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
 
       const uniqueMap = new Map<string, any>();
       filtered.forEach((item) => {
-        const key = item.id || `${item.phone || ''}_${item.patientName || item.name || ''}_${item.appointmentDate || item.date || ''}_${item.appointmentTime || item.time || ''}`;
-        if (!uniqueMap.has(key)) {
-          uniqueMap.set(key, item);
+        const cleanPhone = String(item.phone || item.phoneNumber || '').replace(/\D/g, '').slice(-10);
+        const cleanDate = String(item.appointmentDate || item.date || item.slotDate || item.dateString || '').trim();
+        const cleanTime = String(item.appointmentTime || item.time || item.timeSlot || '').trim().toLowerCase();
+        const cleanName = String(item.patientName || item.name || '').trim().toLowerCase();
+        const cleanReg = String(item.registrationId || item.regId || '').trim().toLowerCase();
+
+        const dedupKey = (cleanPhone && cleanDate && cleanTime)
+          ? `${cleanPhone}_${cleanDate}_${cleanTime}`
+          : (cleanReg && cleanDate)
+            ? `${cleanReg}_${cleanDate}`
+            : (cleanPhone && cleanName)
+              ? `${cleanPhone}_${cleanName}`
+              : (item.id || `${cleanPhone}_${cleanName}`);
+
+        if (!uniqueMap.has(dedupKey)) {
+          uniqueMap.set(dedupKey, item);
+        } else {
+          const existing = uniqueMap.get(dedupKey);
+          uniqueMap.set(dedupKey, {
+            ...item,
+            ...existing,
+            displayStatus: (existing.displayStatus && existing.displayStatus !== 'waiting') ? existing.displayStatus : (item.displayStatus || 'waiting')
+          });
         }
       });
 
@@ -144,7 +202,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
     };
 
     try {
-      unsubApp = onSnapshot(collection(db, 'appointments'), (snapshot) => {
+      unsubApp = onSnapshot(query(collection(db, 'appointments'), limit(300)), (snapshot) => {
         appList = snapshot.docs.map((d) => ({
           ...d.data(),
           id: d.id,
@@ -155,7 +213,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
         mergeAndFilter();
       });
 
-      unsubAllPat = onSnapshot(collection(db, 'allpatients'), (snapshot) => {
+      unsubAllPat = onSnapshot(query(collection(db, 'allpatients'), limit(300)), (snapshot) => {
         allPatList = snapshot.docs.map((d) => ({
           ...d.data(),
           id: d.id,
@@ -165,8 +223,8 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
         }));
         mergeAndFilter();
       });
-    } catch (err) {
-      console.warn('Error subscribing to web doctor appointments:', err);
+    } catch (e) {
+      console.warn('Error subscribing to web doctor appointments:', e);
       setLoading(false);
     }
 
@@ -348,10 +406,10 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
       }
 
       setSuccessToast(`Prescription for ${patName} submitted successfully! Sent to Reception counter.`);
+      setActiveConsultPatient(null);
       setTimeout(() => {
         setSuccessToast('');
-        setActiveConsultPatient(null);
-      }, 2500);
+      }, 3000);
 
     } catch (err) {
       console.error('Error submitting consultation:', err);
@@ -478,7 +536,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
             </div>
           ) : (
             displayedList.map((item, index) => {
-              const isDone = item.displayStatus === 'completed' || item.displayStatus === 'done';
+              const isDone = item.displayStatus === 'completed' || item.displayStatus === 'done' || item.displayStatus === 'collect_fee';
               const isInConsult = item.displayStatus === 'in_consultation' || item.displayStatus === 'in consult' || item.displayStatus === 'in-consultation';
 
               return (
@@ -571,6 +629,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
         <PatientFileUI
           patient={activeConsultPatient}
           doctorName={doctorName}
+          isDoctor={true}
           onClose={() => setActiveConsultPatient(null)}
           onSubmitConsultation={async (data) => {
             await handleSubmitConsultation();
