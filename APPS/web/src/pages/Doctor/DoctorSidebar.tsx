@@ -34,7 +34,6 @@ export const DoctorSidebar: React.FC<DoctorSidebarProps> = ({
       setActiveTab('auth');
     }
   };
-
   return (
     <aside style={{
       width: '240px',

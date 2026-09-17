@@ -157,48 +157,12 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
   },
   {
     id: 'doc-2',
-    name: 'Dr. Ramakrishna Chanduri',
-    phone: '9804176176',
-    role: 'Homeopathy Physician',
-    branchSchedules: [
-      {
-        id: 'bs-2-dsnr',
-        targetBranch: 'Dilshuknagar Branch',
-        selectedDay: 'Mon',
-        daySchedules: {
-          Mon: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
-          Tue: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
-          Wed: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
-          Thu: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
-          Fri: { status: 'Closed', slots: [] },
-          Sat: { status: 'Closed', slots: [] },
-          Sun: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] }
-        }
-      },
-      {
-        id: 'bs-2-nalla',
-        targetBranch: 'Nallagandla Branch',
-        selectedDay: 'Fri',
-        daySchedules: {
-          Mon: { status: 'Closed', slots: [] },
-          Tue: { status: 'Closed', slots: [] },
-          Wed: { status: 'Closed', slots: [] },
-          Thu: { status: 'Closed', slots: [] },
-          Fri: { status: 'Available', slots: [{ startHour: '10', startMinute: '30', startAmPm: 'AM', endHour: '02', endMinute: '30', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
-          Sat: { status: 'Available', slots: [{ startHour: '10', startMinute: '30', startAmPm: 'AM', endHour: '02', endMinute: '30', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
-          Sun: { status: 'Closed', slots: [] }
-        }
-      }
-    ]
-  },
-  {
-    id: 'doc-3',
-    name: 'Dr. Jobedah Parveez',
+    name: 'Dr. Jobeadh parveej',
     phone: '9903119766',
     role: 'Homeopathy Physician',
     branchSchedules: [
       {
-        id: 'bs-3-nalla',
+        id: 'bs-2-nalla',
         targetBranch: 'Nallagandla Branch',
         selectedDay: 'Mon',
         daySchedules: {
@@ -212,7 +176,7 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
         }
       },
       {
-        id: 'bs-3-kphb',
+        id: 'bs-2-kphb',
         targetBranch: 'KPHB Branch',
         selectedDay: 'Tue',
         daySchedules: {
@@ -228,13 +192,13 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
     ]
   },
   {
-    id: 'doc-4',
-    name: 'Dr. Padma Priya',
+    id: 'doc-3',
+    name: 'Dr. Padma priya',
     phone: '9490808582',
     role: 'Homeopathy Physician',
     branchSchedules: [
       {
-        id: 'bs-4-nalla',
+        id: 'bs-3-nalla',
         targetBranch: 'Nallagandla Branch',
         selectedDay: 'Tue',
         daySchedules: {
@@ -248,7 +212,7 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
         }
       },
       {
-        id: 'bs-4-chanda',
+        id: 'bs-3-chanda',
         targetBranch: 'Chandanagar Branch',
         selectedDay: 'Mon',
         daySchedules: {
@@ -259,6 +223,42 @@ export const DEFAULT_DOCTORS_SEED: Doctor[] = [
           Fri: { status: 'Available', slots: [{ startHour: '12', startMinute: '00', startAmPm: 'PM', endHour: '08', endMinute: '00', endAmPm: 'PM' }] },
           Sat: { status: 'Closed', slots: [] },
           Sun: { status: 'Available', slots: [{ startHour: '05', startMinute: '30', startAmPm: 'PM', endHour: '08', endMinute: '00', endAmPm: 'PM' }] }
+        }
+      }
+    ]
+  },
+  {
+    id: 'doc-4',
+    name: 'Dr. Ramakrishna Chanduri',
+    phone: '1111111111',
+    role: 'Homeopathy Physician',
+    branchSchedules: [
+      {
+        id: 'bs-4-dsnr',
+        targetBranch: 'Dilshuknagar Branch',
+        selectedDay: 'Mon',
+        daySchedules: {
+          Mon: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
+          Tue: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
+          Wed: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
+          Thu: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
+          Fri: { status: 'Closed', slots: [] },
+          Sat: { status: 'Closed', slots: [] },
+          Sun: { status: 'Available', slots: [{ startHour: '10', startMinute: '00', startAmPm: 'AM', endHour: '02', endMinute: '00', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] }
+        }
+      },
+      {
+        id: 'bs-4-nalla',
+        targetBranch: 'Nallagandla Branch',
+        selectedDay: 'Fri',
+        daySchedules: {
+          Mon: { status: 'Closed', slots: [] },
+          Tue: { status: 'Closed', slots: [] },
+          Wed: { status: 'Closed', slots: [] },
+          Thu: { status: 'Closed', slots: [] },
+          Fri: { status: 'Available', slots: [{ startHour: '10', startMinute: '30', startAmPm: 'AM', endHour: '02', endMinute: '30', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
+          Sat: { status: 'Available', slots: [{ startHour: '10', startMinute: '30', startAmPm: 'AM', endHour: '02', endMinute: '30', endAmPm: 'PM' }, { startHour: '05', startMinute: '00', startAmPm: 'PM', endHour: '09', endMinute: '00', endAmPm: 'PM' }] },
+          Sun: { status: 'Closed', slots: [] }
         }
       }
     ]
@@ -880,12 +880,19 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
             const data = snap.data();
             const normDataName = (data.name || data.doctorName || '').toLowerCase().replace(/dr\.?\s*/i, '').trim();
             const digits = (data.mobile || data.phone || '').replace(/\D/g, '');
-            const seedFallback = DEFAULT_DOCTORS_SEED.find(s => {
-              const normSeedName = s.name.toLowerCase().replace(/dr\.?\s*/i, '').trim();
-              if (normDataName && (normSeedName.includes(normDataName) || normDataName.includes(normSeedName))) return true;
-              if (digits && s.phone.includes(digits)) return true;
-              return s.id === snap.id;
-            }) || DEFAULT_DOCTORS_SEED.find(s => s.id === snap.id);
+            const seedFallback = DEFAULT_DOCTORS_SEED.find(s => s.id === snap.id)
+              || (digits && digits.length >= 7 ? DEFAULT_DOCTORS_SEED.find(s => {
+                const sDigits = (s.phone || '').replace(/\D/g, '');
+                return sDigits && (sDigits.includes(digits) || digits.includes(sDigits));
+              }) : undefined)
+              || (normDataName.includes('prashanth') ? DEFAULT_DOCTORS_SEED.find(s => s.id === 'doc-1') : undefined)
+              || (normDataName.includes('job') || normDataName.includes('parvee') ? DEFAULT_DOCTORS_SEED.find(s => s.id === 'doc-2') : undefined)
+              || (normDataName.includes('padma') || normDataName.includes('priya') ? DEFAULT_DOCTORS_SEED.find(s => s.id === 'doc-3') : undefined)
+              || (normDataName.includes('ramakrishna') || normDataName.includes('chanduri') ? DEFAULT_DOCTORS_SEED.find(s => s.id === 'doc-4') : undefined)
+              || DEFAULT_DOCTORS_SEED.find(s => {
+                const normSeedName = s.name.toLowerCase().replace(/dr\.?\s*/i, '').trim();
+                return normDataName && (normSeedName.includes(normDataName) || normDataName.includes(normSeedName));
+              });
             fetched.push({
               id: snap.id,
               name: data.name || data.doctorName || seedFallback?.name || 'Doctor',
@@ -963,9 +970,10 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       return allDoctorsList && allDoctorsList.length > 0 ? allDoctorsList : DEFAULT_DOCTORS_SEED;
     }
 
-    if (!selectedBranch) return [];
+    const activeBranch = selectedBranch || currentBranch;
+    if (!activeBranch) return [];
 
-    const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+    const normSelectedBranch = activeBranch.toLowerCase().replace(/\s*branch\s*/i, '').trim();
 
     const matches = allDoctorsList.filter((doc) => {
       if (doc.branchSchedules && doc.branchSchedules.length > 0) {
@@ -1006,8 +1014,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       return false;
     });
 
-    return branchDocs.length > 0 ? branchDocs : DEFAULT_DOCTORS_SEED;
-  }, [allDoctorsList, selectedBranch, selectedDayName, consultationMode]);
+    return branchDocs;
+  }, [allDoctorsList, selectedBranch, currentBranch, selectedDayName, consultationMode]);
 
   // Auto-reset selectedDoctor if no longer available on changed date/branch
   useEffect(() => {
@@ -1311,8 +1319,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         endHour: '01', endMinute: '00', endAmPm: 'PM'
       }];
 
+      const activeBranchStr = selectedBranch || currentBranch || '';
       if (selectedDocObj && selectedDocObj.branchSchedules && selectedDocObj.branchSchedules.length > 0) {
-        const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+        const normSelectedBranch = activeBranchStr.toLowerCase().replace(/\s*branch\s*/i, '').trim();
         const matchBs = selectedDocObj.branchSchedules.find((bs) => {
           const normBsBranch = (bs.targetBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
           return normBsBranch.includes(normSelectedBranch) || normSelectedBranch.includes(normBsBranch);
@@ -1326,14 +1335,14 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         }
       }
 
-      if (regularSlots.length === 0) {
+      if (regularSlots.length === 0 && (!selectedDocObj?.branchSchedules || selectedDocObj.branchSchedules.length === 0)) {
         regularSlots = generate15MinSlotsFromRanges(defaultFallbackRanges);
       }
     }
 
     // Find temporary slots for selected doctor, appointment date, and branch
     const normSelectedDoc = (selectedDoctor || '').toLowerCase().trim();
-    const normSelectedBranch = (selectedBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+    const normSelectedBranch = (selectedBranch || currentBranch || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
 
     const matchedTempDocs = tempSlotsList.filter((ts) => {
       const sameDoc = (ts.doctorName || '').toLowerCase().trim() === normSelectedDoc;
@@ -1999,12 +2008,12 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
                 {availableDoctors.length === 0 ? (
                   <View style={{ padding: 10 }}>
                     <Text style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
-                      No doctors available on {selectedDayName} for {currentBranch}
+                      No doctors available on {selectedDayName} for {selectedBranch || currentBranch}
                     </Text>
                   </View>
                 ) : (
                   availableDoctors.map(docObj => {
-                    const docNoShow = getActiveDoctorNoShow(noShowsList, docObj.name, currentBranch, appointmentDate);
+                    const docNoShow = getActiveDoctorNoShow(noShowsList, docObj.name, selectedBranch || currentBranch, appointmentDate);
                     const isFullDayBlocked = docNoShow && (docNoShow.type === 'date' || docNoShow.type === 'date_range');
                     return (
                       <TouchableOpacity
