@@ -7,3 +7,8 @@ build/
 .env
 .env.local
 .DS_Store
+
+.gradle/
+android/.gradle/
+mobile/android/.gradle/
+*.jks
