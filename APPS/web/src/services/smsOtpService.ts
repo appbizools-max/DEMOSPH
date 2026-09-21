@@ -109,24 +109,23 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
   // Use Vite proxy on web to bypass browser CORS; fallback to direct fetch
   const requestUrl = `/api/sms/v3/api.php?${queryParams.toString()}`;
 
-  console.log(`[SMS_OTP] Sending 4-digit OTP (${otp}) to mobile: ${fullMobileWith91}`);
+  console.log(`[SMS_OTP] Sending 4-digit OTP to mobile: ${fullMobileWith91}`);
 
   try {
     const res = await fetch(requestUrl, { method: 'GET' });
     const responseText = await res.text();
-    console.log(`[SMS_OTP] Gateway Response:`, responseText);
-
     const isError = responseText.toLowerCase().includes('error') || responseText.toLowerCase().includes('invalid');
     const isCredentialsError = responseText.toLowerCase().includes('invalid credentials');
+    console.log(`[SMS_OTP] Gateway Status:`, isError ? 'Delivery Issue' : 'Dispatched');
 
     if (isError) {
       return {
         success: false,
         message: isCredentialsError
           ? `SMS Gateway Error: Invalid Credentials for account "${activeUsername}". Please update with your real smslogin.co API credentials.`
-          : `SMS Gateway Error: ${responseText}`,
+          : `SMS Gateway reported a delivery issue.`,
         otp,
-        response: responseText,
+        response: isCredentialsError ? 'Invalid Credentials' : 'SMS Gateway Issue',
         isCredentialsError
       };
     }

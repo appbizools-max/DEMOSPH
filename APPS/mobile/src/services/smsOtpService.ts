@@ -115,12 +115,6 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
     `templateid=${encodeURIComponent(SMS_CONFIG.templateid)}`
   ].join('&');
 
-  console.log('\n======================================================================');
-  console.log(`🔑 [SPH SMS OTP GENERATED] 🔑`);
-  console.log(`📱 Target Mobile: +91 ${clean10}`);
-  console.log(`🔐 OTP CODE: >>> ${otp} <<<`);
-  console.log('======================================================================\n');
-
   const requestUrl = `${SMS_CONFIG.baseUrl}?${queryParams}`;
 
   try {
@@ -129,19 +123,18 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
     });
 
     const responseText = await res.text();
-    console.log(`[MOBILE_SMS_OTP] Gateway Response:`, responseText);
-
     const isError = responseText.toLowerCase().includes('error') || responseText.toLowerCase().includes('invalid');
     const isCredentialsError = responseText.toLowerCase().includes('invalid credentials');
+    console.log(`[MOBILE_SMS_OTP] Gateway Status:`, isError ? 'Delivery Issue' : 'Dispatched');
 
     if (isError) {
       return {
         success: false,
         message: isCredentialsError
           ? `SMS Gateway Error: Invalid Credentials for account "${activeUsername}". Please update with your real smslogin.co credentials.`
-          : `SMS Gateway Error: ${responseText}`,
+          : `SMS Gateway reported a delivery issue.`,
         otp,
-        response: responseText,
+        response: isCredentialsError ? 'Invalid Credentials' : 'SMS Gateway Issue',
         isCredentialsError
       };
     }

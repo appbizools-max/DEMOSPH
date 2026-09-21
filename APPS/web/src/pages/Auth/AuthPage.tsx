@@ -42,7 +42,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [mobileNumber, setMobileNumber] = useState('');
-  const [otpCode, setOtpCode] = useState('');
+  const [otpCode, setOtpCode] = useState('1234');
   const [otpSent, setOtpSent] = useState(false);
   const [displayedOtp, setDisplayedOtp] = useState('');
   const [smsStatusNotice, setSmsStatusNotice] = useState('');
@@ -279,15 +279,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
     const smsResult = await sendSmsOtp(clean10, generatedOtp);
     setIsLoading(false);
     setOtpSent(true);
+    setOtpCode('1234');
     if (smsResult.success) {
       setDisplayedOtp('');
-      setSmsStatusNotice(`A 4-digit verification code has been sent via SMS to +91 ${clean10}.`);
+      setSmsStatusNotice(`A 4-digit verification code has been sent via SMS to +91 ${clean10}. (Default OTP: 1234)`);
     } else {
       setDisplayedOtp(generatedOtp);
       if (smsResult.isCredentialsError) {
-        setSmsStatusNotice(`SMS Gateway notice: "Invalid Credentials" returned by smslogin.co. Provider did not dispatch SMS.`);
+        setSmsStatusNotice(`SMS Gateway notice: "Invalid Credentials" returned by smslogin.co. You can use default OTP 1234.`);
       } else {
-        setSmsStatusNotice(`SMS Delivery Notice: ${smsResult.message}`);
+        setSmsStatusNotice(`SMS Delivery Notice: ${smsResult.message}. You can use default OTP 1234.`);
       }
     }
   };
@@ -298,17 +299,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
     setErrorMessage('');
     setIsLoading(true);
 
-    const cleanOtp = otpCode.trim();
+    const cleanOtp = otpCode.trim() || '1234';
     if (!cleanOtp) {
-      setErrorMessage('Please enter the 4-digit OTP received via SMS.');
+      setErrorMessage('Please enter the 4-digit OTP received via SMS (or use default 1234).');
       setIsLoading(false);
       return;
     }
 
     const { clean10 } = normalizePhoneForSms(mobileNumber);
-    let isOtpValid = false;
+    let isOtpValid = cleanOtp === '1234';
 
-    if (db && clean10) {
+    if (!isOtpValid && db && clean10) {
       try {
         const otpSnap = await getDoc(doc(db, 'auth_otps', clean10));
         if (otpSnap.exists()) {
@@ -318,7 +319,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
               isOtpValid = true;
             } else {
               setIsLoading(false);
-              setErrorMessage('OTP has expired (5 minutes validity). Please click Send OTP again.');
+              setErrorMessage('OTP has expired (5 minutes validity). Please click Send OTP again or use default OTP 1234.');
               return;
             }
           }
@@ -335,7 +336,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
 
     if (!isOtpValid) {
       setIsLoading(false);
-      setErrorMessage('Invalid OTP. Please check your SMS or enter test OTP 1234.');
+      setErrorMessage('Invalid OTP. Please check your SMS or enter default OTP 1234.');
       return;
     }
 
@@ -531,16 +532,21 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
                     )}
                   </div>
                 )}
-                <label style={{ display: 'block', fontSize: '12.5px !important', fontWeight: 700, color: '#475569', marginBottom: '8px' }}>
-                  Verification OTP
-                </label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ fontSize: '12.5px !important', fontWeight: 700, color: '#475569' }}>
+                    Verification OTP
+                  </label>
+                  <span style={{ fontSize: '11px', color: '#0284c7', fontWeight: 700, background: '#e0f2fe', padding: '2px 8px', borderRadius: '6px' }}>
+                    Default OTP: 1234
+                  </span>
+                </div>
                 <div style={{ display: 'flex', alignItems: 'center', background: '#eef5fc', borderRadius: '10px', padding: '0 14px', height: '46px', border: '1px solid #e0ecf8' }}>
                   <Lock size={16} color="#64748b" style={{ marginRight: '12px' }} />
                   <input
                     type="text"
                     value={otpCode}
                     onChange={e => setOtpCode(e.target.value)}
-                    placeholder="Enter 4-digit OTP"
+                    placeholder="Enter 4-digit OTP (Default: 1234)"
                     maxLength={4}
                     style={{ background: 'transparent', border: 'none', outline: 'none', width: '100%', fontSize: '13px !important', color: '#0f172a', fontWeight: 500 }}
                     required

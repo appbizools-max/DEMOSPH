@@ -1400,15 +1400,6 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
                 </ScrollView>
               )}
 
-              <Text style={styles.inputLabel}>Consultation Fee (₹):</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={bookingFee}
-                onChangeText={setBookingFee}
-                keyboardType="numeric"
-                placeholder="Enter fee (₹)"
-              />
-
               <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
                 <TouchableOpacity
                   style={styles.cancelBtn}

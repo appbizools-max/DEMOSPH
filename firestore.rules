@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions to verify access
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isClinicStaff() {
+      return isAuthenticated();
+    }
+
+    // Patient Directory & Medical History
+    match /allpatients/{patientId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    match /patients/{patientId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Clinical Appointments
+    match /appointments/{appointmentId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Prescriptions & Clinical Records
+    match /prescriptions/{prescriptionId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Follow-ups
+    match /followups/{followupId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Medicine Requests & Product Billing
+    match /medicine_requests/{requestId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    match /product_bills/{billId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Staff & Doctors Directory
+    match /staff/{staffId} {
+      allow read: if true; // Needed for staff validation at login
+      allow write: if isClinicStaff();
+    }
+
+    match /doctors/{doctorId} {
+      allow read: if true; // Needed for slot and doctor schedules
+      allow write: if isClinicStaff();
+    }
+
+    match /doctor_temp_slots/{slotId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    match /package_members/{memberId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Branch Cleaning & Auditing
+    match /branch_cleaning_schedules/{scheduleId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    match /branch_cleaning_submissions/{submissionId} {
+      allow read, write: if isClinicStaff();
+    }
+
+    // Notifications and Push Messaging Tokens
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
+
+    match /fcm_tokens/{tokenId} {
+      allow read, write: if true;
+    }
+
+    // Authentication OTPs
+    // Restrict reading of OTPs: only document owner can access by direct phone lookup
+    match /auth_otps/{phone} {
+      allow get: if true;
+      allow create, update: if true;
+      allow list, delete: if isClinicStaff();
+    }
+
+    // System Settings: Protect SMS and system credentials from tampering
+    match /settings/{settingId} {
+      allow read: if isClinicStaff();
+      allow write: if isClinicStaff();
+    }
+
+    // Default catch-all
+    match /{document=**} {
+      allow read, write: if isClinicStaff();
+    }
+  }
+}

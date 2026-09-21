@@ -1,0 +1,245 @@
+﻿--------- beginning of main
+09-11 08:09:51.261 10232 10232 I tualhomeo.staff: Late-enabling -Xcheck:jni
+09-11 08:09:51.280 10232 10232 I tualhomeo.staff: Using generational CollectorTypeCC GC.
+09-11 08:09:51.287 10232 10232 D nativeloader: Load libframework-connectivity-tiramisu-jni.so using APEX ns com_android_tethering for caller /apex/com.android.tethering/javalib/framework-connectivity-t.jar: ok
+09-11 08:09:51.291 10232 10232 D ActivityThread: setConscryptValidator
+09-11 08:09:51.291 10232 10232 D ActivityThread: setConscryptValidator - put
+09-11 08:09:51.317 10232 10232 D CompatChangeReporter: Compat change id reported: 242716250; UID 10670; state: ENABLED
+09-11 08:09:51.455 10232 10232 D nativeloader: Configuring clns-9 for other apk /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk. target_sdk_version=34, uses_libraries=, library_path=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64:/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a, permitted_path=/data:/mnt/expand:/data/user/0/com.spiritualhomeo.staff
+09-11 08:09:51.464 10232 10232 V GraphicsEnvironment: Currently set values for:
+09-11 08:09:51.464 10232 10232 V GraphicsEnvironment:   angle_gl_driver_selection_pkgs=[]
+09-11 08:09:51.464 10232 10232 V GraphicsEnvironment:   angle_gl_driver_selection_values=[]
+09-11 08:09:51.464 10232 10232 V GraphicsEnvironment: com.spiritualhomeo.staff is not listed in per-application setting
+09-11 08:09:51.465 10232 10232 V GraphicsEnvironment: ANGLE allowlist from config: 
+09-11 08:09:51.465 10232 10232 V GraphicsEnvironment: com.spiritualhomeo.staff is not listed in ANGLE allowlist or settings, returning default
+09-11 08:09:51.465 10232 10232 V GraphicsEnvironment: App is not on the allowlist for updatable production driver.
+09-11 08:09:51.533 10232 10232 I FirebaseApp: Device unlocked: initializing all Firebase APIs for app [DEFAULT]
+09-11 08:09:51.539 10232 10232 I FirebaseInitProvider: FirebaseApp initialization successful
+09-11 08:09:51.550 10232 10232 I tualhomeo.staff: hiddenapi: Accessing hidden method Ldalvik/system/BaseDexClassLoader;->getLdLibraryPath()Ljava/lang/String; (runtime_flags=CorePlatformApi, domain=core-platform, api=unsupported,core-platform-api) from Lcom/facebook/soloader/SysUtil$Api14Utils; (domain=app, TargetSdkVersion=34) using reflection: allowed
+09-11 08:09:51.592 10232 10232 V SoLoader: Init SoLoader delegate
+--------- beginning of system
+09-11 08:09:51.599 10232 10232 D ActivityThread: com.spiritualhomeo.staff will use render engine as VK
+09-11 08:09:51.599 10232 10232 D HWUI    : HWUI - treat SMPTE_170M as sRGB
+09-11 08:09:51.600 10232 10259 I DisplayManager: Choreographer implicitly registered for the refresh rate.
+09-11 08:09:51.602 10232 10259 D HWUI    : CacheManager constructor. deviceInfo=(1080, 1920)
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: QUALCOMM build                   : c62cb5db3a, I2ae86c79d4
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Build Date                       : 09/12/25
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: OpenGL ES Shader Compiler Version: EV031.35.01.12
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Local Branch                     : 
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Remote Branch                    : refs/tags/AU_LINUX_ANDROID_LA.UM.9.14.11.00.00.571.148
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Remote Branch                    : NONE
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Reconstruct Branch               : NOTHING
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Build Config                     : S P 10.0.7 AArch64
+09-11 08:09:51.602 10232 10259 I AdrenoGLES-0: Driver Path                      : /vendor/lib64/egl/libGLESv2_adreno.so
+09-11 08:09:51.606 10232 10259 I AdrenoGLES-0: PFP: 0x016dc094, ME: 0x00000000
+09-11 08:09:51.617 10232 10232 D AppCompatDelegate: Checking for metadata for AppLocalesMetadataHolderService : Service not found
+09-11 08:09:51.621 10232 10232 E ashmem  : Pinning is deprecated since Android Q. Please use trim or other methods.
+09-11 08:09:51.640 10232 10232 V SoLoader: libhermes.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.668 10232 10232 V SoLoader: libjsi.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.670 10232 10232 V SoLoader: libfolly_runtime.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.673 10232 10232 V SoLoader: libglog.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.674 10232 10232 V SoLoader: libm.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.674 10232 10232 V SoLoader: libm.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.675 10232 10232 D SoLoader: libm.so found on /system/lib64
+09-11 08:09:51.675 10232 10232 D SoLoader: libm.so loaded implicitly
+09-11 08:09:51.675 10232 10232 V SoLoader: libc++_shared.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.676 10232 10232 V SoLoader: libc.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.676 10232 10232 V SoLoader: libc.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.677 10232 10232 D SoLoader: libc.so found on /system/lib64
+09-11 08:09:51.677 10232 10232 D SoLoader: libc.so loaded implicitly
+09-11 08:09:51.677 10232 10232 V SoLoader: libdl.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.677 10232 10232 V SoLoader: libdl.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.677 10232 10232 D SoLoader: libdl.so found on /system/lib64
+09-11 08:09:51.677 10232 10232 D SoLoader: libdl.so loaded implicitly
+09-11 08:09:51.678 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libc++_shared.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.678 10232 10232 D SoLoader: libc++_shared.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.679 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libglog.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.679 10232 10232 D SoLoader: libglog.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.680 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libfolly_runtime.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.680 10232 10232 D SoLoader: libfolly_runtime.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.681 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libjsi.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.681 10232 10232 D SoLoader: libjsi.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.681 10232 10232 V SoLoader: libfbjni.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.684 10232 10232 V SoLoader: libandroid.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.684 10232 10232 V SoLoader: libandroid.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.684 10232 10232 D SoLoader: libandroid.so found on /system/lib64
+09-11 08:09:51.684 10232 10232 D SoLoader: libandroid.so loaded implicitly
+09-11 08:09:51.684 10232 10232 V SoLoader: liblog.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.684 10232 10232 V SoLoader: liblog.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.684 10232 10232 D SoLoader: liblog.so found on /system/lib64
+09-11 08:09:51.684 10232 10232 D SoLoader: liblog.so loaded implicitly
+09-11 08:09:51.685 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libfbjni.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.685 10232 10232 D SoLoader: libfbjni.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.686 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libhermes.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.686 10232 10232 D SoLoader: libhermes.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.686 10232 10232 V SoLoader: libhermes_executor.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.716 10232 10232 V SoLoader: libreactnativejni.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.723 10232 10232 V SoLoader: libyoga.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.727 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libyoga.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.727 10232 10232 D SoLoader: libyoga.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.727 10232 10232 V SoLoader: libreactperfloggerjni.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.731 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreactperfloggerjni.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.731 10232 10232 D SoLoader: libreactperfloggerjni.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.731 10232 10232 V SoLoader: libreact_render_core.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.737 10232 10232 V SoLoader: libreact_render_debug.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.740 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_render_debug.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.740 10232 10232 D SoLoader: libreact_render_debug.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.740 10232 10232 V SoLoader: libreact_render_graphics.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.745 10232 10232 V SoLoader: libreact_utils.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.749 10232 10232 V SoLoader: libreact_debug.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.753 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_debug.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.753 10232 10232 D SoLoader: libreact_debug.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.753 10232 10232 V SoLoader: libjsinspector.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.756 10232 10232 V SoLoader: libreact_featureflags.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.759 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_featureflags.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.759 10232 10232 D SoLoader: libreact_featureflags.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.759 10232 10232 V SoLoader: libruntimeexecutor.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.763 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libruntimeexecutor.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.763 10232 10232 D SoLoader: libruntimeexecutor.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.764 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libjsinspector.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.764 10232 10232 D SoLoader: libjsinspector.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.765 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_utils.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.765 10232 10232 D SoLoader: libreact_utils.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.766 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_render_graphics.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.766 10232 10232 D SoLoader: libreact_render_graphics.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.766 10232 10232 V SoLoader: libreact_render_mapbuffer.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.770 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_render_mapbuffer.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.770 10232 10232 D SoLoader: libreact_render_mapbuffer.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.771 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_render_core.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.771 10232 10232 D SoLoader: libreact_render_core.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.773 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreactnativejni.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.773 10232 10232 D SoLoader: libreactnativejni.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.775 10232 10232 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libhermes_executor.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.775 10232 10232 D SoLoader: libhermes_executor.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.798 10232 10232 D SensorManager: registerListener :: 11, LSM6DSO Accelerometer, 66667, 0, 
+09-11 08:09:51.803 10232 10266 V SoLoader: libreact_devsupportjni.so not found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/lib/arm64
+09-11 08:09:51.818 10232 10232 D DesktopModeFlags: Toggle override initialized to: OVERRIDE_UNSET
+09-11 08:09:51.823 10232 10232 I DecorView: setWindowBackground: isPopOver=false color=fffafafa d=android.graphics.drawable.ColorDrawable@96dd72a
+09-11 08:09:51.827 10232 10232 I tualhomeo.staff: hiddenapi: Accessing hidden method Landroid/view/View;->computeFitSystemWindows(Landroid/graphics/Rect;Landroid/graphics/Rect;)Z (runtime_flags=0, domain=platform, api=unsupported) from Landroidx/appcompat/widget/ViewUtils; (domain=app, TargetSdkVersion=34) using reflection: allowed
+09-11 08:09:51.827 10232 10232 I tualhomeo.staff: hiddenapi: Accessing hidden method Landroid/view/ViewGroup;->makeOptionalFitsSystemWindows()V (runtime_flags=0, domain=platform, api=unsupported) from Landroidx/appcompat/widget/ViewUtils; (domain=app, TargetSdkVersion=34) using reflection: allowed
+09-11 08:09:51.843 10232 10232 D ViewRootImpl: desktopMode is false
+09-11 08:09:51.844 10232 10232 I ViewRootImpl: dVRR is disabled
+09-11 08:09:51.844 10232 10232 D HardwareRenderer: onDisplayChanged. displayId=0 current wxh=1080x2340 mLargest wxh=0x0
+09-11 08:09:51.844 10232 10232 D HardwareRenderer: Set largestWidth and largestHeight as logical resolution. (1080x2340)
+09-11 08:09:51.844 10232 10259 D HWUI    : setMaxSurfaceArea requested wxh=(1080,2340) requestedSurfaceArea(2527200) mMaxSurfaceArea(2073600)
+09-11 08:09:51.845 10232 10259 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+09-11 08:09:51.852 10232 10232 D InputTransport: Input channel constructed: '2f2365d', fd=123
+09-11 08:09:51.853 10232 10232 I InsetsController: onStateChanged: host=com.spiritualhomeo.staff/com.spiritualhomeo.staff.MainActivity, from=android.view.ViewRootImpl.onInsetsStateChanged:3026, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 1080, 2340), mDisplayCutout=DisplayCutout{insets=Rect(0, 99 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(505, 0 - 575, 99), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=1080 displayHeight=2340 physicalDisplayWidth=1080 physicalDisplayHeight=2340 density={3.0} cutoutSpec={M 0,0 M 0,29 a 35,35 0 1,0 0,70 a 35,35 0 1,0 0,-70 Z} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=108, center=Point(108, 108)}, RoundedCorner{position=TopRight, radius=108, center=Point(972, 108)}, RoundedCorner{position=BottomRight, radius=108, center=Point(972, 2232)}, RoundedCorner{position=BottomLeft, radius=108, center=Point(108, 2232)}]}  mRoundedCornerFrame=Rect(0, 0 - 1080, 2340), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(948, 0 - 1080, 99) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=1080 displayHeight=2340 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {3 mType=ime mFrame=[0,0][0,0] mVisible=false mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][1080,99] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {15630001 mType=navigationBars mFrame=[0,2295][1080,2340] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {15630004 mType=systemGestures mFrame=[0,0][90,2340] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {15630005 mType=mandatorySystemGestures mFrame=[0,2244][1080,2340] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {15630006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {15630024 mType=systemGestures mFrame=[990,0][1080,2340] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {525f0000 mType=statusBars mFrame=[0,0][1080,99] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {525f0005 mType=mandatorySystemGestures mFrame=[0,0][1080,135] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {525f0006 mType=tappableElement mFrame=[0,0][1080,99] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+09-11 08:09:51.854 10232 10232 I VRI[MainActivity]@996ed56: synced displayState. AttachInfo displayState=2
+09-11 08:09:51.854 10232 10232 I VRI[MainActivity]@996ed56: setView = com.android.internal.policy.DecorView@853cc1d IsHRR=false mFlingFrameRateChange=0 TM=true
+09-11 08:09:51.854 10232 10266 D nativeloader: Load /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a/libreact_devsupportjni.so using class loader ns clns-9 (caller=/data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk): ok
+09-11 08:09:51.855 10232 10232 I IDS_TAG : Starting IDS observe window
+09-11 08:09:51.855 10232 10266 D SoLoader: libreact_devsupportjni.so found on /data/app/~~PdmHeuxTycQRnCmwEgGXIw==/com.spiritualhomeo.staff-tOw3kwGZjdp9Lq-hgMcfGA==/base.apk!/lib/arm64-v8a
+09-11 08:09:51.855 10232 10232 I IDS_TAG : Getting Shared Preference for com.spiritualhomeo.staff.MainApplication@dbbbf9a uid = 10670
+09-11 08:09:51.856 10232 10232 I IDS_TAG : App com.spiritualhomeo.staff.MainApplication@dbbbf9a has not finished training
+09-11 08:09:51.860 10232 10259 D HWUI    : HWUI - treat SMPTE_170M as sRGB
+09-11 08:09:51.860 10232 10232 I IDS_TAG : Closing IDS observe window
+09-11 08:09:51.860 10232 10232 I IDS_TAG : Getting Shared Preference for com.spiritualhomeo.staff.MainApplication@dbbbf9a uid = 10670
+09-11 08:09:51.861 10232 10232 I IDS_TAG : IDS count updated to 2 for com.spiritualhomeo.staff.MainApplication@dbbbf9a
+09-11 08:09:51.862 10232 10232 W unknown:ReactNative: Packager connection already open, nooping.
+09-11 08:09:51.875 10232 10232 E BufferQueueProducer: Unable to open libpenguin.so: dlopen failed: library "libpenguin.so" not found.
+09-11 08:09:51.875 10232 10232 E tualhomeo.staff: Unable to open libpenguin.so: dlopen failed: library "libpenguin.so" not found.
+09-11 08:09:51.875 10232 10232 W libc    : Access denied finding property "vendor.display.enable_optimal_refresh_rate"
+09-11 08:09:51.875 10232 10232 I BufferQueueProducer: [](id:27f800000000,api:0,p:0,c:10232) setDequeueTimeout:2077252342
+09-11 08:09:51.876 10232 10232 I BLASTBufferQueue_Java: new BLASTBufferQueue, mName= VRI[MainActivity]@996ed56 mNativeObject= 0xb40000716ba419b0 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3585 android.view.ViewRootImpl.relayoutWindow:11685 android.view.ViewRootImpl.performTraversals:4804 android.view.ViewRootImpl.doTraversal:3924 android.view.ViewRootImpl$TraversalRunnable.run:12903 android.view.Choreographer$CallbackRecord.run:1901 android.view.Choreographer$CallbackRecord.run:1910 android.view.Choreographer.doCallbacks:1367 android.view.Choreographer.doFrame:1292 android.view.Choreographer$FrameDisplayEventReceiver.run:1870 
+09-11 08:09:51.876 10232 10232 I BLASTBufferQueue_Java: update, w= 1080 h= 2340 mName = VRI[MainActivity]@996ed56 mNativeObject= 0xb40000716ba419b0 sc.mNativeObject= 0xb40000708b9b3a90 format= -1 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3590 android.view.ViewRootImpl.relayoutWindow:11685 android.view.ViewRootImpl.performTraversals:4804 android.view.ViewRootImpl.doTraversal:3924 android.view.ViewRootImpl$TraversalRunnable.run:12903 android.view.Choreographer$CallbackRecord.run:1901 
+09-11 08:09:51.876 10232 10232 W libc    : Access denied finding property "vendor.display.enable_optimal_refresh_rate"
+09-11 08:09:51.877 10232 10232 I VRI[MainActivity]@996ed56: Relayout returned: old=(0,0,1080,2340) new=(0,0,1080,2340) relayoutAsync=false req=(1080,2340)0 dur=8 res=0x3 s={true 0xb4000070eb9c55d0} ch=true seqId=0
+09-11 08:09:51.877 10232 10232 I VRI[MainActivity]@996ed56: performConfigurationChange setNightDimText nightDimLevel=0
+09-11 08:09:51.877 10232 10232 D VRI[MainActivity]@996ed56: mThreadedRenderer.initialize() mSurface={isValid=true 0xb4000070eb9c55d0} hwInitialized=true
+09-11 08:09:51.878 10232 10232 D VRI[MainActivity]@996ed56: reportNextDraw android.view.ViewRootImpl.performTraversals:5443 android.view.ViewRootImpl.doTraversal:3924 android.view.ViewRootImpl$TraversalRunnable.run:12903 android.view.Choreographer$CallbackRecord.run:1901 android.view.Choreographer$CallbackRecord.run:1910 
+09-11 08:09:51.879 10232 10232 D VRI[MainActivity]@996ed56: Setup new sync=wmsSync-VRI[MainActivity]@996ed56#0
+09-11 08:09:51.879 10232 10232 I VRI[MainActivity]@996ed56: Creating new active sync group VRI[MainActivity]@996ed56#1
+09-11 08:09:51.879 10232 10232 D VRI[MainActivity]@996ed56: registerCallbacksForSync syncBuffer=false
+09-11 08:09:51.882 10232 10279 D VRI[MainActivity]@996ed56: Received frameDrawingCallback syncResult=0 frameNum=1.
+09-11 08:09:51.882 10232 10279 I VRI[MainActivity]@996ed56: mWNT: t=0xb400006f9b9cfa90 mBlastBufferQueue=0xb40000716ba419b0 fn= 1 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$12.onFrameDraw:15441 android.view.ThreadedRenderer$1.onFrameDraw:718 <bottom of call stack> 
+09-11 08:09:51.882 10232 10279 I VRI[MainActivity]@996ed56: Setting up sync and frameCommitCallback
+09-11 08:09:51.883 10232 10259 I BLASTBufferQueue: [VRI[MainActivity]@996ed56#0](f:0,a:0,s:0) onFrameAvailable the first frame is available
+09-11 08:09:51.883 10232 10259 I SurfaceComposerClient: apply transaction with the first frame. layerId: 210530, bufferData(ID: 43946105372673, frameNumber: 1)
+09-11 08:09:51.883 10232 10259 I VRI[MainActivity]@996ed56: Received frameCommittedCallback lastAttemptedDrawFrameNum=1 didProduceBuffer=true
+09-11 08:09:51.884 10232 10259 D HWUI    : CFMS:: SetUp Pid : 10232    Tid : 10259
+09-11 08:09:51.884 10232 10232 D VRI[MainActivity]@996ed56: reportDrawFinished seqId=0
+09-11 08:09:51.893 10232 10232 I WindowManager: WindowManagerGlobal#addView, ty=1000, view=android.widget.PopupWindow$PopupDecorView{e900853 V.E...... R.....I. 0,0-0,0}, caller=android.view.WindowManagerImpl.addView:158 android.widget.PopupWindow.invokePopup:1692 android.widget.PopupWindow.showAtLocation:1418 
+09-11 08:09:51.894 10232 10232 D ViewRootImpl: desktopMode is false
+09-11 08:09:51.894 10232 10232 I ViewRootImpl: dVRR is disabled
+09-11 08:09:51.894 10232 10259 D NativeCustomFrequencyManager: [NativeCFMS] BpCustomFrequencyManager::BpCustomFrequencyManager()
+09-11 08:09:51.900 10232 10232 D InputTransport: Input channel constructed: '206ad82', fd=136
+09-11 08:09:51.901 10232 10232 I InsetsController: onStateChanged: host=PopupWindow:ea2042, from=android.view.ViewRootImpl.onInsetsStateChanged:3026, state=InsetsState: {mDisplayFrame=Rect(0, 0 - 1080, 2340), mDisplayCutout=DisplayCutout{insets=Rect(0, 99 - 0, 0) waterfall=Insets{left=0, top=0, right=0, bottom=0} boundingRect={Bounds=[Rect(0, 0 - 0, 0), Rect(505, 0 - 575, 99), Rect(0, 0 - 0, 0), Rect(0, 0 - 0, 0)]} cutoutPathParserInfo={CutoutPathParserInfo{displayWidth=1080 displayHeight=2340 physicalDisplayWidth=1080 physicalDisplayHeight=2340 density={3.0} cutoutSpec={M 0,0 M 0,29 a 35,35 0 1,0 0,70 a 35,35 0 1,0 0,-70 Z} rotation={0} scale={1.0} physicalPixelDisplaySizeRatio={1.0}}} sideOverrides={}}, mRoundedCorners=RoundedCorners{[RoundedCorner{position=TopLeft, radius=108, center=Point(108, 108)}, RoundedCorner{position=TopRight, radius=108, center=Point(972, 108)}, RoundedCorner{position=BottomRight, radius=108, center=Point(972, 2232)}, RoundedCorner{position=BottomLeft, radius=108, center=Point(108, 2232)}]}  mRoundedCornerFrame=Rect(0, 0 - 1080, 2340), mPrivacyIndicatorBounds=PrivacyIndicatorBounds {static bounds=Rect(948, 0 - 1080, 99) rotation=0}, mDisplayShape=DisplayShape{ spec=-311912193 displayWidth=1080 displayHeight=2340 physicalPixelDisplaySizeRatio=1.0 rotation=0 offsetX=0 offsetY=0 scale=1.0}, mSources= { InsetsSource: {3 mType=ime mFrame=[0,0][0,0] mVisible=false mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {27 mType=displayCutout mFrame=[0,0][1080,99] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {15630001 mType=navigationBars mFrame=[0,2295][1080,2340] mVisible=true mFlags=SUPPRESS_SCRIM mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {15630004 mType=systemGestures mFrame=[0,0][90,2340] mVisible=true mFlags= mSideHint=LEFT mBoundingRects=null}, InsetsSource: {15630005 mType=mandatorySystemGestures mFrame=[0,2244][1080,2340] mVisible=true mFlags= mSideHint=BOTTOM mBoundingRects=null}, InsetsSource: {15630006 mType=tappableElement mFrame=[0,0][0,0] mVisible=true mFlags= mSideHint=NONE mBoundingRects=null}, InsetsSource: {15630024 mType=systemGestures mFrame=[990,0][1080,2340] mVisible=true mFlags= mSideHint=RIGHT mBoundingRects=null}, InsetsSource: {525f0000 mType=statusBars mFrame=[0,0][1080,99] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {525f0005 mType=mandatorySystemGestures mFrame=[0,0][1080,135] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null}, InsetsSource: {525f0006 mType=tappableElement mFrame=[0,0][1080,99] mVisible=true mFlags= mSideHint=TOP mBoundingRects=null} }
+09-11 08:09:51.902 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: synced displayState. AttachInfo displayState=2
+09-11 08:09:51.902 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: setView = android.widget.PopupWindow$PopupDecorView@e900853 IsHRR=false mFlingFrameRateChange=0 TM=true
+09-11 08:09:51.902 10232 10232 W Choreographer: Already have a pending vsync event.  There should only be one at a time.
+09-11 08:09:51.912 10232 10232 W libc    : Access denied finding property "vendor.display.enable_optimal_refresh_rate"
+09-11 08:09:51.912 10232 10232 I BufferQueueProducer: [](id:27f800000001,api:0,p:1268575088,c:10232) setDequeueTimeout:2077252342
+09-11 08:09:51.912 10232 10232 I BLASTBufferQueue_Java: new BLASTBufferQueue, mName= VRI[PopupWindow:ea2042]@90f0590 mNativeObject= 0xb40000716ba68c20 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3585 android.view.ViewRootImpl.relayoutWindow:11685 android.view.ViewRootImpl.performTraversals:4804 android.view.ViewRootImpl.doTraversal:3924 android.view.ViewRootImpl$TraversalRunnable.run:12903 android.view.Choreographer$CallbackRecord.run:1901 android.view.Choreographer$CallbackRecord.run:1910 android.view.Choreographer.doCallbacks:1367 android.view.Choreographer.doFrame:1292 android.view.Choreographer$FrameDisplayEventReceiver.run:1870 
+09-11 08:09:51.912 10232 10232 I BLASTBufferQueue_Java: update, w= 1080 h= 73 mName = VRI[PopupWindow:ea2042]@90f0590 mNativeObject= 0xb40000716ba68c20 sc.mNativeObject= 0xb40000708b9b51d0 format= -3 caller= android.view.ViewRootImpl.updateBlastSurfaceIfNeeded:3590 android.view.ViewRootImpl.relayoutWindow:11685 android.view.ViewRootImpl.performTraversals:4804 android.view.ViewRootImpl.doTraversal:3924 android.view.ViewRootImpl$TraversalRunnable.run:12903 android.view.Choreographer$CallbackRecord.run:1901 
+09-11 08:09:51.913 10232 10232 W libc    : Access denied finding property "vendor.display.enable_optimal_refresh_rate"
+09-11 08:09:51.913 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: Relayout returned: old=(0,99,1080,2295) new=(0,99,1080,172) relayoutAsync=false req=(1080,73)0 dur=5 res=0x3 s={true 0xb4000070eb9d4400} ch=true seqId=0
+09-11 08:09:51.914 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: performConfigurationChange setNightDimText nightDimLevel=0
+09-11 08:09:51.915 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: mThreadedRenderer.initialize() mSurface={isValid=true 0xb4000070eb9d4400} hwInitialized=true
+09-11 08:09:51.915 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: reportNextDraw android.view.ViewRootImpl.performTraversals:5443 android.view.ViewRootImpl.doTraversal:3924 android.view.ViewRootImpl$TraversalRunnable.run:12903 android.view.Choreographer$CallbackRecord.run:1901 android.view.Choreographer$CallbackRecord.run:1910 
+09-11 08:09:51.915 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: Setup new sync=wmsSync-VRI[PopupWindow:ea2042]@90f0590#2
+09-11 08:09:51.915 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: Creating new active sync group VRI[PopupWindow:ea2042]@90f0590#3
+09-11 08:09:51.916 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: registerCallbacksForSync syncBuffer=false
+09-11 08:09:51.917 10232 10278 D VRI[PopupWindow:ea2042]@90f0590: Received frameDrawingCallback syncResult=0 frameNum=1.
+09-11 08:09:51.917 10232 10278 I VRI[PopupWindow:ea2042]@90f0590: mWNT: t=0xb400006f9b9d4b10 mBlastBufferQueue=0xb40000716ba68c20 fn= 1 HdrRenderState mRenderHdrSdrRatio=1.0 caller= android.view.ViewRootImpl$12.onFrameDraw:15441 android.view.ThreadedRenderer$1.onFrameDraw:718 <bottom of call stack> 
+09-11 08:09:51.917 10232 10278 I VRI[PopupWindow:ea2042]@90f0590: Setting up sync and frameCommitCallback
+09-11 08:09:51.919 10232 10259 I BLASTBufferQueue: [VRI[PopupWindow:ea2042]@90f0590#1](f:0,a:0,s:0) onFrameAvailable the first frame is available
+09-11 08:09:51.919 10232 10259 I SurfaceComposerClient: apply transaction with the first frame. layerId: 210535, bufferData(ID: 43946105372679, frameNumber: 1)
+09-11 08:09:51.919 10232 10259 I VRI[PopupWindow:ea2042]@90f0590: Received frameCommittedCallback lastAttemptedDrawFrameNum=1 didProduceBuffer=true
+09-11 08:09:51.920 10232 10259 D HWUI    : CFMS:: SetUp Pid : 10232    Tid : 10259
+09-11 08:09:51.920 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: reportDrawFinished seqId=0
+09-11 08:09:51.921 10232 10259 D HWUI    : HWUI - treat SMPTE_170M as sRGB
+09-11 08:09:51.921 10232 10232 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=statusBars, host=com.spiritualhomeo.staff/com.spiritualhomeo.staff.MainActivity
+09-11 08:09:51.922 10232 10232 I InsetsSourceConsumer: applyRequestedVisibilityToControl: visible=true, type=navigationBars, host=com.spiritualhomeo.staff/com.spiritualhomeo.staff.MainActivity
+09-11 08:09:51.922 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: handleResized, frames=ClientWindowFrames{frame=[0,99][1080,172] display=[0,99][1080,2295] parentFrame=[0,0][0,0] attachedFrame=[0,0][1080,2340]} displayId=0 dragResizing=false compatScale=1.0 frameChanged=false attachedFrameChanged=false configChanged=false displayChanged=false compatScaleChanged=false dragResizingChanged=false
+09-11 08:09:51.923 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: handleResized mSyncSeqId = 0
+09-11 08:09:51.923 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: reportNextDraw android.view.ViewRootImpl.handleResized:2983 android.view.ViewRootImpl.-$$Nest$mhandleResized:0 android.view.ViewRootImpl$W.resized:14082 android.app.servertransaction.WindowStateResizeItem.execute:93 android.app.servertransaction.WindowStateTransactionItem.execute:62 
+09-11 08:09:51.929 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: Setup new sync=wmsSync-VRI[PopupWindow:ea2042]@90f0590#4
+09-11 08:09:51.930 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: Creating new active sync group VRI[PopupWindow:ea2042]@90f0590#5
+09-11 08:09:51.930 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: registerCallbacksForSync syncBuffer=false
+09-11 08:09:51.930 10232 10279 D VRI[PopupWindow:ea2042]@90f0590: Received frameDrawingCallback syncResult=0 frameNum=2.
+09-11 08:09:51.930 10232 10279 I VRI[PopupWindow:ea2042]@90f0590: Setting up sync and frameCommitCallback
+09-11 08:09:51.930 10232 10259 I VRI[PopupWindow:ea2042]@90f0590: Received frameCommittedCallback lastAttemptedDrawFrameNum=2 didProduceBuffer=false
+09-11 08:09:51.930 10232 10259 I BLASTBufferQueue_Java: gatherPendingTransactions, mName= VRI[PopupWindow:ea2042]@90f0590 mNativeObject= 0xb40000716ba68c20 frameNumber= 2 caller= android.view.ViewRootImpl$12.lambda$onFrameDraw$3:15525 android.view.ViewRootImpl$12.$r8$lambda$CTo3ExVBk8akdVTGlqHPAoYLRVI:0 android.view.ViewRootImpl$12$$ExternalSyntheticLambda1.onFrameCommit:0 android.view.ThreadedRenderer$1.lambda$onFrameDraw$0:730 android.view.ThreadedRenderer$1$$ExternalSyntheticLambda0.onFrameCommit:0 <bottom of call stack> 
+09-11 08:09:51.930 10232 10232 D VRI[PopupWindow:ea2042]@90f0590: reportDrawFinished seqId=0
+09-11 08:09:51.931 10232 10232 D VRI[MainActivity]@996ed56: mThreadedRenderer.initializeIfNeeded()#2 mSurface={isValid=true 0xb4000070eb9c55d0}
+09-11 08:09:51.931 10232 10232 D InputMethodManagerUtils: startInputInner - Id : 0
+09-11 08:09:51.931 10232 10232 I InputMethodManager: startInputInner - IInputMethodManagerGlobalInvoker.startInputOrWindowGainedFocus
+09-11 08:09:51.935 10232 10232 I InputMethodManager: handleMessage: setImeVisibility visible=false
+09-11 08:09:51.935 10232 10232 D InsetsController: hide(ime(), fromIme=false)
+09-11 08:09:51.935 10232 10232 I ImeTracker: com.spiritualhomeo.staff:7a020bb4: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+09-11 08:09:51.955 10232 10247 D InputTransport: Input channel constructed: 'ClientS', fd=150
+09-11 08:09:52.126 10232 10238 I tualhomeo.staff: Compiler allocated 5187KB to compile void android.view.ViewRootImpl.performTraversals()
+09-11 08:09:56.850 10232 10455 D ProfileInstaller: Installing profile for com.spiritualhomeo.staff
+09-11 08:10:00.009 10232 10232 I VRI[MainActivity]@996ed56: ViewPostIme pointer 0
+09-11 08:10:00.011 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.011 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.011 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.011 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.012 10232 10232 I VRI[MainActivity]@996ed56: call setFrameRateCategory for touch hint category=high hint, reason=touch, vri=VRI[MainActivity]@996ed56
+09-11 08:10:00.078 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.079 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.081 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.081 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.081 10232 10232 I VRI[MainActivity]@996ed56: ViewPostIme pointer 1
+09-11 08:10:00.081 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:00.081 10232 10232 W unknown:ReactRootView: Unable to dispatch touch to JS as the catalyst instance has not been attached
+09-11 08:10:03.085 10232 10232 I VRI[MainActivity]@996ed56: call setFrameRateCategory for touch hint category=no preference, reason=boost timeout, vri=VRI[MainActivity]@996ed56
+09-11 08:10:30.476 10232 10232 D SensorManager: unregisterListener
+09-11 08:10:30.492 10232 10232 I WindowManager: WindowManagerGlobal#removeView, ty=1000, view=android.widget.PopupWindow$PopupDecorView{e900853 V.E...... R....... 0,0-1080,73}, caller=android.view.WindowManagerGlobal.removeView:654 android.view.WindowManagerImpl.removeViewImmediate:216 android.widget.PopupWindow.dismissImmediate:2415 
+09-11 08:10:30.496 10232 10232 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=false callback=android.view.ViewRootImpl$$ExternalSyntheticLambda16@e08d6af
+09-11 08:10:30.511 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: dispatchDetachedFromWindow
+09-11 08:10:30.522 10232 10232 D InputTransport: Input channel destroyed: '206ad82', fd=136
+09-11 08:10:30.523 10232 10232 I VRI[PopupWindow:ea2042]@90f0590: handleAppVisibility mAppVisible = true visible = false
+09-11 08:10:30.523 10232 10232 I VRI[MainActivity]@996ed56: handleAppVisibility mAppVisible = true visible = false
+09-11 08:10:30.523 10232 10232 D VRI[MainActivity]@996ed56: visibilityChanged oldVisibility=true newVisibility=false
+09-11 08:10:30.525 10232 10232 I VRI[MainActivity]@996ed56: stopped(true) old = false
+09-11 08:10:30.525 10232 10232 D VRI[MainActivity]@996ed56: WindowStopped on com.spiritualhomeo.staff/com.spiritualhomeo.staff.MainActivity set to true
+09-11 08:10:30.525 10232 10259 D HWUI    : CacheManager::trimMemory(20)
+09-11 08:10:30.533 10232 10259 D HWUI    : CacheManager::trimMemory(20)
+09-11 08:10:30.539 10232 10232 I VRI[MainActivity]@996ed56: Relayout returned: old=(0,0,1080,2340) new=(0,0,1080,2340) relayoutAsync=false req=(1080,2340)8 dur=5 res=0x2 s={false 0x0} ch=false seqId=0
+09-11 08:10:30.539 10232 10232 D VRI[MainActivity]@996ed56: Not drawing due to not visible. Reason=!mAppVisible && !mForceDecorViewVisibility
+09-11 08:10:30.541 10232 10259 D HWUI    : CacheManager::trimMemory(20)
+09-11 08:10:30.542 10232 10232 I VRI[MainActivity]@996ed56: onDisplayChanged oldDisplayState=2 newDisplayState=1
+09-11 08:10:30.687 10232 10232 I ImeFocusController: onPreWindowFocus: skipped hasWindowFocus=false mHasImeFocus=true
+09-11 08:10:30.688 10232 10232 I ImeFocusController: onPostWindowFocus: skipped hasWindowFocus=false mHasImeFocus=true
