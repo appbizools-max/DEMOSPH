@@ -38,6 +38,12 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/api\/sms/, '')
+      },
+      '/api/shiprocket': {
+        target: 'https://apiv2.shiprocket.in',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api\/shiprocket/, '')
       }
     }
   }

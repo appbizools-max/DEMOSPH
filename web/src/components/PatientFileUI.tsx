@@ -9,6 +9,7 @@ import { db, sanitizeDoctorName } from '@app/shared';
 import { collection, onSnapshot, addDoc, updateDoc, doc, arrayUnion, setDoc, getDoc, getDocs, query, where, limit } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
+import { receptionDataStore } from '../utils/receptionDataStore';
 
 const getFirebaseStorage = () => {
   try {
@@ -509,13 +510,13 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'clinical' | 'diet' | 'media' | 'package'>('clinical');
 
-  // Patient Info Values (with fallbacks matching reference screenshots)
-  const patientName = patient?.patientName || patient?.name || 'Swpana latha';
-  const regId = patient?.registrationId || patient?.regId || 'SPHDSN-124';
-  const phone = patient?.phone || patient?.phoneNumber || '9000136260';
-  const branchName = patient?.branch || 'Dilshuknagar';
-  const source = patient?.source || patient?.leadSource || 'Old Patient';
-  const subject = patient?.subject || patient?.diseases || 'Fever';
+  // Patient Info Values (Clean real data extraction, NO mock fallbacks)
+  const patientName = patient?.patientName || patient?.fullName || patient?.name || patient?.patient_name || patient?.patient || '';
+  const regId = patient?.registrationId || patient?.regId || patient?.regNo || patient?.patientId || patient?.registrationNo || patient?.uhid || patient?.patient_id || '';
+  const phone = String(patient?.phone || patient?.phoneNumber || patient?.mobile || patient?.mobileNumber || patient?.contact || patient?.contactNumber || patient?.phoneNo || '').trim();
+  const branchName = patient?.branch || patient?.branchName || patient?.targetBranch || 'Dilshuknagar Branch';
+  const source = patient?.source || patient?.leadSource || patient?.marketingSource || '';
+  const subject = patient?.diseases || patient?.subject || patient?.complaint || patient?.chiefComplaints || '';
 
   // --- TAB 1: CLINICAL FORM STATE ---
   const [diagnosisNotes, setDiagnosisNotes] = useState('');
@@ -701,9 +702,34 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
 
   // Uploaded Prescriptions State
   const [uploadedImages, setUploadedImages] = useState<string[]>(() => {
-    if (Array.isArray(patient?.uploadedPrescriptions)) return patient.uploadedPrescriptions;
-    if (patient?.canvasPrescriptionUrl) return [patient.canvasPrescriptionUrl];
-    return [];
+    const list: string[] = [];
+    const add = (v: any) => {
+      if (!v) return;
+      if (Array.isArray(v)) {
+        v.forEach(x => {
+          if (typeof x === 'string') list.push(x);
+          else if (x && typeof x === 'object') {
+            const u = x.url || x.imageUrl || x.prescriptionUrl || x.fileUrl || x.uri;
+            if (u && typeof u === 'string') list.push(u);
+          }
+        });
+      } else if (typeof v === 'string' && v.trim()) {
+        list.push(v.trim());
+      } else if (v && typeof v === 'object') {
+        const u = v.url || v.imageUrl || v.prescriptionUrl || v.fileUrl || v.uri;
+        if (u && typeof u === 'string') list.push(u);
+      }
+    };
+    add(patient?.uploadedPrescriptions);
+    add(patient?.prescriptionUrls);
+    add(patient?.prescriptionUrl);
+    add(patient?.prescriptionImage);
+    add(patient?.prescriptionImages);
+    add(patient?.canvasPrescriptionUrl);
+    add(patient?.canvasUrl);
+    add(patient?.imageUrl);
+    add(patient?.fileUrl);
+    return Array.from(new Set(list.filter(Boolean)));
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -835,26 +861,27 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
 
     const fetchLiveVisits = async () => {
       if (!db) return;
-      const collectionsToListen = ['appointments', 'medicine_requests', 'prescriptions', 'allpatients', 'patients'];
       const unsubs: Array<() => void> = [];
       const storeMap = new Map<string, any>();
       const todayYMD = parseToYMD('today');
 
       const getTimestamp = (item: any): number => {
-        const val = item?.createdAt || item?.savedAt || item?.updatedAt || item?.date;
-        if (!val) return 0;
-        if (typeof val === 'number') return isNaN(val) ? 0 : val;
-        if (typeof val === 'string') {
-          const t = new Date(val).getTime();
-          return isNaN(t) ? 0 : t;
-        }
-        if (typeof val === 'object') {
-          if (typeof val.seconds === 'number') return val.seconds * 1000;
-          if (typeof val.toDate === 'function') {
-            const t = val.toDate().getTime();
+        try {
+          const val = item?.createdAt || item?.savedAt || item?.updatedAt || item?.date;
+          if (!val) return 0;
+          if (typeof val === 'number') return isNaN(val) ? 0 : val;
+          if (typeof val === 'string') {
+            const t = new Date(val).getTime();
             return isNaN(t) ? 0 : t;
           }
-        }
+          if (typeof val === 'object') {
+            if (typeof val.seconds === 'number') return val.seconds * 1000;
+            if (typeof val.toDate === 'function') {
+              const t = val.toDate().getTime();
+              return isNaN(t) ? 0 : t;
+            }
+          }
+        } catch (_) { }
         return 0;
       };
 
@@ -872,157 +899,278 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       const updateVisitsState = () => {
         if (!isMounted) return;
         const allList = Array.from(storeMap.values());
-        // Present / Today visits first, then newest descending
         allList.sort((a, b) => getSortWeight(b) - getSortWeight(a));
         setPatientVisits(allList);
       };
 
-      collectionsToListen.forEach((colName) => {
-        try {
-          const colRef = collection(db, colName);
-          const unsub = onSnapshot(colRef, (snapshot) => {
-            snapshot.forEach((docSnap) => {
-              const data = docSnap.data();
-              if (!data) return;
+      const processDoc = (data: any, docId: string) => {
+        if (!data) return;
 
-              const docPhone = String(data.phone || data.phoneNumber || data.mobile || data.mobileNumber || data.contact || data.contactNumber || data.phoneNo || '').replace(/\D/g, '').slice(-10);
+        const docPhone = String(data.phone || data.phoneNumber || data.mobile || data.mobileNumber || data.contact || data.contactNumber || data.phoneNo || '').replace(/\D/g, '').slice(-10);
 
-              const docRegs = [
-                data.registrationId, data.regId, data.patientId, data.regNo,
-                data.registrationNo, data.uhid, data.patient_id
-              ].map(r => String(r || '').trim().toLowerCase()).filter(Boolean);
+        const docRegs = [
+          data.registrationId, data.regId, data.patientId, data.regNo,
+          data.registrationNo, data.uhid, data.patient_id
+        ].map(r => String(r || '').trim().toLowerCase()).filter(Boolean);
 
-              const docName = String(data.patientName || data.name || data.fullName || data.patient_name || data.patient || '').trim().toLowerCase();
-              const incomingApptId = String(data.appointmentId || data.apptId || '').trim();
+        const docName = String(data.patientName || data.name || data.fullName || data.patient_name || data.patient || '').trim().toLowerCase();
+        const incomingApptId = String(data.appointmentId || data.apptId || data.id || '').trim();
 
-              // Explicit ID / document linking
-              const isLinkedDoc = Boolean(
-                (patient?.id && (docSnap.id === patient.id || incomingApptId === patient.id)) ||
-                regCandidates.includes(docSnap.id.toLowerCase()) ||
-                (incomingApptId && regCandidates.includes(incomingApptId.toLowerCase()))
-              );
+        // Explicit ID / document linking
+        const isLinkedDoc = Boolean(
+          (patient?.id && (docId === patient.id || incomingApptId === patient.id)) ||
+          (patient?.patientDocId && (docId === patient.patientDocId || incomingApptId === patient.patientDocId)) ||
+          regCandidates.includes(docId.toLowerCase()) ||
+          (incomingApptId && regCandidates.includes(incomingApptId.toLowerCase()))
+        );
 
-              // Strict Phone and Reg matching
-              const isPhoneMatch = Boolean(docPhone && docPhone.length === 10 && phoneCandidates.includes(docPhone));
-              const isRegMatch = docRegs.some(r => regCandidates.includes(r));
+        // Strict Phone and Reg matching
+        const isPhoneMatch = Boolean(docPhone && docPhone.length === 10 && phoneCandidates.includes(docPhone));
+        const isRegMatch = docRegs.some(r => regCandidates.includes(r));
 
-              // Determine if this document strictly belongs to this patient
-              let isMatch = false;
-              if (isPhoneMatch) {
-                isMatch = true;
-              } else if (isRegMatch || isLinkedDoc) {
-                isMatch = true;
-              } else if (phoneCandidates.length === 0 && regCandidates.length === 0 && nameCandidates.length > 0) {
-                // Only fall back to exact full name if patient has neither phone nor reg ID
-                isMatch = Boolean(docName && nameCandidates.includes(docName));
-              }
-
-              if (isMatch) {
-                // Parse standardized YYYY-MM-DD for accurate deduplication across collections
-                let rawDate = data.appointmentDate || data.date || data.scheduledDate || data.visitDate || data.createdAt;
-                let normDate = parseToYMD(rawDate);
-                if (!normDate || normDate.toLowerCase() === 'today') {
-                  normDate = todayYMD;
-                }
-
-                const normBranch = String(data.branch || data.branchName || branchName || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
-
-                // Find existing visit in storeMap representing the same day/visit (merge duplicates!)
-                let matchedKey: string | null = null;
-                for (const [key, ex] of storeMap.entries()) {
-                  const isApptMatch = incomingApptId && (ex.id === incomingApptId || ex.appointmentId === incomingApptId);
-                  const isDocIdMatch = ex.id === docSnap.id || ex.appointmentId === docSnap.id;
-                  const isSameDate = normDate && ex.normalizedDate === normDate;
-                  if (isApptMatch || isDocIdMatch || isSameDate) {
-                    matchedKey = key;
-                    break;
-                  }
-                }
-
-                const visitKey = matchedKey || (normDate ? `visit_${normDate}` : (incomingApptId || docSnap.id));
-                const existing = storeMap.get(visitKey);
-
-                const rawImages: string[] = [];
-                if (Array.isArray(data.uploadedPrescriptions)) rawImages.push(...data.uploadedPrescriptions);
-                if (Array.isArray(data.prescriptions)) rawImages.push(...data.prescriptions);
-                if (Array.isArray(data.prescriptionImages)) rawImages.push(...data.prescriptionImages);
-                if (Array.isArray(data.reports)) rawImages.push(...data.reports);
-                if (Array.isArray(data.media)) rawImages.push(...data.media);
-                if (Array.isArray(data.images)) rawImages.push(...data.images);
-                if (Array.isArray(data.documents)) rawImages.push(...data.documents);
-                if (Array.isArray(data.attachments)) rawImages.push(...data.attachments);
-
-                if (typeof data.prescriptionImage === 'string' && data.prescriptionImage) rawImages.push(data.prescriptionImage);
-                if (typeof data.prescriptionUrl === 'string' && data.prescriptionUrl) rawImages.push(data.prescriptionUrl);
-                if (typeof data.reportUrl === 'string' && data.reportUrl) rawImages.push(data.reportUrl);
-                if (typeof data.imageUrl === 'string' && data.imageUrl) rawImages.push(data.imageUrl);
-                if (typeof data.canvasPrescriptionUrl === 'string' && data.canvasPrescriptionUrl) rawImages.push(data.canvasPrescriptionUrl);
-                if (typeof data.canvasUrl === 'string' && data.canvasUrl) rawImages.push(data.canvasUrl);
-                if (typeof data.fileUrl === 'string' && data.fileUrl) rawImages.push(data.fileUrl);
-                if (typeof data.documentUrl === 'string' && data.documentUrl) rawImages.push(data.documentUrl);
-
-                const canvasUrl = formatFirebaseStorageUrl(data.canvasPrescriptionUrl || data.canvasUrl || existing?.canvasPrescriptionUrl || null);
-                const docMedicines = data.items || data.medicines || data.remedies || data.prescribedMedicines || data.prescriptionItems || data.medications || data.rx || data.typedPrescriptions || [];
-
-                const combinedMedicines = [
-                  ...(existing?.medicines || []),
-                  ...(Array.isArray(docMedicines) ? docMedicines : [])
-                ];
-                const medicineMap = new Map();
-                combinedMedicines.forEach((m) => {
-                  if (m) {
-                    const mName = m.name || m.medicineName || m.remedyName || (typeof m === 'string' ? m : null);
-                    if (mName && mName !== '[object Object]') {
-                      medicineMap.set(mName, typeof m === 'object' ? m : { name: mName, dosage: '4 Pills', frequency: 'Twice Daily', duration: '7 Days', instructions: 'After food' });
-                    }
-                  }
-                });
-                const mergedMedicines = Array.from(medicineMap.values());
-
-                const formattedRawImages = rawImages.filter(Boolean).map(formatFirebaseStorageUrl).filter(Boolean);
-
-                const combinedPrescriptions = Array.from(new Set([
-                  ...(existing?.uploadedPrescriptions || []),
-                  ...formattedRawImages
-                ]));
-
-                const rawDoc = data.doctorName || data.doctor || existing?.doctorName || patient?.doctorName || patient?.doctor || doctorName;
-                const docNameFormatted = formatDoctorName(rawDoc);
-
-                const displayDate = normDate === todayYMD ? 'Today' : formatDisplayDate(normDate);
-
-                storeMap.set(visitKey, {
-                  id: existing?.id || incomingApptId || docSnap.id || visitKey,
-                  appointmentId: existing?.appointmentId || incomingApptId || docSnap.id,
-                  normalizedDate: normDate,
-                  normalizedBranch: normBranch || existing?.normalizedBranch,
-                  visitDate: displayDate,
-                  visitTime: data.appointmentTime || data.time || existing?.visitTime || '10:00 AM',
-                  doctorName: docNameFormatted,
-                  branch: data.branch || data.branchName || existing?.branch || branchName || 'Dilshuknagar Branch',
-                  consultationMode: data.consultationMode || existing?.consultationMode || 'In-Clinic',
-                  paidAmount: data.paidAmount || data.amountPaid || data.totalMedicineFee || data.consultationFee || data.totalAmount || existing?.paidAmount || '500',
-                  paymentStatus: data.paymentStatus || existing?.paymentStatus || 'paid',
-                  subject: data.diseases || data.subject || existing?.subject || 'General Consultation',
-                  diseases: data.diseases || data.subject || existing?.diseases || '',
-                  diagnosisNotes: (data.diagnosisNotes && data.diagnosisNotes !== 'Clinical consultation & prescription recorded.') ? data.diagnosisNotes : (existing?.diagnosisNotes || data.notes || data.prescriptionNotes || data.chiefComplaints || 'Clinical consultation & prescription recorded.'),
-                  medicines: mergedMedicines,
-                  canvasPrescriptionUrl: canvasUrl,
-                  uploadedPrescriptions: combinedPrescriptions,
-                  createdAt: data.createdAt || existing?.createdAt || new Date().toISOString()
-                });
-              }
-            });
-            updateVisitsState();
-          }, () => { });
-          unsubs.push(unsub);
-        } catch (err) {
-          console.error("Error subscribing to " + colName, err);
+        let isMatch = false;
+        if (isPhoneMatch || isRegMatch || isLinkedDoc) {
+          isMatch = true;
+        } else if (phoneCandidates.length === 0 && regCandidates.length === 0 && nameCandidates.length > 0) {
+          isMatch = Boolean(docName && nameCandidates.includes(docName));
         }
-      });
+
+        if (isMatch) {
+          let rawDate = data.appointmentDate || data.date || data.scheduledDate || data.visitDate || data.prescriptionDate || data.createdAt;
+          let normDate = parseToYMD(rawDate);
+          if (!normDate || normDate.toLowerCase() === 'today') {
+            normDate = todayYMD;
+          }
+
+          const normBranch = String(data.branch || data.branchName || branchName || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
+
+          // Find existing visit in storeMap representing the same day/visit (merge duplicates!)
+          let matchedKey: string | null = null;
+          for (const [key, ex] of storeMap.entries()) {
+            const isApptMatch = incomingApptId && (ex.id === incomingApptId || ex.appointmentId === incomingApptId);
+            const isDocIdMatch = ex.id === docId || ex.appointmentId === docId;
+            const isSameDate = normDate && ex.normalizedDate === normDate;
+            if (isApptMatch || isDocIdMatch || isSameDate) {
+              matchedKey = key;
+              break;
+            }
+          }
+
+          const visitKey = matchedKey || (normDate ? `visit_${normDate}` : (incomingApptId || docId));
+          const existing = storeMap.get(visitKey);
+
+          // Extract ALL images/prescriptions from all possible fields and formats
+          const rawImages: string[] = [];
+          const extractImages = (val: any) => {
+            if (!val) return;
+            if (Array.isArray(val)) {
+              val.forEach(item => {
+                if (!item) return;
+                if (typeof item === 'string') rawImages.push(item);
+                else if (typeof item === 'object') {
+                  const u = item.url || item.imageUrl || item.prescriptionUrl || item.fileUrl || item.downloadURL || item.uri;
+                  if (u && typeof u === 'string') rawImages.push(u);
+                }
+              });
+            } else if (typeof val === 'string' && val.trim()) {
+              rawImages.push(val.trim());
+            } else if (typeof val === 'object') {
+              const u = val.url || val.imageUrl || val.prescriptionUrl || val.fileUrl || val.downloadURL || val.uri;
+              if (u && typeof u === 'string') rawImages.push(u);
+            }
+          };
+
+          extractImages(data.uploadedPrescriptions);
+          extractImages(data.prescriptionUrls);
+          extractImages(data.prescriptionUrl);
+          extractImages(data.prescriptionImage);
+          extractImages(data.prescriptionImages);
+          extractImages(data.prescriptions);
+          extractImages(data.reports);
+          extractImages(data.media);
+          extractImages(data.images);
+          extractImages(data.documents);
+          extractImages(data.attachments);
+          extractImages(data.rxUrl);
+          extractImages(data.rxUrls);
+          extractImages(data.fileUrl);
+          extractImages(data.documentUrl);
+          extractImages(data.attachmentUrls);
+
+          const canvasUrl = formatFirebaseStorageUrl(data.canvasPrescriptionUrl || data.canvasUrl || existing?.canvasPrescriptionUrl || null);
+
+          const docMedicines = data.items || data.medicines || data.remedies || data.prescribedMedicines || data.prescriptionItems || data.medications || data.rx || data.typedPrescriptions || [];
+
+          const combinedMedicines = [
+            ...(existing?.medicines || []),
+            ...(Array.isArray(docMedicines) ? docMedicines : [])
+          ];
+          const medicineMap = new Map();
+          combinedMedicines.forEach((m) => {
+            if (m) {
+              const mName = m.name || m.medicineName || m.remedyName || (typeof m === 'string' ? m : null);
+              if (mName && mName !== '[object Object]') {
+                medicineMap.set(mName, typeof m === 'object' ? m : { name: mName, dosage: '4 Pills', frequency: 'Twice Daily', duration: '7 Days', instructions: 'After food' });
+              }
+            }
+          });
+          const mergedMedicines = Array.from(medicineMap.values());
+
+          const formattedRawImages = rawImages.filter(Boolean).map(formatFirebaseStorageUrl).filter(Boolean);
+
+          const combinedPrescriptions = Array.from(new Set([
+            ...(existing?.uploadedPrescriptions || []),
+            ...formattedRawImages
+          ]));
+
+          const rawDoc = data.doctorName || data.doctor || existing?.doctorName || patient?.doctorName || patient?.doctor || doctorName;
+          const targetBranch = data.branch || data.branchName || existing?.branch || branchName;
+          const docNameFormatted = formatDoctorName(rawDoc, targetBranch);
+          const displayDate = normDate === todayYMD ? 'Today' : formatDisplayDate(normDate);
+
+          // REAL Amount Paid calculation (NO '500' mock fallback!)
+          const rawPaid = data.totalPaid ?? data.paidAmount ?? data.amountPaid ?? data.targetAmount ?? data.amount;
+          const consultFee = Number(data.consultationFee) || 0;
+          const medFee = Number(data.medicineFee || data.totalMedicineFee) || 0;
+          const dietFee = Number(data.dietFee || data.dietFeeAmount) || 0;
+          const otherFee = Number(data.otherCharges) || 0;
+          const discount = Number(data.discount) || 0;
+          const computedTotal = Math.max(0, consultFee + medFee + dietFee + otherFee - discount);
+
+          let finalPaidAmount = 0;
+          let paymentStatus = 'pending';
+
+          if (rawPaid !== undefined && rawPaid !== null && rawPaid !== '' && !isNaN(Number(rawPaid))) {
+            finalPaidAmount = Number(rawPaid);
+            paymentStatus = finalPaidAmount > 0 ? 'paid' : (data.paymentStatus || 'pending');
+          } else if (String(data.paymentStatus).toLowerCase() === 'paid') {
+            finalPaidAmount = computedTotal > 0 ? computedTotal : (existing?.paidAmount || 0);
+            paymentStatus = 'paid';
+          } else if (existing?.paidAmount !== undefined) {
+            finalPaidAmount = Number(existing.paidAmount);
+            paymentStatus = existing.paymentStatus || 'pending';
+          } else {
+            finalPaidAmount = 0;
+            paymentStatus = data.paymentStatus || 'pending';
+          }
+
+          const realDiagnosis = data.diagnosisNotes && data.diagnosisNotes !== 'Clinical consultation & prescription recorded.'
+            ? data.diagnosisNotes
+            : (existing?.diagnosisNotes || data.notes || data.prescriptionNotes || data.chiefComplaints || data.complaints || data.subject || data.diseases || '');
+
+          storeMap.set(visitKey, {
+            id: existing?.id || incomingApptId || docId || visitKey,
+            appointmentId: existing?.appointmentId || incomingApptId || docId,
+            patientName: data.patientName || data.fullName || data.name || patientName,
+            regId: data.registrationId || data.regId || data.regNo || regId,
+            normalizedDate: normDate,
+            normalizedBranch: normBranch || existing?.normalizedBranch,
+            visitDate: displayDate,
+            visitTime: data.appointmentTime || data.time || existing?.visitTime || '10:00 AM',
+            doctorName: docNameFormatted,
+            branch: targetBranch || 'Dilshuknagar Branch',
+            consultationMode: data.consultationMode || existing?.consultationMode || 'In-Clinic',
+            paidAmount: finalPaidAmount,
+            totalAmount: computedTotal > 0 ? computedTotal : finalPaidAmount,
+            paymentStatus: paymentStatus,
+            paymentMode: data.paymentMode || existing?.paymentMode || 'Cash',
+            subject: data.diseases || data.subject || existing?.subject || '',
+            diseases: data.diseases || data.subject || existing?.diseases || '',
+            diagnosisNotes: realDiagnosis,
+            medicines: mergedMedicines,
+            canvasPrescriptionUrl: canvasUrl,
+            uploadedPrescriptions: combinedPrescriptions,
+            createdAt: data.createdAt || existing?.createdAt || new Date().toISOString()
+          });
+        }
+      };
+
+      // 1. Process current patient appointment data immediately
+      if (patient) {
+        processDoc(patient, patient.id || 'current_patient');
+      }
+
+      // 2. Process records from memory receptionDataStore pool immediately (0ms instant display)
+      try {
+        const memoryPool = receptionDataStore.getAllCollectionsPool();
+        if (Array.isArray(memoryPool) && memoryPool.length > 0) {
+          memoryPool.forEach((item: any) => {
+            if (item) processDoc(item, item.id || item.docId || '');
+          });
+          updateVisitsState();
+        }
+      } catch (e) {
+        console.warn('Memory pool visit processing notice:', e);
+      }
+
+      // 3. Fast targeted queries for ONLY this patient in Firestore
+      try {
+        const safeGet = (q: any) => Promise.race([
+          getDocs(q).catch(() => ({ docs: [] })),
+          new Promise((res) => setTimeout(() => res({ docs: [] }), 2500))
+        ]);
+
+        const queriesToRun: any[] = [];
+        const primaryPhone = phoneCandidates[0];
+        const primaryReg = regCandidates[0];
+
+        if (primaryPhone) {
+          ['appointments', 'allpatients', 'patients', 'medicine_requests', 'prescriptions'].forEach((col) => {
+            queriesToRun.push(safeGet(query(collection(db, col), where('phone', '==', primaryPhone), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phoneNumber', '==', primaryPhone), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phone', '==', `+91${primaryPhone}`), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phoneNumber', '==', `+91${primaryPhone}`), limit(25))));
+          });
+        }
+
+        if (primaryReg) {
+          ['appointments', 'allpatients', 'patients', 'prescriptions'].forEach((col) => {
+            queriesToRun.push(safeGet(query(collection(db, col), where('registrationId', '==', primaryReg), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('regId', '==', primaryReg), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('patientId', '==', primaryReg), limit(25))));
+          });
+        }
+
+        if (patient?.id) {
+          ['appointments', 'allpatients', 'patients', 'prescriptions'].forEach((col) => {
+            queriesToRun.push(
+              getDoc(doc(db, col, patient.id))
+                .then((snap) => (snap.exists() ? { docs: [snap] } : { docs: [] }))
+                .catch(() => ({ docs: [] }))
+            );
+          });
+        }
+
+        const results: any = await Promise.all(queriesToRun);
+        if (!isMounted) return;
+
+        results.forEach((snap: any) => {
+          if (!snap || !snap.docs) return;
+          snap.docs.forEach((d: any) => {
+            processDoc(d.data(), d.id);
+          });
+        });
+
+        updateVisitsState();
+      } catch (queryErr) {
+        console.warn('Error in targeted live visits query:', queryErr);
+      }
+
+      // 4. Targeted real-time listener on the current appointment document
+      if (patient?.id) {
+        try {
+          const unsubCurrent = onSnapshot(doc(db, 'appointments', patient.id), (docSnap) => {
+            if (docSnap.exists() && isMounted) {
+              processDoc(docSnap.data(), docSnap.id);
+              updateVisitsState();
+            }
+          }, () => { });
+          unsubs.push(unsubCurrent);
+        } catch (_) { }
+      }
 
       return () => {
-        unsubs.forEach(unsub => unsub());
+        unsubs.forEach((unsub) => unsub());
       };
     };
 
@@ -1215,6 +1363,7 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
   };
 
   const handleSaveConsultation = async () => {
+    if (saving) return;
     setSaving(true);
 
     // Save canvas drawing if present
@@ -1229,40 +1378,20 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
 
     const targetDocId = patient?.id || patient?.appointmentId || patient?.patientId || regId;
 
-    let finalCanvasUrl: string | null = null;
-    if (canvasDataUrl) {
-      try {
-        finalCanvasUrl = await uploadPrescriptionToStorage(canvasDataUrl, targetDocId);
-      } catch (e) {
-        finalCanvasUrl = canvasDataUrl;
-      }
+    const initialUploadedList: string[] = [...uploadedImages];
+    if (canvasDataUrl && !initialUploadedList.includes(canvasDataUrl)) {
+      initialUploadedList.unshift(canvasDataUrl);
     }
+    setUploadedImages(initialUploadedList);
 
-    const finalUploadedList: string[] = [];
-    for (const item of uploadedImages) {
-      if (!item) continue;
-      if (typeof item === 'string' && item.startsWith('data:')) {
-        try {
-          const cloudUrl = await uploadPrescriptionToStorage(item, targetDocId);
-          if (cloudUrl.startsWith('data:') && cloudUrl.length > 400000) {
-            console.warn("Skipping oversized prescription image (>400KB)");
-            continue;
-          }
-          finalUploadedList.push(cloudUrl);
-        } catch (e) {
-          if (item.length <= 400000) finalUploadedList.push(item);
-        }
-      } else {
-        finalUploadedList.push(item);
-      }
-    }
+    const numDietFee = Number(dietFeeAmount) || 0;
+    const numPharmacyFee = Number(pharmacyFee) || 0;
+    const numConsultationFee = Number(patient?.consultationFee || patient?.fee || patient?.consultationFeeAmount) || 0;
+    const totalCalculated = numPharmacyFee + numDietFee + numConsultationFee;
+    const computedTarget = numPharmacyFee > 0 ? numPharmacyFee : (totalCalculated > 0 ? totalCalculated : 1000);
+    const docNameToSave = formatDoctorName(doctorName || patient?.doctorName || patient?.doctor);
 
-    if (finalCanvasUrl && !finalUploadedList.includes(finalCanvasUrl)) {
-      finalUploadedList.unshift(finalCanvasUrl);
-    }
-    setUploadedImages(finalUploadedList);
-
-    const payload = {
+    const basePayload = {
       patientId: targetDocId,
       patientName,
       regId,
@@ -1272,24 +1401,98 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       preferredFollowUpDate: formatDDMMYYYY(preferredFollowUpDate),
       pharmacyFee,
       drawPrescription,
-      uploadedPrescriptions: finalUploadedList,
-      canvasPrescriptionUrl: finalCanvasUrl,
+      uploadedPrescriptions: initialUploadedList,
+      canvasPrescriptionUrl: canvasDataUrl,
     };
 
-    // Save directly into Firebase Firestore (prescriptions & appointments)
-    try {
-      if (db) {
-        const targetDocId = patient?.id || patient?.appointmentId || patient?.patientId;
-        const targetCol = patient?.collectionName || 'appointments';
-        const docNameToSave = formatDoctorName(doctorName || patient?.doctorName || patient?.doctor);
+    const updatePayload = {
+      uploadedPrescriptions: initialUploadedList,
+      diagnosisNotes,
+      consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
+      medicineFee: numPharmacyFee,
+      pharmacyFee: numPharmacyFee,
+      totalMedicineFee: numPharmacyFee,
+      medicineFeeRequested: numPharmacyFee,
+      targetAmount: computedTarget,
+      target_amount: computedTarget,
+      dietFee: numDietFee,
+      dietFeeAmount: dietFeeAmount,
+      totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
+      followUpInterval,
+      preferredFollowUpDate: formatDDMMYYYY(preferredFollowUpDate),
+      doctorName: docNameToSave,
+      doctor: docNameToSave,
+      ...(canvasDataUrl ? { canvasPrescriptionUrl: canvasDataUrl } : {}),
+      status: 'collect_fee',
+      paymentStatus: 'pending',
+      paymentPending: true,
+      feeCollectionNeeded: true,
+      updatedAt: new Date().toISOString()
+    };
 
-        const numDietFee = Number(dietFeeAmount) || 0;
-        const numPharmacyFee = Number(pharmacyFee) || 0;
-        const numConsultationFee = Number(patient?.consultationFee || patient?.fee || patient?.consultationFeeAmount) || 0;
-        const totalCalculated = numPharmacyFee + numDietFee + numConsultationFee;
+    // 1. INSTANT LOCAL STORE UPDATE (0ms delay)
+    if (targetDocId) {
+      receptionDataStore.updateLocalAppointment(targetDocId, updatePayload);
+    }
 
-        await addDoc(collection(db, 'prescriptions'), {
-          ...payload,
+    const fullPayload = {
+      ...basePayload,
+      ...updatePayload,
+      targetAmount: computedTarget,
+      target_amount: computedTarget,
+    };
+
+    // 2. INSTANT UI HAND-OFF: Transition without waiting for cloud network delays
+    if (onSubmitConsultation) {
+      onSubmitConsultation(fullPayload);
+    }
+    if (onClose) {
+      onClose();
+    }
+    setSaving(false);
+
+    // 3. ASYNCHRONOUS BACKGROUND CLOUD PERSISTENCE (Runs in parallel)
+    (async () => {
+      try {
+        let finalCanvasUrl = canvasDataUrl;
+
+        // Run storage uploads in parallel
+        const uploadJobs: Promise<string | null>[] = [];
+        if (canvasDataUrl && canvasDataUrl.startsWith('data:')) {
+          uploadJobs.push(uploadPrescriptionToStorage(canvasDataUrl, targetDocId).catch(() => canvasDataUrl));
+        } else {
+          uploadJobs.push(Promise.resolve(canvasDataUrl));
+        }
+
+        const imageJobs = uploadedImages.map(async (item) => {
+          if (!item) return null;
+          if (typeof item === 'string' && item.startsWith('data:')) {
+            try {
+              const cloudUrl = await uploadPrescriptionToStorage(item, targetDocId);
+              if (cloudUrl.startsWith('data:') && cloudUrl.length > 400000) return null;
+              return cloudUrl;
+            } catch {
+              return item.length <= 400000 ? item : null;
+            }
+          }
+          return item;
+        });
+
+        const [resolvedCanvas, ...resolvedImages] = await Promise.all([
+          uploadJobs[0],
+          ...imageJobs
+        ]);
+
+        finalCanvasUrl = resolvedCanvas;
+        const finalUploadedList: string[] = resolvedImages.filter((img): img is string => Boolean(img));
+        if (finalCanvasUrl && !finalUploadedList.includes(finalCanvasUrl)) {
+          finalUploadedList.unshift(finalCanvasUrl);
+        }
+
+        const finalCloudPayload = {
+          ...basePayload,
+          uploadedPrescriptions: finalUploadedList,
+          canvasPrescriptionUrl: finalCanvasUrl,
           appointmentId: targetDocId,
           appointmentDate: patient?.appointmentDate || patient?.date || new Date().toISOString().split('T')[0],
           doctorName: docNameToSave,
@@ -1302,49 +1505,32 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
           dietFee: numDietFee,
           totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
           createdAt: new Date().toISOString()
-        });
+        };
+
+        const finalUpdatePayload = {
+          ...updatePayload,
+          uploadedPrescriptions: finalUploadedList,
+          ...(finalCanvasUrl ? { canvasPrescriptionUrl: finalCanvasUrl } : {}),
+        };
 
         if (targetDocId) {
-          const updatePayload = {
-            uploadedPrescriptions: finalUploadedList,
-            diagnosisNotes,
-            consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
-            medicineFee: numPharmacyFee,
-            pharmacyFee: numPharmacyFee,
-            totalMedicineFee: numPharmacyFee,
-            dietFee: numDietFee,
-            dietFeeAmount: dietFeeAmount,
-            totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
-            followUpInterval,
-            preferredFollowUpDate: formatDDMMYYYY(preferredFollowUpDate),
-            doctorName: docNameToSave,
-            doctor: docNameToSave,
-            status: 'collect_fee',
-            paymentStatus: 'pending',
-            paymentPending: true,
-            feeCollectionNeeded: true,
-            updatedAt: new Date().toISOString()
-          };
-
-          const colsToUpdate = Array.from(new Set([targetCol, 'appointments', 'allpatients', 'patients']));
-          for (const col of colsToUpdate) {
-            try {
-              await updateDoc(doc(db, col, targetDocId), updatePayload);
-            } catch (e) { }
-          }
+          receptionDataStore.updateLocalAppointment(targetDocId, finalUpdatePayload);
         }
-      }
-    } catch (err) {
-      console.error("Firestore save error:", err);
-    }
 
-    if (onSubmitConsultation) {
-      await onSubmitConsultation(payload);
-    }
-    if (onClose) {
-      onClose();
-    }
-    setSaving(false);
+        if (db) {
+          const targetCol = patient?.collectionName || 'appointments';
+          const colsToUpdate = Array.from(new Set([targetCol, 'appointments', 'allpatients', 'patients']));
+
+          // Fire all Firestore writes concurrently
+          await Promise.allSettled([
+            addDoc(collection(db, 'prescriptions'), finalCloudPayload),
+            ...(targetDocId ? colsToUpdate.map(col => updateDoc(doc(db, col, targetDocId), finalUpdatePayload)) : [])
+          ]);
+        }
+      } catch (bgErr) {
+        console.error("Background consultation sync error:", bgErr);
+      }
+    })();
   };
 
   const handleSaveDietPlan = async () => {
@@ -1376,37 +1562,31 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
       savedAt: new Date().toISOString()
     };
 
+    const numDietFee = Number(dietFeeAmount) || 0;
+    const appUpdate = {
+      dietPlan: dietPayload,
+      dietFee: numDietFee,
+      dietFeeAmount: dietFeeAmount,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (patient?.id) {
+      receptionDataStore.updateLocalAppointment(patient.id, appUpdate);
+    }
+
+    // Parallel fire
     try {
       if (db) {
         const cleanRegId = (regId || phone || patient?.id || 'unknown').replace(/[\/\s#]/g, '_');
-
-        // 1. Direct document upsert in diet_plans for instant cross-device synchronization
-        await setDoc(doc(db, 'diet_plans', cleanRegId), {
-          ...dietPayload,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-
-        // 2. Historical audit record
-        await addDoc(collection(db, 'diet_plans'), {
-          ...dietPayload,
-          createdAt: new Date().toISOString()
-        }).catch(() => { });
-
-        // 3. Sync to appointments, allpatients, and patients
-        if (patient?.id) {
-          const numDietFee = Number(dietFeeAmount) || 0;
-          const appUpdate = {
-            dietPlan: dietPayload,
-            dietFee: numDietFee,
-            dietFeeAmount: dietFeeAmount,
-            updatedAt: new Date().toISOString()
-          };
-
-          const appRef = doc(db, 'appointments', patient.id);
-          await updateDoc(appRef, appUpdate).catch(() => { });
-          await updateDoc(doc(db, 'allpatients', patient.id), appUpdate).catch(() => { });
-          await updateDoc(doc(db, 'patients', patient.id), appUpdate).catch(() => { });
-        }
+        await Promise.allSettled([
+          setDoc(doc(db, 'diet_plans', cleanRegId), { ...dietPayload, updatedAt: new Date().toISOString() }, { merge: true }),
+          addDoc(collection(db, 'diet_plans'), { ...dietPayload, createdAt: new Date().toISOString() }),
+          ...(patient?.id ? [
+            updateDoc(doc(db, 'appointments', patient.id), appUpdate),
+            updateDoc(doc(db, 'allpatients', patient.id), appUpdate),
+            updateDoc(doc(db, 'patients', patient.id), appUpdate)
+          ] : [])
+        ]);
       }
     } catch (err) {
       console.error("Firestore diet plan save error:", err);
@@ -1416,15 +1596,14 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
     setIsDietSaved(true);
     setToastMessage('✅ Diet Plan & 30-Day Menu saved! Redirecting to Clinical Form...');
 
-    // Smooth transition back to the main Clinical Form tab
     setTimeout(() => {
       setActiveTab('clinical');
-    }, 900);
+    }, 400);
 
     setTimeout(() => {
       setIsDietSaved(false);
       setToastMessage('');
-    }, 2800);
+    }, 2000);
   };
 
   const handleCreatePackage = async () => {
@@ -2950,12 +3129,14 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>Patient Name</span>
-                <span style={{ fontSize: '13px', color: '#0f172a', fontWeight: 800 }}>{patientName} ({regId})</span>
+                <span style={{ fontSize: '13px', color: '#0f172a', fontWeight: 800 }}>
+                  {selectedVisitModal.patientName || patientName} {selectedVisitModal.regId || regId ? `(${selectedVisitModal.regId || regId})` : ''}
+                </span>
               </div>
               <div style={{ height: '1px', background: '#f1f5f9' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>Attending Doctor</span>
-                <span style={{ fontSize: '13px', color: '#0284c7', fontWeight: 800 }}>{formatDoctorName(selectedVisitModal.doctorName)}</span>
+                <span style={{ fontSize: '13px', color: '#0284c7', fontWeight: 800 }}>{formatDoctorName(selectedVisitModal.doctorName, selectedVisitModal.branch)}</span>
               </div>
               <div style={{ height: '1px', background: '#f1f5f9' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2967,9 +3148,15 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
               <div style={{ height: '1px', background: '#f1f5f9' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>Amount Paid</span>
-                <span style={{ fontSize: '14px', color: '#16a34a', fontWeight: 900, background: '#dcfce7', padding: '2px 8px', borderRadius: '6px' }}>
-                  ₹{selectedVisitModal.paidAmount} Paid ✓
-                </span>
+                {selectedVisitModal.paymentStatus === 'paid' || Number(selectedVisitModal.paidAmount) > 0 ? (
+                  <span style={{ fontSize: '14px', color: '#16a34a', fontWeight: 900, background: '#dcfce7', padding: '2px 8px', borderRadius: '6px' }}>
+                    ₹{selectedVisitModal.paidAmount} Paid ✓
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '13px', color: '#b45309', fontWeight: 800, background: '#fef3c7', padding: '2px 8px', borderRadius: '6px' }}>
+                    Payment Pending (₹{selectedVisitModal.totalAmount || 0})
+                  </span>
+                )}
               </div>
             </div>
 

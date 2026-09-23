@@ -1,15 +1,53 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ScrollView, Platform, Modal, FlatList } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { Feather, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { SH_LOGO_BASE64 } from '../../../utils/logoBase64';
+import { getBranchPhone } from '@app/shared';
+
+const DOSAGE_TIMING_OPTIONS = [
+  { value: '', label: 'Select Pill Timing' },
+  { value: 'M - A - N', label: 'M - A - N (Morning - Afternoon - Night)' },
+  { value: 'M - - E', label: 'M - - E (Morning - Evening)' },
+  { value: 'M - - N', label: 'M - - N (Morning - Night)' },
+  { value: 'M - A -', label: 'M - A - (Morning - Afternoon)' },
+  { value: '- A - N', label: '- A - N (Afternoon - Night)' },
+  { value: 'M - - -', label: 'M - - - (Morning Only)' },
+  { value: '- A -', label: '- A - (Afternoon Only)' },
+  { value: '- - E', label: '- - E (Evening Only)' },
+  { value: '- - N', label: '- - N (Night Only)' },
+  { value: '1-0-1', label: '1-0-1 (Morning & Night)' },
+  { value: '1-1-1', label: '1-1-1 (Morning, Afternoon, Night)' },
+  { value: '1-0-0', label: '1-0-0 (Morning Only)' },
+  { value: '0-0-1', label: '0-0-1 (Night Only)' },
+  { value: 'SOS', label: 'SOS (As Needed)' },
+];
 
 export interface MedicineItem {
   name: string;
   timing: string;
-  duration: string;
+  amount: number;
 }
+
+const BRANCH_OPTIONS = [
+  'KPHB Branch',
+  'Nallagandla Branch',
+  'Dilshuknagar Branch',
+  'Chandanagar Branch',
+];
+
+const computeSplitLabel = (timing: string, perMedAmount: number): string => {
+  if (!timing || perMedAmount <= 0) return '';
+  const t = timing.toLowerCase().replace(/\s/g, '');
+  let parts = 0;
+  if (t === 'm-a-n' || t === '1-1-1') parts = 3;
+  else if (t === 'm--e' || t === 'm--n' || t === 'm-a-' || t === '-a-n' || t === '1-0-1') parts = 2;
+  else if (t === 'm---' || t === '-a-' || t === '--e' || t === '--n' || t === '1-0-0' || t === '0-0-1' || t === 'sos') parts = 1;
+  if (parts <= 1) return `₹${perMedAmount}`;
+  const perDose = Math.round(perMedAmount / parts);
+  return `₹${perMedAmount} → ₹${perDose} × ${parts}`;
+};
 
 export interface MobileMedicineRequestsScreenProps {
   branchName?: string;
@@ -30,14 +68,18 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   const [phone, setPhone] = useState('');
   const [condition, setCondition] = useState('');
   const [duration, setDuration] = useState('');
-  const [deliveryAddress, setDeliveryAddress] = useState('');
+
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '', duration: '' }
+    { name: '', timing: '', amount: 0 }
   ]);
+  const [totalAmount, setTotalAmount] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [showTimingPicker, setShowTimingPicker] = useState(false);
+  const [activeTimingIndex, setActiveTimingIndex] = useState(-1);
+  const [showBranchPicker, setShowBranchPicker] = useState(false);
 
   const addMedicine = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '', duration: '' }]);
+    setMedicines(prev => [...prev, { name: '', timing: '', amount: 0 }]);
   };
 
   const removeMedicine = (index: number) => {
@@ -45,7 +87,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     setMedicines(prev => prev.filter((_, i) => i !== index));
   };
 
-  const updateMedicine = (index: number, field: keyof MedicineItem, value: string) => {
+  const updateMedicine = (index: number, field: keyof MedicineItem, value: string | number) => {
     setMedicines(prev => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [field]: value };
@@ -61,8 +103,9 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     setSelectedBranch(initialBranch);
     setCondition('');
     setDuration('');
-    setDeliveryAddress('');
-    setMedicines([{ name: '', timing: '', duration: '' }]);
+
+    setMedicines([{ name: '', timing: '', amount: 0 }]);
+    setTotalAmount(0);
   };
 
   // --- PDF HTML Generator matching Official Clinic Letterhead ---
@@ -102,14 +145,17 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     const validMedicines = medicines.filter(m => m.name && m.name.trim().length > 0);
     const displayMedicines = validMedicines.length > 0 ? validMedicines : medicines;
 
-    const rowsHtml = displayMedicines.map((m, idx) => `
+    const rowsHtml = displayMedicines.map((m, idx) => {
+      const splitLabel = computeSplitLabel(m.timing, m.amount || 0);
+      return `
       <tr>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; width: 42%; font-size: 13.5px;">${m.name || '-'}</td>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 30%;">${m.timing || '-'}</td>
-        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #0284c7; font-weight: 600; width: 20%;">${m.duration || '-'}</td>
+        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #0284c7; font-weight: 600; width: 20%;">${splitLabel || (m.amount > 0 ? '₹' + m.amount : '-')}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -313,7 +359,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                 <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
               </svg>
             </div>
-            <span>WWW.SPIRITUALHOMEO.COM</span>
+            <span>spiritualhomeoclinic.com</span>
           </div>
         </div>
 
@@ -343,7 +389,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                 <th style="width: 8%; text-align: center;">#</th>
                 <th style="width: 42%;">Remedy / Medicine Name</th>
                 <th style="width: 30%;">Dosage & Timing</th>
-                <th style="width: 20%;">Duration</th>
+                <th style="width: 20%;">Amount / Split</th>
               </tr>
             </thead>
             <tbody>
@@ -351,11 +397,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
             </tbody>
           </table>
 
-          ${deliveryAddress ? `
-            <div style="margin-top: 18px; background: #f0fdf4; border: 1px solid #bbf7d0; padding: 10px 14px; border-radius: 8px; font-size: 12.5px; color: #166534;">
-              <strong>Home Delivery Address:</strong> ${deliveryAddress}
-            </div>
-          ` : ''}
+
 
           <div style="margin-top: 50px; text-align: center; font-size: 11.5px; color: #64748b; font-style: italic; border-top: 1px dashed #cbd5e1; padding-top: 14px;">
             This is a computer-generated document. No signature required.
@@ -370,7 +412,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
               </svg>
             </div>
-            <span>9095 176 176</span>
+            <span>${getBranchPhone(selectedBranch || initialBranch)}</span>
           </div>
 
           <div class="footer-v-divider"></div>
@@ -382,7 +424,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                 <polyline points="22,6 12,13 2,6"></polyline>
               </svg>
             </div>
-            <span>SUPPORT@SPH.COM</span>
+            <span>support@spiritualhomeoclinic.com</span>
           </div>
 
           <div class="footer-v-divider"></div>
@@ -476,8 +518,9 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
               placeholder="e.g. 9849012345"
               placeholderTextColor="#94a3b8"
               value={phone}
-              onChangeText={setPhone}
+              onChangeText={(t) => setPhone(t.replace(/\D/g, '').slice(0, 10))}
               keyboardType="phone-pad"
+              maxLength={10}
             />
           </View>
         </View>
@@ -501,16 +544,17 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
 
           <View style={[styles.inputGroup, { flex: 1.4 }]}>
             <Text style={styles.inputLabel}>Branch Name</Text>
-            <View style={styles.inputWrapper}>
-              <Feather name="map-pin" size={16} color="#94a3b8" style={styles.inputIcon} />
-              <TextInput
-                style={styles.textInput}
-                placeholder="Branch"
-                placeholderTextColor="#94a3b8"
-                value={selectedBranch}
-                onChangeText={setSelectedBranch}
-              />
-            </View>
+            <TouchableOpacity
+              style={[styles.inputWrapper, { justifyContent: 'space-between' }]}
+              onPress={() => setShowBranchPicker(true)}
+              activeOpacity={0.7}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                <Feather name="map-pin" size={16} color="#94a3b8" style={styles.inputIcon} />
+                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '600' }}>{selectedBranch}</Text>
+              </View>
+              <Feather name="chevron-down" size={14} color="#94a3b8" />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -546,20 +590,6 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </View>
         </View>
 
-        {/* Delivery Address */}
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Home Delivery Address (Optional)</Text>
-          <View style={styles.inputWrapper}>
-            <Feather name="truck" size={16} color="#94a3b8" style={styles.inputIcon} />
-            <TextInput
-              style={styles.textInput}
-              placeholder="Plot / Flat, Area, Hyderabad"
-              placeholderTextColor="#94a3b8"
-              value={deliveryAddress}
-              onChangeText={setDeliveryAddress}
-            />
-          </View>
-        </View>
       </View>
 
       {/* Prescribed Remedies Card */}
@@ -579,6 +609,40 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
             <Feather name="plus" size={15} color="#ffffff" />
             <Text style={styles.addRemedyBtnText}>Add Remedy</Text>
           </TouchableOpacity>
+        </View>
+
+        {/* Total Amount & Per-Medicine Split */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0', borderRadius: 10, padding: 12, marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+          <Text style={{ fontSize: 12.5, fontWeight: '800', color: '#166534' }}>Total Amount</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#16a34a', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5, width: 110 }}>
+            <Text style={{ fontSize: 14, fontWeight: '700', color: '#16a34a', marginRight: 3 }}>₹</Text>
+            <TextInput
+              style={{ flex: 1, fontSize: 14, fontWeight: '800', color: '#0f172a', textAlign: 'right', padding: 0 }}
+              placeholder="0"
+              placeholderTextColor="#94a3b8"
+              value={totalAmount === 0 ? '' : String(totalAmount)}
+              onChangeText={(text) => {
+                const newTotal = text === '' ? 0 : Number(text) || 0;
+                setTotalAmount(newTotal);
+                const filled = medicines.filter(x => x.name.trim());
+                if (filled.length > 0 && newTotal > 0) {
+                  const perMed = Math.round(newTotal / filled.length);
+                  setMedicines(prev => prev.map(m => m.name.trim() ? { ...m, amount: perMed } : m));
+                }
+              }}
+              keyboardType="numeric"
+            />
+          </View>
+          {totalAmount > 0 && (() => {
+            const usedAmt = medicines.reduce((s, m) => s + (m.amount || 0), 0);
+            const remaining = totalAmount - usedAmt;
+            return (
+              <Text style={{ fontSize: 10.5, fontWeight: '700', color: remaining === 0 ? '#16a34a' : remaining > 0 ? '#d97706' : '#ef4444', flex: 1 }}>
+                Allocated: ₹{usedAmt} / ₹{totalAmount}
+                {remaining > 0 ? ` (₹${remaining} remaining)` : remaining < 0 ? ` (₹${Math.abs(remaining)} over)` : ' ✔'}
+              </Text>
+            );
+          })()}
         </View>
 
         {medicines.map((m, idx) => (
@@ -614,24 +678,36 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
             <View style={styles.twoColRow}>
               <View style={[styles.inputGroup, { flex: 1.3, marginRight: 8 }]}>
                 <Text style={styles.subInputLabel}>Dosage & Timing</Text>
-                <TextInput
-                  style={styles.remedyInput}
-                  placeholder="e.g. 4 Drops Twice Daily"
-                  placeholderTextColor="#94a3b8"
-                  value={m.timing}
-                  onChangeText={(text) => updateMedicine(idx, 'timing', text)}
-                />
+                <TouchableOpacity
+                  style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 9 }]}
+                  onPress={() => { setActiveTimingIndex(idx); setShowTimingPicker(true); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{ fontSize: 12.5, color: m.timing ? '#0f172a' : '#94a3b8' }}>
+                    {m.timing || 'Select Pill Timing'}
+                  </Text>
+                  <Feather name="chevron-down" size={14} color="#94a3b8" />
+                </TouchableOpacity>
               </View>
 
               <View style={[styles.inputGroup, { flex: 0.9 }]}>
-                <Text style={styles.subInputLabel}>Duration</Text>
-                <TextInput
-                  style={styles.remedyInput}
-                  placeholder="e.g. 1 Month"
-                  placeholderTextColor="#94a3b8"
-                  value={m.duration}
-                  onChangeText={(text) => updateMedicine(idx, 'duration', text)}
-                />
+                <Text style={styles.subInputLabel}>Amount (₹)</Text>
+                <View style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center' }]}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#258ec8', marginRight: 3 }}>₹</Text>
+                  <TextInput
+                    style={{ flex: 1, fontSize: 12.5, color: '#0f172a', fontWeight: '700', textAlign: 'right', padding: 0 }}
+                    placeholder="0"
+                    placeholderTextColor="#94a3b8"
+                    value={m.amount === 0 ? '' : String(m.amount)}
+                    onChangeText={(text) => updateMedicine(idx, 'amount', text === '' ? 0 : Number(text) || 0)}
+                    keyboardType="numeric"
+                  />
+                </View>
+                {m.timing && m.amount > 0 && (
+                  <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#16a34a', marginTop: 3 }}>
+                    {computeSplitLabel(m.timing, m.amount)}
+                  </Text>
+                )}
               </View>
             </View>
           </View>
@@ -658,6 +734,36 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           {isGenerating ? 'Generating PDF...' : 'Generate & Print Letterhead PDF'}
         </Text>
       </TouchableOpacity>
+
+      {/* Dosage Timing Picker Modal */}
+      <Modal visible={showTimingPicker} transparent animationType="slide" onRequestClose={() => setShowTimingPicker(false)}>
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowTimingPicker(false)}>
+          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
+              <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Select Pill Timing</Text>
+              <TouchableOpacity onPress={() => setShowTimingPicker(false)}>
+                <Feather name="x" size={20} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={DOSAGE_TIMING_OPTIONS.filter(o => o.value !== '')}
+              keyExtractor={(item) => item.value}
+              renderItem={({ item }) => {
+                const isSelected = activeTimingIndex >= 0 && medicines[activeTimingIndex]?.timing === item.value;
+                return (
+                  <TouchableOpacity
+                    style={{ paddingHorizontal: 18, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', backgroundColor: isSelected ? '#e0f2fe' : '#fff' }}
+                    onPress={() => { if (activeTimingIndex >= 0) updateMedicine(activeTimingIndex, 'timing', item.value); setShowTimingPicker(false); }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>{item.label}</Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
     </ScrollView>
   );

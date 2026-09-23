@@ -18,6 +18,7 @@ import { EmployeeDailyWorksPage } from './EmployeeWorks/EmployeeDailyWorksPage';
 import { EmployeeAttendanceReportPage } from './EmployeeAttendance/EmployeeAttendanceReportPage';
 import { BranchCleaningPage } from './BranchCleaning/BranchCleaningPage';
 import { AdminFollowUpsPage } from './FollowUps/AdminFollowUpsPage';
+import { createFeeDiscountResponseNotificationInFirestore } from '../../utils/fcmWebTrigger';
 interface AdminDashboardPageProps {
   currentBranch?: string;
   role?: string;
@@ -1062,14 +1063,110 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     return () => unsubCleaning();
   }, []);
 
+  // Fee / Discount Requests State (Connected to Firestore)
+  const [feeRequests, setFeeRequests] = useState<any[]>([]);
+  const [feeStatusFilter, setFeeStatusFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected'>('All');
+
+  useEffect(() => {
+    if (!db) return;
+    const feeColRef = collection(db, 'fee_requests');
+    const unsub = onSnapshot(feeColRef, (snap) => {
+      const validDocs: any[] = [];
+      snap.forEach(d => {
+        validDocs.push({ id: d.id, ...d.data() });
+      });
+
+      validDocs.sort((a, b) => {
+        const tA = new Date(a.createdAt || a.requestedAt || 0).getTime();
+        const tB = new Date(b.createdAt || b.requestedAt || 0).getTime();
+        return tB - tA;
+      });
+
+      setFeeRequests(validDocs);
+    }, (err) => console.warn('Firestore fee_requests listener error:', err));
+
+    return () => unsub();
+  }, []);
+
+  const normalizeFeeStatus = (status?: string) => {
+    if (!status) return 'Pending';
+    const s = String(status).toLowerCase();
+    if (s === 'approved') return 'Approved';
+    if (s === 'rejected') return 'Rejected';
+    return 'Pending';
+  };
+
+  const handleUpdateFeeRequestStatus = async (id: string, newStatus: 'Approved' | 'Rejected', req: any) => {
+    try {
+      if (!db) return;
+      const nowIso = new Date().toISOString();
+      const reviewer = role === 'hr' ? 'HR Management' : 'Admin Management';
+      let rejectNote = '';
+      if (newStatus === 'Rejected') {
+        const inputNote = window.prompt('Enter reason for rejecting discount (optional):', 'Discount request not approved by HR');
+        if (inputNote === null) return;
+        rejectNote = inputNote.trim();
+      }
+
+      const updateData: any = {
+        status: newStatus.toLowerCase(),
+        reviewedAt: nowIso,
+        reviewedBy: reviewer
+      };
+      if (newStatus === 'Approved') {
+        updateData.approvedDiscount = Number(req.requestedDiscount || 0);
+      } else {
+        updateData.rejectReason = rejectNote || 'Discount request not approved by HR';
+      }
+
+      await updateDoc(doc(db, 'fee_requests', id), updateData);
+
+      // Dual-sync to appointment doc if appointmentId is present
+      if (req.appointmentId) {
+        const appPayload: any = {
+          discountRequestStatus: newStatus.toLowerCase(),
+          updatedAt: nowIso
+        };
+        if (newStatus === 'Approved') {
+          appPayload.discount = Number(req.requestedDiscount || 0);
+          appPayload.discountInput = Number(req.requestedDiscount || 0);
+          appPayload.approvedDiscount = Number(req.requestedDiscount || 0);
+        } else {
+          appPayload.discount = 0;
+          appPayload.discountInput = 0;
+          appPayload.hrRejectReason = updateData.rejectReason;
+        }
+        await updateDoc(doc(db, 'appointments', req.appointmentId), appPayload).catch(() => {});
+        await updateDoc(doc(db, 'allpatients', req.appointmentId), appPayload).catch(() => {});
+        await updateDoc(doc(db, 'patients', req.appointmentId), appPayload).catch(() => {});
+      }
+
+      // Send Push & In-App Notification to Reception & Admin
+      createFeeDiscountResponseNotificationInFirestore({
+        patientName: req.patientName || 'Patient',
+        branch: req.branch || 'Main Branch',
+        status: newStatus,
+        discountAmount: Number(req.requestedDiscount || 0),
+        rejectReason: rejectNote,
+        reviewedBy: reviewer,
+        appointmentId: req.appointmentId || id
+      }).catch(() => {});
+
+      alert(`Fee Discount Request successfully marked as ${newStatus}!`);
+    } catch (e) {
+      console.error('Error updating fee request status in Firestore:', e);
+      alert('Failed to update fee request status. Please try again.');
+    }
+  };
+
+  const pendingFeeCount = feeRequests.filter(r => normalizeFeeStatus(r.status) === 'Pending').length;
+
   const adminMenuItems = [
     { id: 'overview', label: role === 'hr' ? 'HR Dashboard' : 'Admin Dashboard', icon: PieChart },
     { id: 'follow_ups', label: 'All Follow-Ups', icon: Calendar },
     { id: 'leave_requests', label: 'Leave Requests', icon: Calendar, badge: pendingLeaveCount > 0 ? pendingLeaveCount : undefined },
     { id: 'branch_cleaning', label: 'Branch Cleaning & Sanitation', icon: Sparkles, badge: pendingCleaningCount > 0 ? pendingCleaningCount : undefined },
-    ...(role === 'hr' ? [
-      { id: 'fee_requests', label: 'Fee Requests', icon: FileText },
-    ] : []),
+    { id: 'fee_requests', label: 'Fee Requests', icon: FileText, badge: pendingFeeCount > 0 ? pendingFeeCount : undefined },
     { id: 'employee_attendance', label: 'Employee Attendance Report', icon: UserCheck },
     { id: 'employee_works', label: 'Employee Daily Works', icon: FileText },
     { id: 'package_members', label: 'Package Members', icon: Package },
@@ -1614,38 +1711,192 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
           </div>
         )}
 
-        {/* TAB: FEE REQUESTS (EMPTY PAGE READY FOR FUTURE SPECS) */}
+        {/* TAB: FEE REQUESTS (REAL-TIME FIRESTORE WORKFLOW) */}
         {activeTab === 'fee_requests' && (
-          <div style={{
-            background: '#ffffff',
-            border: '1px solid #e2e8f0',
-            borderRadius: '20px',
-            padding: '48px 24px',
-            minHeight: '380px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            textAlign: 'center'
-          }}>
-            <div style={{
-              width: '56px',
-              height: '56px',
-              borderRadius: '16px',
-              background: '#eff6ff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginBottom: '16px'
-            }}>
-              <FileText size={28} color="#258ec8" />
+          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '20px', padding: '22px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ background: '#eff6ff', color: '#258ec8', padding: '4px 8px', borderRadius: '6px', fontSize: '11px !important', fontWeight: 800 }}>
+                    FIRESTORE LIVE
+                  </span>
+                  <h2 style={{ fontSize: '16px !important', fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                    Medicine Fee & Discount Requests
+                  </h2>
+                </div>
+                <p style={{ fontSize: '12px !important', color: '#64748b', margin: '4px 0 0 0' }}>
+                  Real-time discount approval requests submitted by Reception desks across all branches.
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {(['All', 'Pending', 'Approved', 'Rejected'] as const).map(st => {
+                    const count = st === 'All'
+                      ? feeRequests.length
+                      : feeRequests.filter(r => normalizeFeeStatus(r.status) === st).length;
+                    return (
+                      <button
+                        key={st}
+                        onClick={() => setFeeStatusFilter(st)}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          border: feeStatusFilter === st ? '1px solid #258ec8' : '1px solid #cbd5e1',
+                          background: feeStatusFilter === st ? '#258ec8' : '#ffffff',
+                          color: feeStatusFilter === st ? '#ffffff' : '#64748b',
+                          fontSize: '11.5px !important',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {st} {count > 0 ? `(${count})` : ''}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-            <h2 style={{ fontSize: '18px !important', fontWeight: 800, color: '#0f172a', marginBottom: '6px' }}>
-              Fee Requests
-            </h2>
-            <p style={{ fontSize: '13px !important', color: '#64748b', maxWidth: '380px', margin: 0 }}>
-              This section is currently empty.
-            </p>
+
+            {feeRequests.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '48px 20px', background: '#f8fafc', borderRadius: '14px', border: '1px dashed #cbd5e1' }}>
+                <FileText size={36} color="#94a3b8" style={{ marginBottom: '10px' }} />
+                <h4 style={{ fontSize: '14px !important', fontWeight: 800, color: '#0f172a', marginBottom: '4px' }}>
+                  No Fee Requests in Firestore
+                </h4>
+                <p style={{ fontSize: '12px !important', color: '#64748b', margin: 0 }}>
+                  No discount requests have been submitted by reception yet.
+                </p>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>PATIENT NAME</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>BRANCH</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>DATE & TIME</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569', textAlign: 'right' }}>TOTAL AMOUNT</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#dc2626', textAlign: 'right' }}>REQUESTED DISCOUNT</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#059669', textAlign: 'right' }}>NET AFTER DISCOUNT</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>REASON / NOTE</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569', textAlign: 'center' }}>STATUS</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569', textAlign: 'center' }}>ACTIONS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {feeRequests
+                      .filter(f => feeStatusFilter === 'All' ? true : normalizeFeeStatus(f.status) === feeStatusFilter)
+                      .map(f => {
+                        const status = normalizeFeeStatus(f.status);
+                        const origTotal = Number(f.originalTotalAmount || 0);
+                        const reqDisc = Number(f.requestedDiscount || 0);
+                        const netAmount = Math.max(0, origTotal - reqDisc);
+                        const formattedDate = f.createdAt || f.requestedAt
+                          ? new Date(f.createdAt || f.requestedAt).toLocaleString('en-IN', {
+                              day: '2-digit', month: 'short', year: 'numeric',
+                              hour: '2-digit', minute: '2-digit', hour12: true
+                            })
+                          : '-';
+
+                        return (
+                          <tr key={f.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '12px 14px' }}>
+                              <div style={{ fontSize: '13px !important', fontWeight: 800, color: '#0f172a' }}>
+                                {f.patientName || 'Patient'}
+                              </div>
+                              <div style={{ fontSize: '11px !important', color: '#64748b' }}>
+                                +91 {f.patientPhone || '-'}
+                              </div>
+                            </td>
+                            <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#258ec8', fontWeight: 700 }}>
+                              {f.branch || 'Main Branch'}
+                            </td>
+                            <td style={{ padding: '12px 14px', fontSize: '12px !important', color: '#475569', fontWeight: 600 }}>
+                              {formattedDate}
+                            </td>
+                            <td style={{ padding: '12px 14px', fontSize: '13px !important', fontWeight: 700, color: '#0f172a', textAlign: 'right' }}>
+                              ₹{origTotal.toLocaleString('en-IN')}
+                            </td>
+                            <td style={{ padding: '12px 14px', fontSize: '13.5px !important', fontWeight: 900, color: '#dc2626', textAlign: 'right' }}>
+                              - ₹{reqDisc.toLocaleString('en-IN')}
+                            </td>
+                            <td style={{ padding: '12px 14px', fontSize: '13.5px !important', fontWeight: 900, color: '#059669', textAlign: 'right' }}>
+                              ₹{netAmount.toLocaleString('en-IN')}
+                            </td>
+                            <td style={{ padding: '12px 14px', fontSize: '12px !important', color: '#334155', maxWidth: '240px' }}>
+                              <div style={{ fontWeight: 600 }}>{f.reason || 'No note specified'}</div>
+                              {f.rejectReason && status === 'Rejected' && (
+                                <div style={{ fontSize: '11px !important', color: '#dc2626', marginTop: '2px' }}>
+                                  Reject Note: {f.rejectReason}
+                                </div>
+                              )}
+                              {f.reviewedBy && (
+                                <div style={{ fontSize: '10.5px !important', color: '#94a3b8', marginTop: '2px' }}>
+                                  Reviewed by: {f.reviewedBy}
+                                </div>
+                              )}
+                            </td>
+                            <td style={{ padding: '12px 14px', textAlign: 'center' }}>
+                              <span style={{
+                                padding: '4px 10px',
+                                borderRadius: '8px',
+                                fontSize: '11px !important',
+                                fontWeight: 800,
+                                background: status === 'Approved' ? '#f0fdf4' : status === 'Rejected' ? '#fef2f2' : '#fffbeb',
+                                color: status === 'Approved' ? '#16a34a' : status === 'Rejected' ? '#ef4444' : '#d97706',
+                                border: `1px solid ${status === 'Approved' ? '#bbf7d0' : status === 'Rejected' ? '#fecaca' : '#fde68a'}`
+                              }}>
+                                {status}
+                              </span>
+                            </td>
+                            <td style={{ padding: '12px 14px', textAlign: 'center' }}>
+                              {status === 'Pending' ? (
+                                <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                                  <button
+                                    onClick={() => handleUpdateFeeRequestStatus(f.id, 'Approved', f)}
+                                    style={{
+                                      padding: '5px 12px',
+                                      borderRadius: '6px',
+                                      border: 'none',
+                                      background: '#16a34a',
+                                      color: '#ffffff',
+                                      fontSize: '11.5px !important',
+                                      fontWeight: 800,
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    Approve ✓
+                                  </button>
+                                  <button
+                                    onClick={() => handleUpdateFeeRequestStatus(f.id, 'Rejected', f)}
+                                    style={{
+                                      padding: '5px 10px',
+                                      borderRadius: '6px',
+                                      border: '1px solid #cbd5e1',
+                                      background: '#ffffff',
+                                      color: '#ef4444',
+                                      fontSize: '11.5px !important',
+                                      fontWeight: 800,
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    Reject ✕
+                                  </button>
+                                </div>
+                              ) : (
+                                <span style={{ fontSize: '11px !important', color: '#94a3b8', fontStyle: 'italic' }}>
+                                  Resolved
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -2063,6 +2314,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
                   <thead>
                     <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
                       <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>STAFF NAME</th>
+                      <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>MOBILE NUMBER</th>
                       <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>ASSIGNED BRANCH</th>
                       <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>SHIFT HOURS</th>
                       <th style={{ padding: '12px 14px', fontSize: '12px !important', fontWeight: 800, color: '#475569' }}>DAILY HOURS</th>
@@ -2075,6 +2327,16 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
                       <tr key={s.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                         <td style={{ padding: '12px 14px', fontSize: '13px !important', fontWeight: 700, color: '#0f172a' }}>
                           {s.name}
+                        </td>
+                        <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#334155', fontWeight: 600 }}>
+                          {s.mobile ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                              <Phone size={13} color="#0284c7" />
+                              +91 {s.mobile.replace(/\D/g, '').slice(-10)}
+                            </span>
+                          ) : (
+                            <span style={{ color: '#94a3b8' }}>—</span>
+                          )}
                         </td>
                         <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#258ec8', fontWeight: 600 }}>{s.branch}</td>
                         <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#258ec8', fontWeight: 600 }}>

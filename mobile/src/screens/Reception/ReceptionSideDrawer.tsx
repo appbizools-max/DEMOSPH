@@ -71,6 +71,7 @@ export const ReceptionSideDrawer: React.FC<ReceptionSideDrawerProps> = ({
       { id: 'reception_followups', label: 'Follow Ups' },
       { id: 'reception_medicines', label: 'Medicine Requests' },
       { id: 'reception_billing', label: 'Product Billing' },
+      { id: 'reception_shiprocket', label: 'Shiprocket' },
       { id: 'reception_noshow', label: 'Doctor No Show' },
       { id: 'reception_media', label: 'Media Manager' },
       { id: 'reception_cleaning', label: 'Cleaning Photos' },

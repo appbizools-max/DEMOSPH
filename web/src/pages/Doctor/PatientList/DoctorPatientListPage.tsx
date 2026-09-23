@@ -1,25 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Users,
   Search,
   FileText,
   Pill
 } from 'lucide-react';
-
-interface Patient {
-  id: string;
-  name: string;
-  age: number;
-  gender: string;
-  phone: string;
-  branch: string;
-  visitDate: string;
-  chiefComplaint: string;
-  status: 'Waiting' | 'In Consultation' | 'Completed';
-  remedy?: string;
-  potency?: string;
-  notes?: string;
-}
+import { receptionDataStore } from '../../../utils/receptionDataStore';
 
 interface DoctorPatientListPageProps {
   onNavigateTab?: (tab: string, data?: any) => void;
@@ -28,78 +14,29 @@ interface DoctorPatientListPageProps {
 export const DoctorPatientListPage: React.FC<DoctorPatientListPageProps> = ({ onNavigateTab }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [patients, setPatients] = useState<any[]>(() => receptionDataStore.getAppointments());
 
-  const [patients] = useState<Patient[]>([
-    {
-      id: 'p-101',
-      name: 'Sarah Jenkins',
-      age: 34,
-      gender: 'Female',
-      phone: '98480 12345',
-      branch: 'KPHB Branch',
-      visitDate: 'Today, 10:30 AM',
-      chiefComplaint: 'Acute Anxiety, Panic Attacks & Chronic Insomnia',
-      status: 'Waiting',
-    },
-    {
-      id: 'p-102',
-      name: 'Rajesh Kumar',
-      age: 48,
-      gender: 'Male',
-      phone: '99490 23456',
-      branch: 'Nallagandla Branch',
-      visitDate: 'Today, 11:15 AM',
-      chiefComplaint: 'Migraine, Photophobia & Cervical Spondylitis',
-      status: 'In Consultation',
-      remedy: 'Nux Vomica 200C',
-      potency: '200C - 4 Pills',
-    },
-    {
-      id: 'p-103',
-      name: 'Anita Sharma',
-      age: 29,
-      gender: 'Female',
-      phone: '98765 43210',
-      branch: 'Chandanagar Branch',
-      visitDate: 'Today, 11:45 AM',
-      chiefComplaint: 'Severe Eczema & Allergic Rhinitis',
-      status: 'Waiting',
-    },
-    {
-      id: 'p-104',
-      name: 'David Miller',
-      age: 52,
-      gender: 'Male',
-      phone: '91234 56789',
-      branch: 'Dilshuknagar Branch',
-      visitDate: 'Today, 09:30 AM',
-      chiefComplaint: 'Hypertension, Palpitations & Acid Reflux',
-      status: 'Completed',
-      remedy: 'Arnica 200C & Crataegus Q',
-      notes: 'Advised daily 20 mins evening walking & reduced sodium diet.',
-    },
-    {
-      id: 'p-105',
-      name: 'Priya Reddy',
-      age: 41,
-      gender: 'Female',
-      phone: '90001 98765',
-      branch: 'KPHB Branch',
-      visitDate: 'Yesterday',
-      chiefComplaint: 'Thyroid Dysfunction & Fatigue',
-      status: 'Completed',
-      remedy: 'Thyroidinum 30C',
-      notes: 'Follow-up appointment scheduled after 3 weeks.',
-    },
-  ]);
+  useEffect(() => {
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      setPatients(state.appointments);
+    });
+    return () => unsub();
+  }, []);
 
   const filteredPatients = patients.filter(patient => {
-    const matchesSearch =
-      patient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      patient.phone.includes(searchTerm) ||
-      patient.chiefComplaint.toLowerCase().includes(searchTerm.toLowerCase());
+    const pName = String(patient.patientName || patient.name || '').toLowerCase();
+    const pPhone = String(patient.phone || patient.phoneNumber || '');
+    const pComplaint = String(patient.chiefComplaint || patient.subject || patient.diseases || '').toLowerCase();
+    const sTerm = searchTerm.toLowerCase().trim();
 
-    const matchesStatus = statusFilter === 'all' || patient.status.toLowerCase().replace(' ', '') === statusFilter.toLowerCase().replace(' ', '');
+    const matchesSearch = !sTerm || pName.includes(sTerm) || pPhone.includes(sTerm) || pComplaint.includes(sTerm);
+
+    const st = String(patient.status || 'waiting').toLowerCase();
+    const matchesStatus = statusFilter === 'all'
+      || (statusFilter === 'waiting' && (st === 'waiting' || st === 'scheduled' || st === 'upcoming'))
+      || (statusFilter === 'inconsultation' && (st === 'in_consultation' || st === 'in-consultation' || st === 'active' || st === 'consulting'))
+      || (statusFilter === 'completed' && (st === 'completed' || st === 'done' || st === 'collect_fee'));
 
     return matchesSearch && matchesStatus;
   });
@@ -204,9 +141,11 @@ export const DoctorPatientListPage: React.FC<DoctorPatientListPageProps> = ({ on
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
-                  <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{patient.name}</h3>
+                  <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                    {patient.patientName || patient.name || 'Patient'}
+                  </h3>
                   <p style={{ fontSize: '12px', color: '#64748b', marginTop: '2px', margin: 0 }}>
-                    {patient.gender}, {patient.age} yrs • {patient.branch}
+                    {patient.gender ? `${patient.gender} • ` : ''}{patient.regId || patient.registrationId ? `${patient.regId || patient.registrationId} • ` : ''}{patient.branch || patient.branchName || 'Clinic'}
                   </p>
                 </div>
                 <span style={{
@@ -214,16 +153,16 @@ export const DoctorPatientListPage: React.FC<DoctorPatientListPageProps> = ({ on
                   borderRadius: '8px',
                   fontSize: '11px',
                   fontWeight: 800,
-                  background: patient.status === 'Completed' ? '#dcfce7' : patient.status === 'In Consultation' ? '#e0f2fe' : '#fef3c7',
-                  color: patient.status === 'Completed' ? '#15803d' : patient.status === 'In Consultation' ? '#0369a1' : '#b45309'
+                  background: (patient.status || '').toLowerCase() === 'completed' ? '#dcfce7' : (patient.status || '').toLowerCase().includes('consult') ? '#e0f2fe' : '#fef3c7',
+                  color: (patient.status || '').toLowerCase() === 'completed' ? '#15803d' : (patient.status || '').toLowerCase().includes('consult') ? '#0369a1' : '#b45309'
                 }}>
-                  {patient.status}
+                  {patient.status || 'Waiting'}
                 </span>
               </div>
 
               <div style={{ background: '#f8fafc', borderRadius: '12px', padding: '12px', marginTop: '12px', border: '1px solid #f1f5f9' }}>
                 <p style={{ fontSize: '12.5px', color: '#334155', margin: 0 }}>
-                  <strong style={{ color: '#0f172a' }}>Complaint:</strong> {patient.chiefComplaint}
+                  <strong style={{ color: '#0f172a' }}>Complaint:</strong> {patient.chiefComplaint || patient.subject || patient.diseases || 'Consultation'}
                 </p>
                 {patient.remedy && (
                   <p style={{ fontSize: '12px', color: '#16a34a', fontWeight: 700, marginTop: '6px', margin: 0, display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -235,7 +174,7 @@ export const DoctorPatientListPage: React.FC<DoctorPatientListPageProps> = ({ on
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '12px', borderTop: '1px solid #f1f5f9' }}>
-              <span style={{ fontSize: '12px', fontFamily: 'monospace', color: '#64748b', fontWeight: 700 }}>📞 {patient.phone}</span>
+              <span style={{ fontSize: '12px', fontFamily: 'monospace', color: '#64748b', fontWeight: 700 }}>📞 {patient.phone || patient.phoneNumber || 'N/A'}</span>
               <button
                 type="button"
                 onClick={() => onNavigateTab && onNavigateTab('patient_file', patient)}

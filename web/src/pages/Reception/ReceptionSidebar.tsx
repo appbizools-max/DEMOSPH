@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   ClipboardList, Calendar, Users, RefreshCw, Pill, CreditCard,
-  UserX, Image, Camera, ChevronRight, ChevronLeft, Lock
+  UserX, Image, Camera, ChevronRight, ChevronLeft, Lock, Truck
 } from 'lucide-react';
 
 interface ReceptionSidebarProps {
@@ -36,6 +36,7 @@ export const ReceptionSidebar: React.FC<ReceptionSidebarProps> = ({
     { id: 'reception_followups', label: 'Follow Ups', icon: RefreshCw },
     { id: 'reception_medicines', label: 'Medicine Requests', icon: Pill },
     { id: 'reception_billing', label: 'Product Billing', icon: CreditCard },
+    { id: 'reception_shiprocket', label: 'Shiprocket', icon: Truck },
     { id: 'reception_noshow', label: 'Doctor No Show', icon: UserX },
     { id: 'reception_media', label: 'Media Manager', icon: Image },
     { id: 'reception_cleaning', label: 'Cleaning Photos', icon: Camera },

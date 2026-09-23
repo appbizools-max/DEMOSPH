@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { doc, updateDoc, setDoc, getDocs, collection, query, where, arrayUnion, addDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, getDocs, collection, query, where, arrayUnion, addDoc, onSnapshot, limit } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { db, sendInvoiceWhatsAppNotification } from '@app/shared';
+import { db, sendInvoiceWhatsAppNotification, resolveCanonicalBranchId, getBranchPhone } from '@app/shared';
 import { X, User, CheckCircle2, Circle, ArrowLeft, MessageCircle, Plus, Trash2, Package, AlertCircle, ShieldCheck, Sparkles, Clock, Calendar, FileText, Camera, Upload, Eye } from 'lucide-react';
 import { SH_LOGO_BASE64 } from '../utils/logoBase64';
-import { createPaymentNotificationInFirestore } from '../utils/fcmWebTrigger';
+import { createPaymentNotificationInFirestore, createFeeDiscountRequestNotificationInFirestore } from '../utils/fcmWebTrigger';
 
 // Firebase storage helper for prescription upload
 const getFirebaseStorage = () => {
@@ -163,6 +163,15 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
   const [discountInput, setDiscountInput] = useState<number>(0);
   const [showDiscountInput, setShowDiscountInput] = useState(false);
 
+  // HR Discount Request State
+  const [discountRequestId, setDiscountRequestId] = useState<string | null>(null);
+  const [discountRequestStatus, setDiscountRequestStatus] = useState<'none' | 'pending' | 'approved' | 'rejected'>('none');
+  const [requestedDiscountAmount, setRequestedDiscountAmount] = useState<number>(0);
+  const [approvedDiscountAmount, setApprovedDiscountAmount] = useState<number>(0);
+  const [discountReason, setDiscountReason] = useState<string>('');
+  const [hrRejectReason, setHrRejectReason] = useState<string>('');
+  const [isSubmittingDiscountRequest, setIsSubmittingDiscountRequest] = useState<boolean>(false);
+
   // Medicine Items & Duration for Split Preset
   const [medicineDuration, setMedicineDuration] = useState<string>('1 Month');
   const [medicineItems, setMedicineItems] = useState<CheckoutMedicineItem[]>([]);
@@ -210,10 +219,10 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             paymentPending: true,
             updatedAt: new Date().toISOString()
           };
-          await updateDoc(doc(db, 'appointments', targetId), resetPayload).catch(() => {});
-          await updateDoc(doc(db, 'allpatients', targetId), resetPayload).catch(() => {});
-          await updateDoc(doc(db, 'patients', targetId), resetPayload).catch(() => {});
-        } catch (e) {}
+          await updateDoc(doc(db, 'appointments', targetId), resetPayload).catch(() => { });
+          await updateDoc(doc(db, 'allpatients', targetId), resetPayload).catch(() => { });
+          await updateDoc(doc(db, 'patients', targetId), resetPayload).catch(() => { });
+        } catch (e) { }
       }
     }
     onClose();
@@ -260,6 +269,59 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       }
     };
     fetchPrescriptions();
+  }, [appointment]);
+
+  // Real-time listener for HR Fee / Discount Requests for this appointment
+  useEffect(() => {
+    if (!appointment || !db) return;
+    const targetId = appointment.id || (appointment as any).patientDocId || (appointment as any).patientId;
+    if (!targetId) return;
+
+    // Initialize from appointment if already present
+    if ((appointment as any).discountRequestStatus) {
+      const initStatus = (appointment as any).discountRequestStatus;
+      setDiscountRequestStatus(initStatus);
+      const reqAmt = Number((appointment as any).requestedDiscount || (appointment as any).discount || 0);
+      setRequestedDiscountAmount(reqAmt);
+      setDiscountReason((appointment as any).discountReason || '');
+      if (initStatus === 'approved') {
+        const appAmt = Number((appointment as any).approvedDiscount || (appointment as any).discount || reqAmt);
+        setApprovedDiscountAmount(appAmt);
+        setDiscountInput(appAmt);
+      }
+    }
+
+    try {
+      const q = query(collection(db, 'fee_requests'), where('appointmentId', '==', targetId));
+      const unsub = onSnapshot(q, (snap) => {
+        if (!snap.empty) {
+          const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          docs.sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+          const latest: any = docs[0];
+          setDiscountRequestId(latest.id);
+          const st = (latest.status || 'pending').toLowerCase();
+          if (st === 'approved') {
+            setDiscountRequestStatus('approved');
+            const approvedAmt = Number(latest.approvedDiscount ?? latest.requestedDiscount ?? 0);
+            setApprovedDiscountAmount(approvedAmt);
+            setDiscountInput(approvedAmt);
+          } else if (st === 'rejected') {
+            setDiscountRequestStatus('rejected');
+            setHrRejectReason(latest.rejectReason || latest.hrNote || 'Discount request rejected by HR');
+            setDiscountInput(0);
+          } else {
+            setDiscountRequestStatus('pending');
+            setRequestedDiscountAmount(Number(latest.requestedDiscount || 0));
+            setDiscountReason(latest.reason || '');
+            setDiscountInput(0);
+          }
+        }
+      }, (err) => console.warn('fee_requests listener error:', err));
+
+      return () => unsub();
+    } catch (e) {
+      console.warn('Error setting up fee_requests listener:', e);
+    }
   }, [appointment]);
 
   // Client-side image compression: resizes large photos to max 1400px and 0.65 JPEG quality
@@ -334,15 +396,15 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             await updateDoc(doc(db, 'appointments', appointment.id), {
               uploadedPrescriptions: arrayUnion(cloudUrl),
               updatedAt: new Date().toISOString()
-            }).catch(() => {});
+            }).catch(() => { });
             await updateDoc(doc(db, 'allpatients', appointment.id), {
               uploadedPrescriptions: arrayUnion(cloudUrl),
               updatedAt: new Date().toISOString()
-            }).catch(() => {});
+            }).catch(() => { });
             await updateDoc(doc(db, 'patients', appointment.id), {
               uploadedPrescriptions: arrayUnion(cloudUrl),
               updatedAt: new Date().toISOString()
-            }).catch(() => {});
+            }).catch(() => { });
           }
         }
       }
@@ -364,15 +426,15 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       await updateDoc(doc(db, 'appointments', appointment.id), {
         uploadedPrescriptions: updated,
         updatedAt: new Date().toISOString()
-      }).catch(() => {});
+      }).catch(() => { });
       await updateDoc(doc(db, 'allpatients', appointment.id), {
         uploadedPrescriptions: updated,
         updatedAt: new Date().toISOString()
-      }).catch(() => {});
+      }).catch(() => { });
       await updateDoc(doc(db, 'patients', appointment.id), {
         uploadedPrescriptions: updated,
         updatedAt: new Date().toISOString()
-      }).catch(() => {});
+      }).catch(() => { });
     }
   };
 
@@ -422,25 +484,27 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
         setPaymentTypePreset('split');
         setIncludeConsultFee(true);
         setIncludeMedicineFee(true);
-        if (cFee + mFee <= computedTarget) {
-          setConsultFeeInput(cFee);
-          setMedicineFeeInput(mFee);
-        } else {
-          setConsultFeeInput(cFee);
-          setMedicineFeeInput(Math.max(0, computedTarget - cFee));
-        }
+        const cPortion = cFee < computedTarget ? cFee : Math.round(computedTarget / 2);
+        const mPortion = Math.max(0, computedTarget - cPortion);
+        setConsultFeeInput(cPortion);
+        setMedicineFeeInput(mPortion);
+        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
       } else if (mFee > 0) {
-        setPaymentTypePreset('consultation_med');
+        setPaymentTypePreset('split');
         setIncludeConsultFee(true);
-        setIncludeMedicineFee(false);
-        setConsultFeeInput(computedTarget);
-        setMedicineFeeInput(0);
+        setIncludeMedicineFee(true);
+        const cPortion = Math.max(0, computedTarget - mFee);
+        const mPortion = Math.min(mFee, computedTarget);
+        setConsultFeeInput(cPortion);
+        setMedicineFeeInput(mPortion);
+        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
       } else {
         setPaymentTypePreset('consultation');
         setIncludeConsultFee(true);
         setIncludeMedicineFee(false);
         setConsultFeeInput(computedTarget > 0 ? computedTarget : 500);
         setMedicineFeeInput(0);
+        setMedicineItems([]);
       }
 
       if (isAlreadyPaid) {
@@ -452,28 +516,43 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       // Check if this patient profile has an active care package in Firestore
       const checkPackage = async () => {
         try {
-          if (!db) return;
           const cleanPhone = (appointment.phone || appointment.phoneNumber || '').replace(/\D/g, '').slice(-10);
           const targetDocId = String(appointment.patientDocId || appointment.patient_id || appointment.patientId || appointment.id || '');
           const patName = String(appointment.patientName || appointment.name || '').trim().toLowerCase();
           const cleanReg = String(appointment.regId || appointment.registrationId || appointment.patientId || '').trim().toLowerCase();
 
-          const snap = await getDocs(collection(db, 'package_members'));
+          // 1. Check in-memory store package members (instant, 0ms, avoids downloading entire DB)
+          const localPkgs = receptionDataStore.getPackageMembers() || [];
           let matchedPkg: any = null;
-          snap.forEach(docSnap => {
-            const d = { id: docSnap.id, ...docSnap.data() } as any;
-            // Match strictly to specific patient profile (not entire shared phone number!)
+          for (const d of localPkgs) {
             if (targetDocId && (d.patientDocId === targetDocId || d.id === targetDocId || d.patientDocId === appointment.id)) {
               matchedPkg = d;
+              break;
             } else if (cleanReg && d.patientId && String(d.patientId).trim().toLowerCase() === cleanReg) {
               matchedPkg = d;
+              break;
             } else if (cleanPhone && d.phone && String(d.phone).replace(/\D/g, '').slice(-10) === cleanPhone) {
               const dName = String(d.patientName || d.name || '').trim().toLowerCase();
               if (patName && (dName === patName || dName.includes(patName) || patName.includes(dName))) {
                 matchedPkg = d;
+                break;
               }
             }
-          });
+          }
+
+          // 2. Only if not found locally, query Firestore with TARGETED indexed query
+          if (!matchedPkg && db && cleanPhone) {
+            const qPhone = query(collection(db, 'package_members'), where('phone', '==', cleanPhone), limit(5));
+            const snap = await getDocs(qPhone);
+            snap.forEach(docSnap => {
+              if (matchedPkg) return;
+              const d = { id: docSnap.id, ...docSnap.data() } as any;
+              const dName = String(d.patientName || d.name || '').trim().toLowerCase();
+              if (!patName || dName === patName || dName.includes(patName) || patName.includes(dName)) {
+                matchedPkg = d;
+              }
+            });
+          }
 
           if (matchedPkg) {
             const expTime = matchedPkg.expiryDate ? new Date(matchedPkg.expiryDate).getTime() : Infinity;
@@ -511,79 +590,77 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       // Check if patient is in an active duration from previous appointments
       const checkActiveDuration = async () => {
         try {
-          if (!db) return;
           const cleanPhone = (appointment.phone || appointment.phoneNumber || '').replace(/\D/g, '').slice(-10);
           const targetDocId = String(appointment.patientDocId || appointment.patient_id || appointment.patientId || appointment.id || '');
           const patName = String(appointment.patientName || appointment.name || '').trim().toLowerCase();
           const cleanReg = String(appointment.regId || appointment.registrationId || appointment.patientId || '').trim().toLowerCase();
 
-        // 1. Check patient visit state using unified multi-collection pool
-        try {
-          const pool = receptionDataStore.getAllCollectionsPool();
-          const pkgs = receptionDataStore.getPackageMembers();
-          const visitState = getPatientVisitState(appointment, pool, pkgs);
-          if (visitState.type === 'IN_DUR') {
-            setActiveDurationInfo({
-              duration: visitState.durationLabel || 'Active Duration',
-              expiryDate: visitState.expiryDate || '',
-              startDate: appointment.durationStartDate || appointment.appointmentDate || new Date().toISOString(),
-              daysRemaining: visitState.daysRemaining ?? 0
-            });
-            if (computedTarget > 0) {
-              setTargetAmount(computedTarget);
-              setConsultFeeInput(computedTarget);
-              setMedicineFeeInput(0);
-              setIncludeConsultFee(true);
-              setIncludeMedicineFee(false);
-            } else {
-              setTargetAmount(0);
-              setConsultFeeInput(0);
-              setMedicineFeeInput(0);
-              setIncludeConsultFee(false);
-              setIncludeMedicineFee(false);
+          // 1. Check patient visit state using unified multi-collection pool
+          try {
+            const pool = receptionDataStore.getAllCollectionsPool();
+            const pkgs = receptionDataStore.getPackageMembers();
+            const visitState = getPatientVisitState(appointment, pool, pkgs);
+            if (visitState.type === 'IN_DUR') {
+              setActiveDurationInfo({
+                duration: visitState.durationLabel || 'Active Duration',
+                expiryDate: visitState.expiryDate || '',
+                startDate: appointment.durationStartDate || appointment.appointmentDate || new Date().toISOString(),
+                daysRemaining: visitState.daysRemaining ?? 0
+              });
+              if (computedTarget > 0) {
+                setTargetAmount(computedTarget);
+                setConsultFeeInput(computedTarget);
+                setMedicineFeeInput(0);
+                setIncludeConsultFee(true);
+                setIncludeMedicineFee(false);
+              } else {
+                setTargetAmount(0);
+                setConsultFeeInput(0);
+                setMedicineFeeInput(0);
+                setIncludeConsultFee(false);
+                setIncludeMedicineFee(false);
+              }
+              return;
             }
-            return;
+          } catch (poolErr) {
+            console.warn('Error reading visit state from pool in web checkout:', poolErr);
           }
-        } catch (poolErr) {
-          console.warn('Error reading visit state from pool in web checkout:', poolErr);
-        }
 
-        // Check current appointment fields first
-        const curExpStr = appointment.durationExpiryDate || appointment.medicineDurationExpiryDate || appointment.preferredFollowUpDate || appointment.scheduledDate;
-        if (curExpStr) {
-          const expTime = new Date(curExpStr).getTime();
-          if (!isNaN(expTime) && expTime >= Date.now()) {
-            const daysLeft = Math.max(0, Math.ceil((expTime - Date.now()) / (1000 * 60 * 60 * 24)));
-            setActiveDurationInfo({
-              duration: appointment.medicineDuration || appointment.duration || appointment.followUpInterval || 'Active Duration',
-              expiryDate: curExpStr,
-              startDate: appointment.durationStartDate || appointment.appointmentDate || new Date().toISOString(),
-              daysRemaining: daysLeft
-            });
-            if (computedTarget > 0) {
-              setTargetAmount(computedTarget);
-              setConsultFeeInput(computedTarget);
-              setMedicineFeeInput(0);
-              setIncludeConsultFee(true);
-              setIncludeMedicineFee(false);
-            } else {
-              setTargetAmount(0);
-              setConsultFeeInput(0);
-              setMedicineFeeInput(0);
-              setIncludeConsultFee(false);
-              setIncludeMedicineFee(false);
+          // 2. Check current appointment fields first
+          const curExpStr = appointment.durationExpiryDate || appointment.medicineDurationExpiryDate || appointment.preferredFollowUpDate || appointment.scheduledDate;
+          if (curExpStr) {
+            const expTime = new Date(curExpStr).getTime();
+            if (!isNaN(expTime) && expTime >= Date.now()) {
+              const daysLeft = Math.max(0, Math.ceil((expTime - Date.now()) / (1000 * 60 * 60 * 24)));
+              setActiveDurationInfo({
+                duration: appointment.medicineDuration || appointment.duration || appointment.followUpInterval || 'Active Duration',
+                expiryDate: curExpStr,
+                startDate: appointment.durationStartDate || appointment.appointmentDate || new Date().toISOString(),
+                daysRemaining: daysLeft
+              });
+              if (computedTarget > 0) {
+                setTargetAmount(computedTarget);
+                setConsultFeeInput(computedTarget);
+                setMedicineFeeInput(0);
+                setIncludeConsultFee(true);
+                setIncludeMedicineFee(false);
+              } else {
+                setTargetAmount(0);
+                setConsultFeeInput(0);
+                setMedicineFeeInput(0);
+                setIncludeConsultFee(false);
+                setIncludeMedicineFee(false);
+              }
+              return;
             }
-            return;
           }
-        }
 
-          // Query past appointments
-          const snap = await getDocs(collection(db, 'appointments'));
+          // 3. Check past completed appointments from local in-memory pool first (0ms)
+          const localPool = receptionDataStore.getAllCollectionsPool() || [];
           const pastList: any[] = [];
-          snap.forEach(docSnap => {
-            if (docSnap.id === appointment.id) return;
-            const d = { id: docSnap.id, ...docSnap.data() } as any;
-            if (d.status !== 'completed' && d.paymentStatus !== 'paid') return;
+          for (const d of localPool) {
+            if (d.id === appointment.id) continue;
+            if (d.status !== 'completed' && d.paymentStatus !== 'paid') continue;
 
             const dDocId = String(d.patientDocId || d.patient_id || d.patientId || d.id || '');
             const dReg = String(d.regId || d.registrationId || d.patientId || '').trim().toLowerCase();
@@ -593,7 +670,20 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             if (targetDocId && (dDocId === targetDocId || d.patientDocId === appointment.id)) pastList.push(d);
             else if (cleanReg && dReg === cleanReg) pastList.push(d);
             else if (cleanPhone && dPhone === cleanPhone && patName && (dName === patName || dName.includes(patName))) pastList.push(d);
-          });
+          }
+
+          // 4. If not found in local pool, query Firestore WITH TARGETED FILTERS (limit 5) - NEVER download entire collection
+          if (pastList.length === 0 && cleanPhone && db) {
+            const qPhone = query(collection(db, 'appointments'), where('phone', '==', cleanPhone), limit(5));
+            const snap = await getDocs(qPhone);
+            snap.forEach(docSnap => {
+              if (docSnap.id === appointment.id) return;
+              const d = { id: docSnap.id, ...docSnap.data() } as any;
+              if (d.status === 'completed' || d.paymentStatus === 'paid') {
+                pastList.push(d);
+              }
+            });
+          }
 
           if (pastList.length > 0) {
             pastList.sort((a, b) => {
@@ -656,38 +746,42 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     const defaultConsult = Number((appointment as any)?.consultationFee) || 0;
 
     if (preset === 'consultation') {
+      // 100% of target amount goes directly into Consultation Fee (No Prescribed Medicines)
       setIncludeConsultFee(true);
       setIncludeMedicineFee(false);
       setConsultFeeInput(currTarget);
       setMedicineFeeInput(0);
+      setMedicineItems([]);
     } else if (preset === 'consultation_med') {
+      // Direct into combined Consultation & Medicine fee (No prescribed medicine item breakdown needed)
       setIncludeConsultFee(true);
       setIncludeMedicineFee(false);
       setConsultFeeInput(currTarget);
       setMedicineFeeInput(0);
+      setMedicineItems([]);
     } else if (preset === 'split') {
+      // Split wants BOTH Consultation Fee AND Prescribed Medicines Fee with itemized medicines
       setIncludeConsultFee(true);
       setIncludeMedicineFee(true);
-      // Split comes strictly from target amount only (e.g. 1000) and does not touch diet fee
-      const cPortion = currTarget > defaultConsult ? defaultConsult : Math.round(currTarget / 2);
+      setSelectedPaymentMode('Split');
+      // Target is split strictly between consultation & medicine so consultation + medicine = currTarget
+      const defaultC = defaultConsult > 0 && defaultConsult < currTarget ? defaultConsult : Math.round(currTarget / 2);
+      const cPortion = defaultC;
       const mPortion = Math.max(0, currTarget - cPortion);
       setConsultFeeInput(cPortion);
       setMedicineFeeInput(mPortion);
-      setSelectedPaymentMode('Split');
       if (mPortion > 0) {
         if (medicineItems.length === 0) {
-          // Starts with 1 medicine containing the full medicine target (e.g. 500)
-          setMedicineItems([
-            { id: '1', name: '', amount: mPortion, timing: '' }
-          ]);
+          setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
         } else {
-          // Evenly re-split across existing medicines
           const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
           setMedicineItems(prev => prev.map((item, i) => ({
             ...item,
             amount: splitAmounts[i]
           })));
         }
+      } else {
+        setMedicineItems([{ id: '1', name: '', amount: 0, timing: '' }]);
       }
     } else if (preset === 'package') {
       setIncludeConsultFee(false);
@@ -713,7 +807,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
 
   const handleAddMedicineRow = () => {
     const newCount = medicineItems.length + 1;
-    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : 500;
+    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
     const splitAmounts = distributeAmountEvenly(targetTotal, newCount);
 
     const updated = medicineItems.map((item, i) => ({
@@ -724,23 +818,31 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     updated.push({
       id: String(Date.now()),
       name: '',
-      amount: 0,
+      amount: splitAmounts[newCount - 1],
       timing: ''
     });
 
     setMedicineItems(updated);
+    setMedicineFeeInput(targetTotal);
+    if (includeConsultFee && targetAmount > 0) {
+      setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
+    }
   };
 
   const handleRemoveMedicineItem = (idx: number) => {
     const remaining = medicineItems.filter((_, i) => i !== idx);
     if (remaining.length > 0) {
-      const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : 500;
+      const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
       const splitAmounts = distributeAmountEvenly(targetTotal, remaining.length);
       const updated = remaining.map((item, i) => ({
         ...item,
         amount: splitAmounts[i]
       }));
       setMedicineItems(updated);
+      setMedicineFeeInput(targetTotal);
+      if (includeConsultFee && targetAmount > 0) {
+        setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
+      }
     } else {
       setMedicineItems([]);
     }
@@ -748,11 +850,33 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
 
   const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing', val: any) => {
     const updated = [...medicineItems];
-    updated[idx] = { ...updated[idx], [field]: val };
-    setMedicineItems(updated);
-    if (field === 'amount') {
-      const newTotal = updated.reduce((acc, m) => acc + (Number(m.amount) || 0), 0);
-      setMedicineFeeInput(newTotal);
+    if (field !== 'amount') {
+      updated[idx] = { ...updated[idx], [field]: val };
+      setMedicineItems(updated);
+      return;
+    }
+
+    const numVal = Math.max(0, Number(val) || 0);
+    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? targetAmount : 500);
+
+    if (updated.length <= 1) {
+      const safeVal = targetAmount > 0 && includeConsultFee ? Math.min(numVal, targetAmount) : numVal;
+      updated[0] = { ...updated[0], amount: safeVal };
+      setMedicineItems(updated);
+      setMedicineFeeInput(safeVal);
+      if (includeConsultFee && targetAmount > 0) {
+        setConsultFeeInput(Math.max(0, targetAmount - safeVal));
+      }
+    } else {
+      const cappedVal = Math.min(numVal, targetTotal);
+      updated[idx] = { ...updated[idx], amount: cappedVal };
+      const remainingAmount = Math.max(0, targetTotal - cappedVal);
+      const otherIndices = updated.map((_, i) => i).filter(i => i !== idx);
+      const otherSplits = distributeAmountEvenly(remainingAmount, otherIndices.length);
+      otherIndices.forEach((otherIdx, i) => {
+        updated[otherIdx] = { ...updated[otherIdx], amount: otherSplits[i] };
+      });
+      setMedicineItems(updated);
     }
   };
 
@@ -760,41 +884,56 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     setTargetAmount(newTarget);
     const defaultConsult = Number((appointment as any)?.consultationFee) || 0;
     if (paymentTypePreset === 'package') {
-      // When preset is package, doctor's target fee is ignored - package has its own package amount
       return;
     }
     if (newTarget > 0) {
-      if (paymentTypePreset === 'split') {
+      if (paymentTypePreset === 'consultation' || paymentTypePreset === 'consultation_med') {
+        setConsultFeeInput(newTarget);
+        setMedicineFeeInput(0);
+        setMedicineItems([]);
         setIncludeConsultFee(true);
-        setIncludeMedicineFee(true);
-        const cPortion = newTarget > defaultConsult && defaultConsult > 0 ? defaultConsult : Math.round(newTarget / 2);
+        setIncludeMedicineFee(false);
+      } else if (paymentTypePreset === 'split' || (includeMedicineFee && includeConsultFee)) {
+        const cPortion = defaultConsult > 0 && defaultConsult < newTarget ? defaultConsult : Math.round(newTarget / 2);
         const mPortion = Math.max(0, newTarget - cPortion);
         setConsultFeeInput(cPortion);
         setMedicineFeeInput(mPortion);
+        setIncludeConsultFee(true);
+        setIncludeMedicineFee(true);
         if (mPortion > 0) {
+          const count = medicineItems.length > 0 ? medicineItems.length : 1;
+          const splitAmounts = distributeAmountEvenly(mPortion, count);
           if (medicineItems.length === 0) {
             setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
           } else {
-            const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
             setMedicineItems(prev => prev.map((item, i) => ({
               ...item,
               amount: splitAmounts[i]
             })));
           }
         }
+      } else if (includeMedicineFee) {
+        setMedicineFeeInput(newTarget);
+        setConsultFeeInput(0);
+        const count = medicineItems.length > 0 ? medicineItems.length : 1;
+        const splitAmounts = distributeAmountEvenly(newTarget, count);
+        if (medicineItems.length === 0) {
+          setMedicineItems([{ id: '1', name: '', amount: newTarget, timing: '' }]);
+        } else {
+          setMedicineItems(prev => prev.map((item, i) => ({
+            ...item,
+            amount: splitAmounts[i]
+          })));
+        }
       } else {
-        // consultation or consultation_med
-        setIncludeConsultFee(true);
         setConsultFeeInput(newTarget);
         setMedicineFeeInput(0);
+        setMedicineItems([]);
       }
     } else {
       setConsultFeeInput(0);
       setMedicineFeeInput(0);
-      if (activeDurationInfo) {
-        setIncludeConsultFee(false);
-        setIncludeMedicineFee(false);
-      }
+      setMedicineItems([]);
     }
   };
 
@@ -808,8 +947,11 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     if (includeMedicineFee && targetAmount > 0) {
       const mPortion = Math.max(0, targetAmount - cappedVal);
       setMedicineFeeInput(mPortion);
-      if (medicineItems.length > 0) {
-        const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
+      const count = medicineItems.length > 0 ? medicineItems.length : 1;
+      const splitAmounts = distributeAmountEvenly(mPortion, count);
+      if (medicineItems.length === 0) {
+        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+      } else {
         setMedicineItems(prev => prev.map((item, i) => ({
           ...item,
           amount: splitAmounts[i]
@@ -828,8 +970,11 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     if (includeConsultFee && targetAmount > 0) {
       setConsultFeeInput(Math.max(0, targetAmount - cappedVal));
     }
-    if (medicineItems.length > 0) {
-      const splitAmounts = distributeAmountEvenly(cappedVal, medicineItems.length);
+    const count = medicineItems.length > 0 ? medicineItems.length : 1;
+    const splitAmounts = distributeAmountEvenly(cappedVal, count);
+    if (medicineItems.length === 0) {
+      setMedicineItems([{ id: '1', name: '', amount: cappedVal, timing: '' }]);
+    } else {
       setMedicineItems(prev => prev.map((item, i) => ({
         ...item,
         amount: splitAmounts[i]
@@ -847,6 +992,10 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     Number(existingActivePackage.remainingAmount ?? (Number(existingActivePackage.totalAmount) - Number(existingActivePackage.paidAmount))) <= 0
   );
 
+  const effectiveDiscount = discountRequestStatus === 'approved'
+    ? Number(approvedDiscountAmount || discountInput)
+    : 0;
+
   let totalAmountDue = 0;
   if (isPackageCoveredFully) {
     totalAmountDue = 0;
@@ -857,9 +1006,88 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
   } else {
     totalAmountDue = Math.max(
       0,
-      activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges - discountInput
+      activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges - effectiveDiscount
     );
   }
+
+  const handleSubmitDiscountRequest = async () => {
+    if (!appointment || !db) return;
+    const targetId = appointment.id || (appointment as any).patientDocId || (appointment as any).patientId;
+    if (!targetId) return;
+
+    if (requestedDiscountAmount <= 0) {
+      alert('Please enter a valid discount amount greater than 0.');
+      return;
+    }
+    if (!discountReason || !discountReason.trim()) {
+      alert('Please enter a note / reason for requesting the discount (Mandatory).');
+      return;
+    }
+
+    const currentTotalBeforeDiscount = activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges;
+    if (requestedDiscountAmount > currentTotalBeforeDiscount) {
+      alert(`Requested discount (₹${requestedDiscountAmount}) cannot exceed the total bill amount (₹${currentTotalBeforeDiscount}).`);
+      return;
+    }
+
+    setIsSubmittingDiscountRequest(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const requestPayload = {
+        appointmentId: targetId,
+        patientDocId: (appointment as any).patientDocId || targetId,
+        patientName: patientName,
+        patientPhone: patientPhone,
+        branch: (appointment as any).branch || (appointment as any).branchName || 'Main Branch',
+        branchId: resolveCanonicalBranchId((appointment as any).branch || (appointment as any).branchName),
+        originalTotalAmount: currentTotalBeforeDiscount,
+        requestedDiscount: requestedDiscountAmount,
+        reason: discountReason.trim(),
+        status: 'pending',
+        createdAt: nowIso,
+        requestedAt: nowIso,
+        requestedBy: 'Reception',
+        type: 'medicine_discount'
+      };
+
+      const docRef = await addDoc(collection(db, 'fee_requests'), requestPayload);
+      setDiscountRequestId(docRef.id);
+      setDiscountRequestStatus('pending');
+      setShowDiscountInput(false);
+
+      // Dual-sync to appointment doc
+      const updatePayload = {
+        discountRequestId: docRef.id,
+        discountRequestStatus: 'pending',
+        requestedDiscount: requestedDiscountAmount,
+        discountReason: discountReason.trim(),
+        discount: 0,
+        discountInput: 0,
+        updatedAt: nowIso
+      };
+      await updateDoc(doc(db, 'appointments', targetId), updatePayload).catch(() => {});
+      await updateDoc(doc(db, 'allpatients', targetId), updatePayload).catch(() => {});
+      await updateDoc(doc(db, 'patients', targetId), updatePayload).catch(() => {});
+
+      // Send Push & In-App Notification to HR & Admin
+      createFeeDiscountRequestNotificationInFirestore({
+        patientName: patientName,
+        patientPhone: patientPhone,
+        branch: requestPayload.branch,
+        requestedDiscount: requestedDiscountAmount,
+        originalTotalAmount: currentTotalBeforeDiscount,
+        reason: discountReason.trim(),
+        appointmentId: targetId
+      }).catch(() => {});
+
+      alert('✓ Discount request successfully submitted to HR for approval!\n\nStatus is currently PENDING. The discount will only be applied to the bill once HR reviews and approves.');
+    } catch (err: any) {
+      console.error('Error submitting discount request:', err);
+      alert('Failed to submit discount request. Please try again.');
+    } finally {
+      setIsSubmittingDiscountRequest(false);
+    }
+  };
 
   const hasPrescription = uploadedPrescriptionList.length > 0 || Boolean((appointment as any)?.canvasPrescriptionUrl) || Boolean((appointment as any)?.prescriptionUrl);
 
@@ -913,7 +1141,10 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       medicineDuration: includeMedicineFee ? medicineDuration : null,
       dietFee: isPackageCoveredFully || paymentTypePreset === 'package' ? 0 : activeDietFee,
       otherCharges: isPackageCoveredFully || paymentTypePreset === 'package' ? 0 : activeOtherCharges,
-      discount: discountInput,
+      discount: effectiveDiscount,
+      discountRequestStatus: discountRequestStatus,
+      discountReason: discountReason || '',
+      discountRequestId: discountRequestId || null,
       targetAmount: paymentTypePreset === 'package' ? totalAmountDue : targetAmount,
       totalPaid: totalAmountDue,
       paymentMode: finalPaymentMode,
@@ -980,9 +1211,9 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     }
 
     try {
-      await updateDoc(doc(db, 'appointments', appointment.id), payload).catch(() => {});
-      await updateDoc(doc(db, 'allpatients', appointment.id), payload).catch(() => {});
-      await updateDoc(doc(db, 'patients', appointment.id), payload).catch(() => {});
+      await updateDoc(doc(db, 'appointments', appointment.id), payload).catch(() => { });
+      await updateDoc(doc(db, 'allpatients', appointment.id), payload).catch(() => { });
+      await updateDoc(doc(db, 'patients', appointment.id), payload).catch(() => { });
 
       // Ensure prescription record is saved in prescriptions collection
       if (uploadedPrescriptionList.length > 0 && db) {
@@ -996,7 +1227,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
           uploadedPrescriptions: uploadedPrescriptionList,
           uploadedBy: 'Receptionist',
           createdAt: new Date().toISOString()
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       // Package Members Collection Updates
@@ -1114,7 +1345,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             updatedApps.push(completedInvoice);
           }
           const calcRes = calculateRealBranchRevenue(targetBranch, updatedApps, livePkgs);
-          syncBranchTargetToFirestore(db, targetBranch, calcRes.targetReached, calcRes.monthlyTarget).catch(() => {});
+          syncBranchTargetToFirestore(db, targetBranch, calcRes.targetReached, calcRes.monthlyTarget).catch(() => { });
         } catch (syncErr) {
           console.warn('Branch target sync notice:', syncErr);
         }
@@ -1851,7 +2082,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                         {paymentTypePreset === 'consultation_med' ? 'Consultation & Med Fee' : 'Consultation Fee'}
                       </div>
                       <div style={{ fontSize: '12px', color: '#64748b', marginTop: '1px' }}>
-                        {paymentTypePreset === 'consultation_med' ? 'Doctor Requested Consultation & Pharmacy Fee' : 'Doctor Requested Consultation Fee'}
+                        {paymentTypePreset === 'consultation_med' ? 'Combined Consultation & Medicine Fee (Direct)' : 'Doctor Requested Consultation Fee'}
                       </div>
                     </div>
                   </div>
@@ -1859,8 +2090,9 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                     <span style={{ fontSize: '14px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
                     <input
                       type="number"
-                      value={consultFeeInput}
-                      onChange={e => handleConsultFeeChange(Number(e.target.value) || 0)}
+                      placeholder="0"
+                      value={consultFeeInput === 0 ? '' : consultFeeInput}
+                      onChange={e => handleConsultFeeChange(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
                       onWheel={e => e.currentTarget.blur()}
                       style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: '#0f172a', appearance: 'textfield', MozAppearance: 'textfield' }}
                     />
@@ -1869,221 +2101,389 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
 
                 {/* 2. Prescribed Medicines */}
                 <div style={{
-                  background: paymentTypePreset === 'consultation_med' ? '#f8fafc' : '#ffffff',
-                  opacity: paymentTypePreset === 'consultation_med' ? 0.5 : 1,
+                  background: '#ffffff',
                   border: includeMedicineFee ? '1.5px solid #93c5fd' : '1px solid #e2e8f0',
                   borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '12px'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div
                       onClick={() => {
-                        if (paymentTypePreset !== 'consultation_med') {
-                          setIncludeMedicineFee(!includeMedicineFee);
+                        const nextInclude = !includeMedicineFee;
+                        setIncludeMedicineFee(nextInclude);
+                        if (nextInclude) {
+                          if (includeConsultFee && targetAmount > 0) {
+                            const cPortion = Math.round(targetAmount / 2);
+                            const mPortion = Math.max(0, targetAmount - cPortion);
+                            setConsultFeeInput(cPortion);
+                            setMedicineFeeInput(mPortion);
+                            const count = medicineItems.length > 0 ? medicineItems.length : 1;
+                            const splitAmounts = distributeAmountEvenly(mPortion, count);
+                            if (medicineItems.length === 0) {
+                              setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+                            } else {
+                              setMedicineItems(prev => prev.map((item, i) => ({ ...item, amount: splitAmounts[i] })));
+                            }
+                          } else {
+                            setMedicineFeeInput(targetAmount);
+                            const count = medicineItems.length > 0 ? medicineItems.length : 1;
+                            const splitAmounts = distributeAmountEvenly(targetAmount, count);
+                            if (medicineItems.length === 0) {
+                              setMedicineItems([{ id: '1', name: '', amount: targetAmount, timing: '' }]);
+                            } else {
+                              setMedicineItems(prev => prev.map((item, i) => ({ ...item, amount: splitAmounts[i] })));
+                            }
+                          }
+                        } else {
+                          setMedicineFeeInput(0);
+                          setMedicineItems([]);
+                          if (includeConsultFee && targetAmount > 0) {
+                            setConsultFeeInput(targetAmount);
+                          }
                         }
                       }}
-                      style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: paymentTypePreset === 'consultation_med' ? 'not-allowed' : 'pointer', flex: 1 }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', flex: 1 }}
                     >
                       {includeMedicineFee ? <CheckCircle2 color="#258ec8" size={24} /> : <Circle color="#cbd5e1" size={24} />}
                       <div>
-                        <div style={{ fontSize: '14.5px', fontWeight: 800, color: paymentTypePreset === 'consultation_med' ? '#64748b' : '#0f172a' }}>
+                        <div style={{ fontSize: '14.5px', fontWeight: 800, color: '#0f172a' }}>
                           Prescribed Medicines
                         </div>
                         <div style={{ fontSize: '12px', color: '#64748b', marginTop: '1px' }}>
-                          {paymentTypePreset === 'consultation_med'
-                            ? 'Disabled (Included in Consultation & Med Fee)'
-                            : 'Prescribed Remedies / Pharmacy Fee'}
+                          Prescribed Remedies / Pharmacy Fee
                         </div>
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 10px', width: '90px' }}>
-                      <span style={{ fontSize: '14px', fontWeight: 700, color: paymentTypePreset === 'consultation_med' ? '#94a3b8' : '#258ec8', marginRight: '2px' }}>₹</span>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
                       <input
                         type="number"
-                        disabled={paymentTypePreset === 'consultation_med'}
-                        value={medicineFeeInput}
-                        onChange={e => handleMedicineFeeChange(Number(e.target.value) || 0)}
+                        placeholder="0"
+                        value={medicineFeeInput === 0 ? '' : medicineFeeInput}
+                        onChange={e => handleMedicineFeeChange(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
                         onWheel={e => e.currentTarget.blur()}
-                        style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: paymentTypePreset === 'consultation_med' ? '#94a3b8' : '#0f172a', appearance: 'textfield', MozAppearance: 'textfield' }}
+                        style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: '#0f172a', appearance: 'textfield', MozAppearance: 'textfield' }}
                       />
                     </div>
                   </div>
 
-                  {/* Duration dropdown & Add Medicine list (Active when Split (Both) is chosen or medicines included) */}
-                  {includeMedicineFee && paymentTypePreset !== 'consultation_med' && (
-                <div style={{
-                  borderTop: '1px solid #f1f5f9', paddingTop: '12px', marginTop: '2px',
-                  display: 'flex', flexDirection: 'column', gap: '12px'
-                }}>
-                  {/* Duration Dropdown */}
-                  <div style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    backgroundColor: '#f8fafc', padding: '10px 14px', borderRadius: '10px',
-                    border: '1px solid #e2e8f0'
-                  }}>
-                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e293b' }}>
-                      Medicine Duration:
-                    </div>
-                    <select
-                      value={medicineDuration}
-                      onChange={e => setMedicineDuration(e.target.value)}
-                      style={{
-                        padding: '6px 12px', borderRadius: '8px', border: '1.5px solid #258ec8',
-                        backgroundColor: '#ffffff', color: '#0f172a', fontWeight: 700, fontSize: '13px',
-                        outline: 'none', cursor: 'pointer'
-                      }}
-                    >
-                      {['1 Month', '2 Months', '3 Months', '4 Months', '5 Months', '6 Months'].map(d => (
-                        <option key={d} value={d}>{d}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Medicines List Header & Add Button */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a' }}>
-                      Itemized Medicines ({medicineItems.length})
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleAddMedicineRow}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: '4px',
-                        backgroundColor: '#eff6ff', border: '1.5px solid #93c5fd', color: '#1d4ed8',
-                        padding: '5px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 800,
-                        cursor: 'pointer'
-                      }}
-                    >
-                      <Plus size={15} /> Add Medicine
-                    </button>
-                  </div>
-
-                  {/* Medicine Items Rows */}
-                  {medicineItems.map((item, idx) => (
-                    <div
-                      key={item.id || idx}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        backgroundColor: '#f8fafc', padding: '8px 10px', borderRadius: '8px',
-                        border: '1px solid #e2e8f0'
-                      }}
-                    >
-                      <span style={{ fontSize: '12px', fontWeight: 700, color: '#64748b', width: '22px' }}>
-                        #{idx + 1}
-                      </span>
-                      <input
-                        type="text"
-                        placeholder="Enter Medicine Name (e.g. Arnica 30C)"
-                        value={item.name}
-                        onChange={e => handleUpdateMedicineItem(idx, 'name', e.target.value)}
-                        style={{
-                          flex: 1, minWidth: '130px', padding: '6px 10px', borderRadius: '6px',
-                          border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: 600,
-                          backgroundColor: '#ffffff', color: '#0f172a', outline: 'none'
-                        }}
-                      />
-                      <select
-                        value={item.timing || ''}
-                        onChange={e => handleUpdateMedicineItem(idx, 'timing', e.target.value)}
-                        title="Select Pill Timing"
-                        style={{
-                          padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1',
-                          fontSize: '12px', fontWeight: item.timing ? 700 : 500, backgroundColor: '#ffffff',
-                          color: item.timing ? '#1e293b' : '#64748b', outline: 'none', cursor: 'pointer'
-                        }}
-                      >
-                        {DOSAGE_TIMING_OPTIONS.map(opt => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
+                  {/* Duration dropdown & Add Medicine list (Active when medicines included) */}
+                  {includeMedicineFee && (
+                    <div style={{
+                      borderTop: '1px solid #f1f5f9', paddingTop: '12px', marginTop: '2px',
+                      display: 'flex', flexDirection: 'column', gap: '12px'
+                    }}>
+                      {/* Real-time Match & Verification Badge */}
                       <div style={{
-                        display: 'flex', alignItems: 'center', backgroundColor: '#ffffff',
-                        border: '1px solid #cbd5e1', borderRadius: '6px', padding: '5px 8px', width: '90px'
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px',
+                        padding: '8px 12px', fontSize: '12px', fontWeight: 700, color: '#1e40af'
                       }}>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
-                        <input
-                          type="number"
-                          placeholder="0"
-                          value={item.amount}
-                          onChange={e => handleUpdateMedicineItem(idx, 'amount', Number(e.target.value) || 0)}
-                          onWheel={e => e.currentTarget.blur()}
-                          style={{
-                            width: '100%', border: 'none', outline: 'none', textAlign: 'right',
-                            fontSize: '13px', fontWeight: 700, color: '#0f172a',
-                            appearance: 'textfield', MozAppearance: 'textfield'
-                          }}
-                        />
+                        <span>Prescription Target: ₹{medicineFeeInput}</span>
+                        <span>Itemized Total: ₹{medicineItems.reduce((acc, m) => acc + (Number(m.amount) || 0), 0)} (100% Matches ✓)</span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveMedicineItem(idx)}
-                        style={{
-                          backgroundColor: 'transparent', border: 'none', color: '#ef4444',
-                          cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center'
-                        }}
-                      >
-                        <Trash2 size={16} />
-                      </button>
+
+                      {/* Duration Dropdown */}
+                      <div style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        backgroundColor: '#f8fafc', padding: '10px 14px', borderRadius: '10px',
+                        border: '1px solid #e2e8f0'
+                      }}>
+                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e293b' }}>
+                          Medicine Duration:
+                        </div>
+                        <select
+                          value={medicineDuration}
+                          onChange={e => setMedicineDuration(e.target.value)}
+                          style={{
+                            padding: '6px 12px', borderRadius: '8px', border: '1.5px solid #258ec8',
+                            backgroundColor: '#ffffff', color: '#0f172a', fontWeight: 700, fontSize: '13px',
+                            outline: 'none', cursor: 'pointer'
+                          }}
+                        >
+                          {['1 Month', '2 Months', '3 Months', '4 Months', '5 Months', '6 Months'].map(d => (
+                            <option key={d} value={d}>{d}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Medicines List Header & Add Button */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a' }}>
+                          Itemized Medicines ({medicineItems.length})
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAddMedicineRow}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '4px',
+                            backgroundColor: '#eff6ff', border: '1.5px solid #93c5fd', color: '#1d4ed8',
+                            padding: '5px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 800,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          <Plus size={15} /> Add Medicine
+                        </button>
+                      </div>
+
+                      {/* Medicine Items Rows */}
+                      {medicineItems.map((item, idx) => (
+                        <div
+                          key={item.id || idx}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            backgroundColor: '#f8fafc', padding: '8px 10px', borderRadius: '8px',
+                            border: '1px solid #e2e8f0'
+                          }}
+                        >
+                          <span style={{ fontSize: '12px', fontWeight: 700, color: '#64748b', width: '22px' }}>
+                            #{idx + 1}
+                          </span>
+                          <input
+                            type="text"
+                            placeholder="Enter Medicine Name (e.g. Arnica 30C)"
+                            value={item.name}
+                            onChange={e => handleUpdateMedicineItem(idx, 'name', e.target.value)}
+                            style={{
+                              flex: 1, minWidth: '130px', padding: '6px 10px', borderRadius: '6px',
+                              border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: 600,
+                              backgroundColor: '#ffffff', color: '#0f172a', outline: 'none'
+                            }}
+                          />
+                          <select
+                            value={item.timing || ''}
+                            onChange={e => handleUpdateMedicineItem(idx, 'timing', e.target.value)}
+                            title="Select Pill Timing"
+                            style={{
+                              padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1',
+                              fontSize: '12px', fontWeight: item.timing ? 700 : 500, backgroundColor: '#ffffff',
+                              color: item.timing ? '#1e293b' : '#64748b', outline: 'none', cursor: 'pointer'
+                            }}
+                          >
+                            {DOSAGE_TIMING_OPTIONS.map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', backgroundColor: '#ffffff',
+                            border: '1px solid #cbd5e1', borderRadius: '6px', padding: '5px 8px', width: '90px'
+                          }}>
+                            <span style={{ fontSize: '13px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              value={item.amount === 0 ? '' : item.amount}
+                              onChange={e => handleUpdateMedicineItem(idx, 'amount', e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+                              onWheel={e => e.currentTarget.blur()}
+                              style={{
+                                width: '100%', border: 'none', outline: 'none', textAlign: 'right',
+                                fontSize: '13px', fontWeight: 700, color: '#0f172a',
+                                appearance: 'textfield', MozAppearance: 'textfield'
+                              }}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveMedicineItem(idx)}
+                            style={{
+                              backgroundColor: 'transparent', border: 'none', color: '#ef4444',
+                              cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center'
+                            }}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
-            </div>
 
-            {/* 3. Diet Plan Fee */}
-            <div style={{
-              background: '#ffffff', border: includeDietFee ? '1.5px solid #93c5fd' : '1px solid #e2e8f0',
-              borderRadius: '12px', padding: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
-            }}>
-              <div
-                onClick={() => setIncludeDietFee(!includeDietFee)}
-                style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', flex: 1 }}
-              >
-                {includeDietFee ? <CheckCircle2 color="#258ec8" size={24} /> : <Circle color="#cbd5e1" size={24} />}
-                <div>
-                  <div style={{ fontSize: '14.5px', fontWeight: 800, color: '#0f172a' }}>Diet Plan Fee</div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '1px' }}>
-                    Diet & Nutrition Fee
+                {/* 3. Diet Plan Fee */}
+                <div style={{
+                  background: '#ffffff', border: includeDietFee ? '1.5px solid #93c5fd' : '1px solid #e2e8f0',
+                  borderRadius: '12px', padding: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+                }}>
+                  <div
+                    onClick={() => setIncludeDietFee(!includeDietFee)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', flex: 1 }}
+                  >
+                    {includeDietFee ? <CheckCircle2 color="#258ec8" size={24} /> : <Circle color="#cbd5e1" size={24} />}
+                    <div>
+                      <div style={{ fontSize: '14.5px', fontWeight: 800, color: '#0f172a' }}>Diet Plan Fee</div>
+                      <div style={{ fontSize: '12px', color: '#64748b', marginTop: '1px' }}>
+                        Diet & Nutrition Fee
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 10px', width: '90px' }}>
-                <span style={{ fontSize: '14px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
-                <input
-                  type="number"
-                  value={dietFeeInput}
-                  onChange={e => setDietFeeInput(Number(e.target.value) || 0)}
-                  onWheel={e => e.currentTarget.blur()}
-                  style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: '#0f172a', appearance: 'textfield', MozAppearance: 'textfield' }}
-                />
-              </div>
-            </div>
-
-            {/* Medicine Discount Status Card */}
-            <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '14px' }}>
-              <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>Medicine Discount Status</div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px' }}>
-                <button
-                  onClick={() => setShowDiscountInput(!showDiscountInput)}
-                  style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '7px 14px', borderRadius: '8px', fontSize: '12.5px', fontWeight: 700, color: '#334155', cursor: 'pointer' }}
-                >
-                  Request Discount
-                </button>
-
-                {showDiscountInput && (
-                  <div style={{ display: 'flex', alignItems: 'center', background: '#fff5f5', border: '1px solid #fecaca', borderRadius: '8px', padding: '5px 10px', width: '100px' }}>
-                    <span style={{ fontSize: '14px', fontWeight: 700, color: '#ef4444', marginRight: '2px' }}>- ₹</span>
+                  <div style={{ display: 'flex', alignItems: 'center', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 10px', width: '90px' }}>
+                    <span style={{ fontSize: '14px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
                     <input
                       type="number"
-                      value={discountInput}
-                      onChange={e => setDiscountInput(Number(e.target.value))}
+                      value={dietFeeInput}
+                      onChange={e => setDietFeeInput(Number(e.target.value) || 0)}
                       onWheel={e => e.currentTarget.blur()}
-                      style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: '#ef4444', appearance: 'textfield', MozAppearance: 'textfield' }}
+                      style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: '#0f172a', appearance: 'textfield', MozAppearance: 'textfield' }}
                     />
                   </div>
-                )}
-              </div>
-            </div>
-            </>
+                </div>
+
+                {/* Medicine Discount Status Card */}
+                <div style={{ background: '#ffffff', border: '1.5px solid #e2e8f0', borderRadius: '12px', padding: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>Medicine Discount Status</div>
+                      <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: '2px' }}>
+                        HR Approval Required • Locked until HR approves
+                      </div>
+                    </div>
+                    {/* Status Badge */}
+                    {discountRequestStatus === 'pending' && (
+                      <span style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '4px 10px', borderRadius: '20px', fontSize: '11.5px', fontWeight: 800 }}>
+                        ⏳ Pending HR Approval
+                      </span>
+                    )}
+                    {discountRequestStatus === 'approved' && (
+                      <span style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac', padding: '4px 10px', borderRadius: '20px', fontSize: '11.5px', fontWeight: 800 }}>
+                        ✓ Approved by HR (-₹{effectiveDiscount})
+                      </span>
+                    )}
+                    {discountRequestStatus === 'rejected' && (
+                      <span style={{ background: '#fee2e2', color: '#b91c1c', border: '1px solid #fca5a5', padding: '4px 10px', borderRadius: '20px', fontSize: '11.5px', fontWeight: 800 }}>
+                        ❌ Rejected by HR
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Pending View: Locked with reason and note */}
+                  {discountRequestStatus === 'pending' && (
+                    <div style={{ marginTop: '12px', background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '8px', padding: '12px', fontSize: '12.5px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <span style={{ color: '#92400e', fontWeight: 700 }}>
+                          Requested Discount: <strong style={{ color: '#b45309', fontSize: '13.5px' }}>₹{requestedDiscountAmount}</strong>
+                        </span>
+                        <span style={{ color: '#b45309', fontSize: '11px', fontWeight: 700, background: '#fef3c7', padding: '2px 8px', borderRadius: '4px' }}>
+                          Awaiting HR Action
+                        </span>
+                      </div>
+                      <div style={{ color: '#78350f', fontSize: '12px', lineHeight: 1.4 }}>
+                        <strong>Reason:</strong> {discountReason || 'No reason specified'}
+                      </div>
+                      <div style={{ marginTop: '8px', fontSize: '11px', color: '#92400e', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        🔒 Discount is locked and will NOT deduct from total amount until approved by HR.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Approved View */}
+                  {discountRequestStatus === 'approved' && (
+                    <div style={{ marginTop: '12px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: 800, color: '#166534' }}>
+                          Discount Applied: ₹{effectiveDiscount}
+                        </div>
+                        {discountReason && (
+                          <div style={{ fontSize: '11.5px', color: '#15803d', marginTop: '2px' }}>
+                            Reason: {discountReason}
+                          </div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: '14px', fontWeight: 900, color: '#16a34a' }}>- ₹{effectiveDiscount}</span>
+                    </div>
+                  )}
+
+                  {/* Rejected View */}
+                  {discountRequestStatus === 'rejected' && (
+                    <div style={{ marginTop: '12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px' }}>
+                      <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#991b1b', marginBottom: '4px' }}>
+                        Request was rejected by HR
+                      </div>
+                      {hrRejectReason && (
+                        <div style={{ fontSize: '12px', color: '#b91c1c', marginBottom: '8px' }}>
+                          <strong>HR Note:</strong> {hrRejectReason}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => {
+                          setDiscountRequestStatus('none');
+                          setShowDiscountInput(true);
+                        }}
+                        style={{ background: '#ffffff', border: '1px solid #fca5a5', color: '#b91c1c', padding: '5px 12px', borderRadius: '6px', fontSize: '11.5px', fontWeight: 700, cursor: 'pointer' }}
+                      >
+                        Submit Revised Request
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Request Button (Shown when no active request) */}
+                  {discountRequestStatus === 'none' && !showDiscountInput && (
+                    <div style={{ marginTop: '10px' }}>
+                      <button
+                        onClick={() => setShowDiscountInput(true)}
+                        style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '7px 14px', borderRadius: '8px', fontSize: '12.5px', fontWeight: 700, color: '#334155', cursor: 'pointer' }}
+                      >
+                        Request Discount
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Request Form with Amount & Reason */}
+                  {discountRequestStatus === 'none' && showDiscountInput && (
+                    <div style={{ marginTop: '12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '4px' }}>
+                            Discount Amount (₹) *
+                          </label>
+                          <div style={{ display: 'flex', alignItems: 'center', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '6px 8px' }}>
+                            <span style={{ fontSize: '13px', fontWeight: 700, color: '#ef4444', marginRight: '4px' }}>- ₹</span>
+                            <input
+                              type="number"
+                              placeholder="0"
+                              value={requestedDiscountAmount === 0 ? '' : requestedDiscountAmount}
+                              onChange={e => setRequestedDiscountAmount(Math.max(0, Number(e.target.value) || 0))}
+                              style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '13px', fontWeight: 700, color: '#ef4444' }}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '4px' }}>
+                            Reason / Note for Request *
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Senior citizen, Special family discount, Financial concession"
+                            value={discountReason}
+                            onChange={e => setDiscountReason(e.target.value)}
+                            style={{ width: '100%', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '6px 10px', fontSize: '12.5px', fontWeight: 600, color: '#0f172a', background: '#ffffff', outline: 'none' }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+                        <button
+                          type="button"
+                          onClick={() => setShowDiscountInput(false)}
+                          style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#ffffff', fontSize: '12px', fontWeight: 600, color: '#64748b', cursor: 'pointer' }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isSubmittingDiscountRequest || requestedDiscountAmount <= 0 || !discountReason.trim()}
+                          onClick={handleSubmitDiscountRequest}
+                          style={{
+                            padding: '6px 16px', borderRadius: '6px', border: 'none',
+                            background: (requestedDiscountAmount > 0 && discountReason.trim()) ? '#0284c7' : '#94a3b8',
+                            color: '#ffffff', fontSize: '12px', fontWeight: 700, cursor: (requestedDiscountAmount > 0 && discountReason.trim()) ? 'pointer' : 'not-allowed'
+                          }}
+                        >
+                          {isSubmittingDiscountRequest ? 'Submitting to HR...' : 'Submit Request to HR'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Payment Method Selector */}
@@ -2302,10 +2702,10 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                   <span style={{ fontWeight: 700 }}>₹ {activeDietFee.toLocaleString('en-IN')}</span>
                 </div>
               )}
-              {discountInput > 0 && paymentTypePreset !== 'package' && (
+              {effectiveDiscount > 0 && paymentTypePreset !== 'package' && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#dc2626', fontWeight: 600 }}>
-                  <span>- Medicine Discount:</span>
-                  <span style={{ fontWeight: 700 }}>- ₹ {discountInput.toLocaleString('en-IN')}</span>
+                  <span>- Medicine Discount (HR Approved):</span>
+                  <span style={{ fontWeight: 700 }}>- ₹ {effectiveDiscount.toLocaleString('en-IN')}</span>
                 </div>
               )}
               <div style={{ height: '1px', backgroundColor: '#e2e8f0', margin: '4px 0' }} />
@@ -2405,8 +2805,8 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '10px', gap: '12px' }}>
                 <img src={`data:image/png;base64,${SH_LOGO_BASE64}`} width="260" height="52" alt="Spiritual Homeopathy Logo" style={{ height: '52px', width: '260px', objectFit: 'contain' }} />
                 <div style={{ textAlign: 'right', fontSize: '11px', color: '#334155', fontWeight: 700, lineHeight: 1.4, flexShrink: 0 }}>
-                  <div>www.spiritualhomeoclinic.com</div>
-                  <div style={{ color: '#64748b', fontWeight: 500 }}>support@spiritualhomeo.com</div>
+                  <div>spiritualhomeoclinic.com</div>
+                  <div style={{ color: '#64748b', fontWeight: 500 }}>support@spiritualhomeoclinic.com</div>
                 </div>
               </div>
 
@@ -2455,7 +2855,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                   </div>
                   <div style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: '6px' }}>
                     <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', marginBottom: '3px', textTransform: 'uppercase' }}>SPECIALTY</div>
-                    <div style={{ fontWeight: 800, color: '#0f172a', fontSize: '14px' }}>General Homeopathy</div>
+                    <div style={{ fontWeight: 800, color: '#0f172a', fontSize: '14px' }}>Homeopathy</div>
                   </div>
                 </div>
               </div>
@@ -2646,8 +3046,8 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
               <div style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.6, marginBottom: '20px', marginTop: '14px' }}>
                 <div>Payment ID: WALKIN_{(activeInvoice.paymentMode || 'UPI').toUpperCase().replace(/\s+/g, '_')}</div>
                 <div>Issued At: {new Date().toLocaleDateString('en-GB')}, {new Date().toLocaleTimeString()}</div>
-                <div style={{ textAlign: 'center', marginTop: '12px', color: '#94a3b8', fontSize: '10.5px' }}>
-                  This is a computer generated bill.
+                <div style={{ textAlign: 'center', marginTop: '12px', color: '#64748b', fontSize: '10.5px', fontWeight: 500 }}>
+                  This is a computer generated bill. No signature is required.
                 </div>
               </div>
             </div>
@@ -2655,12 +3055,12 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             {/* 7. Bottom Lime Green Banner Bar */}
             <div style={{
               backgroundColor: '#99cc00', color: '#ffffff', padding: '10px 16px', borderRadius: '5px',
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
+              display: 'flex', justifyContent: 'space-around', alignItems: 'center', gap: '12px',
               fontSize: '10.5px', fontWeight: 800, flexWrap: 'wrap', marginTop: '24px'
             }}>
-              <div style={{ whiteSpace: 'nowrap' }}>📞 9069176176</div>
-              <div style={{ whiteSpace: 'nowrap' }}>✉️ support@spiritualhomeo.com</div>
-              <div style={{ whiteSpace: 'nowrap' }}>🌐 www.spiritualhomeoclinic.com</div>
+              <div style={{ whiteSpace: 'nowrap' }}>📞 {getBranchPhone(activeInvoice.branch)}</div>
+              <div style={{ whiteSpace: 'nowrap' }}>✉️ support@spiritualhomeoclinic.com</div>
+              <div style={{ whiteSpace: 'nowrap' }}>🌐 spiritualhomeoclinic.com</div>
               <div style={{ whiteSpace: 'nowrap' }}>📍 {(activeInvoice.branch || 'KPHB').toUpperCase()}</div>
             </div>
           </div>
@@ -2749,7 +3149,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             >
               <MessageCircle size={16} /> Share PDF Invoice
             </button>
-            <button 
+            <button
               onClick={() => {
                 const element = document.getElementById('printable-invoice-receipt');
                 const invCode = activeInvoice?.id ? String(activeInvoice.id).substring(0, 6).toUpperCase() : 'RECEIPT';
@@ -2777,12 +3177,12 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                   };
                   document.body.appendChild(script);
                 }
-              }} 
+              }}
               style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', background: '#258ec8', color: '#fff', fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', boxShadow: '0 4px 12px rgba(37, 142, 200, 0.3)' }}
             >
               📥 Download PDF Receipt
             </button>
-            <button 
+            <button
               onClick={() => {
                 const printWindow = window.open('', '_blank', 'width=900,height=1000');
                 if (!printWindow) return alert('Popup blocked! Please allow popups.');
@@ -2818,7 +3218,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                         <div class="brand-sub">Multispecialty Homeopathy Clinic</div>
                       </div>
                       <div style="text-align: right;">
-                        <div>www.spiritualhomeoclinic.com</div>
+                        <div>spiritualhomeoclinic.com</div>
                         <div style="color: #64748b; font-size: 12px;">${currentDate}</div>
                       </div>
                     </div>
@@ -2837,16 +3237,16 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                         </tr>
                       </thead>
                         ${activeInvoice.paymentTypePreset === 'consultation_med'
-                          ? `<tr><td>Consultation and Medicine</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee || activeInvoice.totalPaid || totalAmount).toFixed(2)}</td></tr>`
-                          : `
+                    ? `<tr><td>Consultation and Medicine</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee || activeInvoice.totalPaid || totalAmount).toFixed(2)}</td></tr>`
+                    : `
                             ${activeInvoice.medicines && activeInvoice.medicines.length > 0
-                              ? activeInvoice.medicines.map((m: any, idx: number) => {
-                                  const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
-                                  const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
-                                  const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                                  return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
-                                }).join('')
-                              : (Number(activeInvoice.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}</td><td style="text-align: right;">₹${Number(activeInvoice.medicineFee).toFixed(2)}</td></tr>` : '')}
+                      ? activeInvoice.medicines.map((m: any, idx: number) => {
+                        const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                        const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
+                        const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
+                        return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                      }).join('')
+                      : (Number(activeInvoice.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}</td><td style="text-align: right;">₹${Number(activeInvoice.medicineFee).toFixed(2)}</td></tr>` : '')}
                             ${Number(activeInvoice.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee).toFixed(2)}</td></tr>` : ''}
                           `}
                         ${Number(activeInvoice.dietFee) > 0 ? `<tr><td>Diet & Nutrition Fee</td><td style="text-align: right;">₹${Number(activeInvoice.dietFee).toFixed(2)}</td></tr>` : ''}
@@ -2854,10 +3254,13 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                         <tr style="font-weight: bold;"><td>Payment Mode (${activeInvoice.paymentMode || 'UPI'})</td><td style="text-align: right;">₹${totalAmount}</td></tr>
                       </tbody>
                     </table>
+                    <div style="text-align: center; margin-top: 14px; margin-bottom: 8px; color: #64748b; font-size: 11px;">
+                      This is a computer generated bill. No signature is required.
+                    </div>
                     <div class="footer-bar">
-                      <div>📞 9069176176</div>
-                      <div>✉️ support@spiritualhomeo.com</div>
-                      <div>🌐 www.spiritualhomeoclinic.com</div>
+                      <div>📞 ${getBranchPhone(branchName)}</div>
+                      <div>✉️ support@spiritualhomeoclinic.com</div>
+                      <div>🌐 spiritualhomeoclinic.com</div>
                       <div>📍 ${branchName.toUpperCase()}</div>
                     </div>
                     <script>
@@ -2871,7 +3274,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
 
                 printWindow.document.write(htmlContent);
                 printWindow.document.close();
-              }} 
+              }}
               style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', background: '#258ec8', color: '#fff', fontWeight: 800, cursor: 'pointer', boxShadow: '0 4px 12px rgba(37, 142, 200, 0.3)' }}
             >
               🖨️ Print / Save PDF

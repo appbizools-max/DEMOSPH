@@ -1,21 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
 
-export const DoctorPatientListScreen: React.FC = () => {
+interface DoctorPatientListScreenProps {
+  onNavigateTab?: (tab: string, patient?: any) => void;
+}
+
+export const DoctorPatientListScreen: React.FC<DoctorPatientListScreenProps> = ({ onNavigateTab }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [patients, setPatients] = useState<any[]>(() => receptionDataStore.getAppointments());
 
-  const patients = [
-    { id: '1', name: 'Sarah Jenkins', age: 34, phone: '9848012345', reason: 'Acute Anxiety & Chronic Insomnia', status: 'Waiting' },
-    { id: '2', name: 'Rajesh Kumar', age: 48, phone: '9949023456', reason: 'Migraine & Spondylitis', status: 'In Consult', remedy: 'Nux Vomica 200C' },
-    { id: '3', name: 'Anita Sharma', age: 29, phone: '9876543210', reason: 'Eczema & Allergic Rhinitis', status: 'Waiting' },
-    { id: '4', name: 'David Miller', age: 52, phone: '9123456789', reason: 'Hypertension & Acid Reflux', status: 'Completed', remedy: 'Arnica 200C' },
-  ];
+  useEffect(() => {
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      setPatients(state.appointments);
+    });
+    return () => unsub();
+  }, []);
 
   const filtered = patients.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.phone.includes(searchTerm);
-    const matchesStatus = statusFilter === 'all' || p.status.toLowerCase().replace(' ', '') === statusFilter.toLowerCase().replace(' ', '');
+    const pName = String(p.patientName || p.name || '').toLowerCase();
+    const pPhone = String(p.phone || p.phoneNumber || '');
+    const pReason = String(p.chiefComplaint || p.subject || p.diseases || '').toLowerCase();
+    const sTerm = searchTerm.toLowerCase().trim();
+
+    const matchesSearch = !sTerm || pName.includes(sTerm) || pPhone.includes(sTerm) || pReason.includes(sTerm);
+
+    const st = String(p.status || 'waiting').toLowerCase();
+    const matchesStatus = statusFilter === 'all'
+      || (statusFilter === 'waiting' && (st === 'waiting' || st === 'scheduled' || st === 'upcoming'))
+      || (statusFilter === 'inconsult' && (st === 'in_consultation' || st === 'in-consultation' || st === 'active' || st === 'consulting'))
+      || (statusFilter === 'completed' && (st === 'completed' || st === 'done' || st === 'collect_fee'));
+
     return matchesSearch && matchesStatus;
   });
 
@@ -54,29 +72,48 @@ export const DoctorPatientListScreen: React.FC = () => {
       </ScrollView>
 
       {/* Patient Directory List */}
-      {filtered.map((item) => (
-        <View key={item.id} style={styles.patientCard}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <View>
-              <Text style={styles.patName}>{item.name} ({item.age} yrs)</Text>
-              <Text style={styles.patPhone}>📞 {item.phone}</Text>
-            </View>
-            <Text style={[
-              styles.statusBadge,
-              item.status === 'Completed' ? styles.statusComp : item.status === 'In Consult' ? styles.statusConsult : styles.statusWait
-            ]}>
-              {item.status}
-            </Text>
-          </View>
+      {filtered.map((item, idx) => {
+        const pName = item.patientName || item.name || 'Patient';
+        const pPhone = item.phone || item.phoneNumber || 'N/A';
+        const pBranch = item.branch || item.branchName || 'Clinic';
+        const pReason = item.chiefComplaint || item.subject || item.diseases || 'Consultation';
+        const pStatus = (item.status || 'waiting').toLowerCase();
+        const isDone = pStatus === 'completed' || pStatus === 'done' || pStatus === 'collect_fee';
+        const isConsult = pStatus === 'in_consultation' || pStatus === 'in-consultation' || pStatus === 'active';
 
-          <View style={styles.complaintBox}>
-            <Text style={styles.complaintText}><Text style={{ fontWeight: '700' }}>Complaint:</Text> {item.reason}</Text>
-            {item.remedy && (
-              <Text style={styles.remedyText}>💊 Remedy: {item.remedy}</Text>
-            )}
-          </View>
-        </View>
-      ))}
+        return (
+          <TouchableOpacity
+            key={item.id ? `${item.id}-${idx}` : `pat-${idx}`}
+            style={styles.patientCard}
+            activeOpacity={0.8}
+            onPress={() => onNavigateTab && onNavigateTab('patient_file', item)}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.patName}>{pName} {item.regId || item.registrationId ? `(${item.regId || item.registrationId})` : ''}</Text>
+                <Text style={styles.patPhone}>📞 {pPhone} • {pBranch}</Text>
+              </View>
+              <Text style={[
+                styles.statusBadge,
+                isDone ? styles.statusComp : isConsult ? styles.statusConsult : styles.statusWait
+              ]}>
+                {isDone ? 'Completed' : isConsult ? 'In Consult' : 'Waiting'}
+              </Text>
+            </View>
+
+            <View style={styles.complaintBox}>
+              <Text style={styles.complaintText}><Text style={{ fontWeight: '700' }}>Complaint:</Text> {pReason}</Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 }}>
+              <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="document-text-outline" size={13} color="#0284c7" />
+                <Text style={{ fontSize: 11, fontWeight: '800', color: '#0284c7' }}>Open Patient File ➔</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        );
+      })}
 
       <View style={{ height: 40 }} />
     </ScrollView>

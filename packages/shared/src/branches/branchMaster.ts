@@ -210,3 +210,20 @@ export function getBranchQueryNames(branchIdOrName?: string | null): string[] {
       return [];
   }
 }
+
+/**
+ * Gets the direct branch desk mobile phone number (e.g. '9030176176', '9553176176')
+ */
+export function getBranchPhone(input?: string | null): string {
+  const branch = getBranch(input);
+  return branch ? branch.phone : '9030176176';
+}
+
+/**
+ * Gets the formatted direct branch desk mobile phone number (e.g. '+91 90301 76176')
+ */
+export function getBranchFormattedPhone(input?: string | null): string {
+  const branch = getBranch(input);
+  return branch ? branch.formattedPhone : '+91 90301 76176';
+}
+

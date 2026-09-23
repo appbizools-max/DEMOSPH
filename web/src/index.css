@@ -178,6 +178,15 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0 !important;
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
 input[type="number"] {
   -moz-appearance: textfield !important;
   appearance: textfield !important;

@@ -101,8 +101,9 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
 
   const handleOpenCheckout = (app: any) => {
     setCheckoutModalApp(app);
+    const mFee = Number(app.pharmacyFee || app.medicineFeeRequested || app.medicineFee) || 0;
     setConsultFeeInput(Number(app.consultationFee) || 0);
-    setMedicineFeeInput(Number(app.medicineFeeRequested || app.medicineFee) || 1200);
+    setMedicineFeeInput(mFee > 0 ? mFee : 1200);
     setDietFeeInput(Number(app.dietFee || app.dietFeeAmount || app.dietPlan?.dietFeeAmount || app.dietPlan?.dietFee) || 0);
     setOtherChargesInput(Number(app.otherCharges) || 0);
     setDiscountInput(Number(app.discount) || 0);
@@ -514,7 +515,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
 
     if (clean === selectedDate || clean.startsWith(selectedDate)) return true;
 
-    // Support DD-MM-YYYY format matching YYYY-MM-DD
+    // Support DD-MM-YYYY and DD/MM/YYYY format matching YYYY-MM-DD (including timestamps like 23-09-2026 10:00 AM)
     const partsISO = selectedDate.split('-'); // [YYYY, MM, DD]
     if (partsISO.length === 3) {
       const [y, m, d] = partsISO;
@@ -522,8 +523,28 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
       const ddmmyyyySlash = `${d}/${m}/${y}`;
       const dmySlash = `${parseInt(d, 10)}/${parseInt(m, 10)}/${y}`;
       const dmyHyphen = `${parseInt(d, 10)}-${parseInt(m, 10)}-${y}`;
-      if (clean === ddmmyyyyHyphen || clean === ddmmyyyySlash || clean === dmySlash || clean === dmyHyphen) return true;
+      if (
+        clean === ddmmyyyyHyphen || clean === ddmmyyyySlash || clean === dmySlash || clean === dmyHyphen ||
+        clean.startsWith(ddmmyyyyHyphen) || clean.startsWith(ddmmyyyySlash) || clean.startsWith(dmySlash) || clean.startsWith(dmyHyphen)
+      ) {
+        return true;
+      }
     }
+
+    // Direct ISO string match e.g. 2026-09-23T...
+    if (clean.length >= 10 && clean[4] === '-' && clean[7] === '-') {
+      if (clean.substring(0, 10) === selectedDate) return true;
+    }
+
+    try {
+      const parsed = new Date(clean);
+      if (!isNaN(parsed.getTime())) {
+        const py = parsed.getFullYear();
+        const pm = String(parsed.getMonth() + 1).padStart(2, '0');
+        const pd = String(parsed.getDate()).padStart(2, '0');
+        if (`${py}-${pm}-${pd}` === selectedDate) return true;
+      }
+    } catch (_) {}
 
     return false;
   };
@@ -1741,8 +1762,8 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
           patient={patientFileApp}
           doctorName={sanitizeDoctorName(patientFileApp.doctorName || patientFileApp.doctor, patientFileApp.branch || currentBranch)}
           onClose={() => setPatientFileApp(null)}
-          onSubmitConsultation={async () => {
-            const nextApp = { ...patientFileApp };
+          onSubmitConsultation={async (consultPayload) => {
+            const nextApp = { ...patientFileApp, ...consultPayload };
             setPatientFileApp(null);
             handleOpenCheckout(nextApp);
           }}

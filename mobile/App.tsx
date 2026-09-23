@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, TouchableOpacity, Platform, Alert, BackHandler, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, SafeAreaView, TouchableOpacity, Platform, Alert, BackHandler, ScrollView, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -18,6 +18,7 @@ import { ProductBillingScreen } from './src/screens/Reception/ProductBilling/Pro
 import { DoctorNoShowScreen } from './src/screens/Reception/DoctorNoShow/DoctorNoShowScreen';
 import { MediaManagerScreen } from './src/screens/Reception/MediaManager/MediaManagerScreen';
 import { CleaningPhotosScreen } from './src/screens/Reception/CleaningPhotos/CleaningPhotosScreen';
+import { ShiprocketScreen } from './src/screens/Reception/Shiprocket/ShiprocketScreen';
 
 // Admin, HR, Doctor & Staff Screens
 import { AdminScreen } from './src/screens/Admin/AdminScreen';
@@ -181,7 +182,7 @@ function MainApp() {
   const [cleaningSubmissions, setCleaningSubmissions] = useState<CleaningSubmission[]>([]);
 
   useEffect(() => {
-    if (userRole === 'admin' || userRole === 'hr' || userRole === 'doctor' || userRole === 'staff') return;
+    if (isLoadingSession || userRole === 'admin' || userRole === 'hr' || userRole === 'doctor' || userRole === 'staff') return;
     const activeDb = getSafeDb();
     if (!activeDb) return;
     const normBranch = normalizeBranchName(branchName);
@@ -212,7 +213,7 @@ function MainApp() {
       unsubSched();
       unsubSubs();
     };
-  }, [userRole, branchName]);
+  }, [isLoadingSession, userRole, branchName]);
 
   const cleaningLockout = useMemo(() => {
     if (userRole === 'admin' || userRole === 'hr' || userRole === 'doctor' || userRole === 'staff') {
@@ -338,6 +339,7 @@ function MainApp() {
 
   // Real-time Firestore notification alert for Reception (matching branch), HR / Admin (all branches), Doctors & Staff
   useEffect(() => {
+    if (isLoadingSession || activeTab === 'auth') return;
     const activeDb = getSafeDb();
     if (!activeDb) return;
     isInitialSnapshot.current = true;
@@ -549,6 +551,17 @@ function MainApp() {
   const isAuthScreen = activeTab === 'auth';
 
   const renderScreen = () => {
+    if (isLoadingSession) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#0284c7" />
+          <Text style={{ marginTop: 14, fontSize: 13, fontWeight: '700', color: '#64748b' }}>
+            Loading SPH Clinic Portal...
+          </Text>
+        </SafeAreaView>
+      );
+    }
+
     if (activeTab === 'auth') {
       return <AuthScreen onLoginSuccess={handleLoginSuccess} />;
     }
@@ -660,6 +673,8 @@ function MainApp() {
         return <MedicineRequestsScreen />;
       case 'reception_noshow':
         return <DoctorNoShowScreen currentBranch={branchName} />;
+      case 'reception_shiprocket':
+        return <ShiprocketScreen />;
       case 'reception_media':
         return <MediaManagerScreen />;
       case 'reception_cleaning':
@@ -772,6 +787,8 @@ function MainApp() {
         return 'Product Billing';
       case 'reception_noshow':
         return 'Doctor No Show';
+      case 'reception_shiprocket':
+        return 'Shiprocket';
       case 'reception_media':
         return 'Media Manager';
       case 'branch_cleaning':

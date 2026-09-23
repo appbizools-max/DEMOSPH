@@ -24,6 +24,7 @@ const ProductBillingPage = lazy(() => import('./pages/Reception/ProductBilling/P
 const DoctorNoShowPage = lazy(() => import('./pages/Reception/DoctorNoShow/DoctorNoShowPage').then(m => ({ default: m.DoctorNoShowPage })));
 const MediaManagerPage = lazy(() => import('./pages/Reception/MediaManager/MediaManagerPage').then(m => ({ default: m.MediaManagerPage })));
 const CleaningPhotosPage = lazy(() => import('./pages/Reception/CleaningPhotos/CleaningPhotosPage').then(m => ({ default: m.CleaningPhotosPage })));
+const ShiprocketPage = lazy(() => import('./pages/Reception/Shiprocket/ShiprocketPage').then(m => ({ default: m.ShiprocketPage })));
 const PortalLoadingFallback = () => (
   <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px' }}>
     <div style={{
@@ -213,6 +214,9 @@ export default function App() {
             )}
             {activeTab === 'reception_cleaning' && (
               <CleaningPhotosPage />
+            )}
+            {activeTab === 'reception_shiprocket' && (
+              <ShiprocketPage />
             )}
           </>
         )}

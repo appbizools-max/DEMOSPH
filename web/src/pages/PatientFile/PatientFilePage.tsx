@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { PatientFileUI } from '../../components/PatientFileUI';
 import { Search, User, FileText, ArrowLeft, RefreshCw } from 'lucide-react';
-import { db } from '@app/shared';
-import { collection, onSnapshot } from 'firebase/firestore';
+
+import { receptionDataStore } from '../../utils/receptionDataStore';
 
 interface PatientFilePageProps {
   onBack?: () => void;
@@ -12,106 +12,41 @@ interface PatientFilePageProps {
 }
 
 export const PatientFilePage: React.FC<PatientFilePageProps> = ({ onBack, initialPatient, onSubmitConsultation, isDoctor = false }) => {
-  const [patients, setPatients] = useState<any[]>([
-    {
-      id: 'demo-1',
-      patientName: 'Swpana latha',
-      name: 'Swpana latha',
-      registrationId: 'SPHDSN-124',
-      regId: 'SPHDSN-124',
-      phone: '9000136260',
-      branch: 'Dilshuknagar',
-      source: 'Old Patient',
-      subject: 'Fever',
-      diseases: 'Fever, Body ache',
-      vitals: { bp: '120/80', pulse: '72', temp: '98.6', weight: '68', spo2: '98' }
-    },
-    {
-      id: 'demo-2',
-      patientName: 'Rahul Kumar',
-      name: 'Rahul Kumar',
-      registrationId: 'SPHDSN-125',
-      regId: 'SPHDSN-125',
-      phone: '9849012345',
-      branch: 'KPHB Branch',
-      source: 'Walk-in',
-      subject: 'Allergic Rhinitis & Sinusitis',
-      diseases: 'Nasal congestion, sneezing',
-      vitals: { bp: '118/76', pulse: '75', temp: '98.4', weight: '72', spo2: '99' }
-    },
-    {
-      id: 'demo-3',
-      patientName: 'Ananya Sharma',
-      name: 'Ananya Sharma',
-      registrationId: 'SPHDSN-126',
-      regId: 'SPHDSN-126',
-      phone: '9100987654',
-      branch: 'Kukatpally Branch',
-      source: 'Google Ads',
-      subject: 'Skin Allergy & Eczema',
-      diseases: 'Skin redness, itching',
-      vitals: { bp: '122/82', pulse: '70', temp: '98.6', weight: '58', spo2: '98' }
+  const [patients, setPatients] = useState<any[]>(() => {
+    const pool = receptionDataStore.getAllCollectionsPool();
+    if (initialPatient && !pool.some(p => p.id === initialPatient.id)) {
+      return [initialPatient, ...pool];
     }
-  ]);
+    return pool;
+  });
 
-  const [selectedPatientId, setSelectedPatientId] = useState<string>('demo-1');
+  const [selectedPatientId, setSelectedPatientId] = useState<string>(() => {
+    return initialPatient?.id || initialPatient?.patientId || '';
+  });
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Subscribe to live patients from Firestore
+  // Subscribe to live patients from receptionDataStore
   useEffect(() => {
-    let unsubApp: (() => void) | null = null;
-    let unsubPat: (() => void) | null = null;
-    let appList: any[] = [];
-    let patList: any[] = [];
-
-    const mergeList = () => {
-      const combined = [...appList, ...patList];
-      const uniqueMap = new Map<string, any>();
-
-      // Default demos first
-      patients.forEach(p => uniqueMap.set(p.id, p));
-
-      combined.forEach(p => {
-        const id = p.id || p.docId;
-        if (id && !uniqueMap.has(id)) {
-          uniqueMap.set(id, {
-            ...p,
-            patientName: p.patientName || p.name || 'Patient Name',
-            registrationId: p.registrationId || p.regId || `SPHDSN-${Math.floor(100 + Math.random() * 900)}`,
-            branch: p.branch || 'Dilshuknagar',
-            source: p.source || p.leadSource || 'Walk-in',
-            subject: p.subject || p.diseases || 'Consultation',
-          });
+    receptionDataStore.startListeners();
+    const unsub = receptionDataStore.subscribe((state) => {
+      const pool = state.allCollectionsPool;
+      setPatients(prev => {
+        if (initialPatient && !pool.some(p => p.id === initialPatient.id)) {
+          return [initialPatient, ...pool];
         }
+        return pool;
       });
-
-      setPatients(Array.from(uniqueMap.values()));
-    };
-
-    try {
-      unsubApp = onSnapshot(collection(db, 'appointments'), (snapshot) => {
-        appList = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
-        mergeList();
-      });
-      unsubPat = onSnapshot(collection(db, 'allpatients'), (snapshot) => {
-        patList = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
-        mergeList();
-      });
-    } catch (err) {
-      console.warn('Live patient subscription notice:', err);
-    }
-
-    return () => {
-      if (unsubApp) unsubApp();
-      if (unsubPat) unsubPat();
-    };
-  }, []);
+    });
+    return () => unsub();
+  }, [initialPatient]);
 
   // Update selected patient if initialPatient passed
   useEffect(() => {
     if (initialPatient) {
-      const pId = initialPatient.id || 'demo-1';
-      setSelectedPatientId(pId);
+      const pId = initialPatient.id || initialPatient.patientId || '';
+      if (pId) {
+        setSelectedPatientId(pId);
+      }
       setPatients(prev => {
         if (!prev.find(p => p.id === pId)) {
           return [initialPatient, ...prev];
@@ -129,7 +64,7 @@ export const PatientFilePage: React.FC<PatientFilePageProps> = ({ onBack, initia
     return name.includes(term) || reg.includes(term) || phone.includes(term);
   });
 
-  const activePatient = patients.find(p => p.id === selectedPatientId) || patients[0];
+  const activePatient = patients.find(p => p.id === selectedPatientId) || (initialPatient || patients[0]);
 
   return (
     <div style={{

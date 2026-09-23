@@ -5,14 +5,14 @@ import {
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { sendInvoiceWhatsAppNotification } from '@app/shared';
+import { sendInvoiceWhatsAppNotification, resolveCanonicalBranchId, getBranchPhone } from '@app/shared';
 import {
-  getSafeDb, doc, updateDoc, setDoc, getDocs, collection, query, where, arrayUnion, addDoc
+  getSafeDb, doc, updateDoc, setDoc, getDocs, collection, query, where, arrayUnion, addDoc, onSnapshot, limit
 } from '../utils/firebaseSafe';
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { SH_LOGO_BASE64 } from '../utils/logoBase64';
-import { createPaymentNotificationInFirestore } from '../utils/fcmService';
+import { createPaymentNotificationInFirestore, createFeeDiscountRequestNotificationInFirestore } from '../utils/fcmService';
 
 // Safe Firebase Storage reference
 const getFirebaseStorage = () => {
@@ -146,6 +146,15 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   const [discountInput, setDiscountInput] = useState<number>(0);
   const [showDiscountInput, setShowDiscountInput] = useState(false);
 
+  // HR Discount Request State
+  const [discountRequestId, setDiscountRequestId] = useState<string | null>(null);
+  const [discountRequestStatus, setDiscountRequestStatus] = useState<'none' | 'pending' | 'approved' | 'rejected'>('none');
+  const [requestedDiscountAmount, setRequestedDiscountAmount] = useState<number>(0);
+  const [approvedDiscountAmount, setApprovedDiscountAmount] = useState<number>(0);
+  const [discountReason, setDiscountReason] = useState<string>('');
+  const [hrRejectReason, setHrRejectReason] = useState<string>('');
+  const [isSubmittingDiscountRequest, setIsSubmittingDiscountRequest] = useState<boolean>(false);
+
   // Duration & Individual Medicine Items
   const [medicineDuration, setMedicineDuration] = useState<string>('1 Month');
   const [medicineItems, setMedicineItems] = useState<CheckoutMedicineItem[]>([]);
@@ -164,6 +173,11 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   const [uploadedPrescriptionList, setUploadedPrescriptionList] = useState<string[]>([]);
   const [isUploadingPrescription, setIsUploadingPrescription] = useState<boolean>(false);
   const [previewModalUrl, setPreviewModalUrl] = useState<string | null>(null);
+
+  // Performance Guard Refs to eliminate lag and prevent duplicate Firestore collection queries
+  const lastProcessedPatientIdRef = useRef<string | null>(null);
+  const lastInitPatientIdRef = useRef<string | null>(null);
+  const currentPatientDocId = String(selectedPatientForPayment?.id || selectedPatientForPayment?.patientDocId || selectedPatientForPayment?.patientId || '');
 
   const [paymentSuccessPopup, setPaymentSuccessPopup] = useState<{
     patientName: string;
@@ -219,14 +233,18 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     if (selectedPatientForPayment.prescriptionUrl) {
       initialList.push(selectedPatientForPayment.prescriptionUrl);
     }
-    setUploadedPrescriptionList(Array.from(new Set(initialList.filter(Boolean))));
+    const deduped = Array.from(new Set(initialList.filter(Boolean)));
+    setUploadedPrescriptionList(deduped);
+
+    // If prescription URLs already found directly on patient, skip redundant Firestore network query
+    if (deduped.length > 0) return;
 
     const fetchPrescriptions = async () => {
       try {
         const activeDb = getSafeDb();
         const targetId = selectedPatientForPayment.id || selectedPatientForPayment.patientDocId || selectedPatientForPayment.patientId;
         if (!targetId || !activeDb) return;
-        const q = query(collection(activeDb, 'prescriptions'), where('appointmentId', '==', targetId));
+        const q = query(collection(activeDb, 'prescriptions'), where('appointmentId', '==', targetId), limit(5));
         const snap = await getDocs(q);
         if (!snap.empty) {
           const found: string[] = [];
@@ -245,7 +263,60 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       }
     };
     fetchPrescriptions();
-  }, [selectedPatientForPayment, visible]);
+  }, [currentPatientDocId, visible]);
+
+  // Real-time listener for HR Fee / Discount Requests for this appointment
+  useEffect(() => {
+    if (!selectedPatientForPayment || !visible) return;
+    const targetId = selectedPatientForPayment.id || selectedPatientForPayment.patientDocId || selectedPatientForPayment.patientId;
+    const activeDb = getSafeDb();
+    if (!targetId || !activeDb) return;
+
+    if (selectedPatientForPayment.discountRequestStatus) {
+      const initStatus = selectedPatientForPayment.discountRequestStatus;
+      setDiscountRequestStatus(initStatus);
+      const reqAmt = Number(selectedPatientForPayment.requestedDiscount || selectedPatientForPayment.discount || 0);
+      setRequestedDiscountAmount(reqAmt);
+      setDiscountReason(selectedPatientForPayment.discountReason || '');
+      if (initStatus === 'approved') {
+        const appAmt = Number(selectedPatientForPayment.approvedDiscount || selectedPatientForPayment.discount || reqAmt);
+        setApprovedDiscountAmount(appAmt);
+        setDiscountInput(appAmt);
+      }
+    }
+
+    try {
+      const q = query(collection(activeDb, 'fee_requests'), where('appointmentId', '==', targetId), limit(5));
+      const unsub = onSnapshot(q, (snap) => {
+        if (!snap.empty) {
+          const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          docs.sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+          const latest: any = docs[0];
+          setDiscountRequestId(latest.id);
+          const st = (latest.status || 'pending').toLowerCase();
+          if (st === 'approved') {
+            setDiscountRequestStatus('approved');
+            const approvedAmt = Number(latest.approvedDiscount ?? latest.requestedDiscount ?? 0);
+            setApprovedDiscountAmount(approvedAmt);
+            setDiscountInput(approvedAmt);
+          } else if (st === 'rejected') {
+            setDiscountRequestStatus('rejected');
+            setHrRejectReason(latest.rejectReason || latest.hrNote || 'Discount request rejected by HR');
+            setDiscountInput(0);
+          } else {
+            setDiscountRequestStatus('pending');
+            setRequestedDiscountAmount(Number(latest.requestedDiscount || 0));
+            setDiscountReason(latest.reason || '');
+            setDiscountInput(0);
+          }
+        }
+      }, (err) => console.warn('mobile fee_requests listener error:', err));
+
+      return () => unsub();
+    } catch (e) {
+      console.warn('Error setting up mobile fee_requests listener:', e);
+    }
+  }, [currentPatientDocId, visible]);
 
   const handlePickPrescriptionFromGallery = async () => {
     if (!selectedPatientForPayment) return;
@@ -384,120 +455,148 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   };
 
   useEffect(() => {
-    if (selectedPatientForPayment) {
-      setPaymentSuccessPopup(null);
-      const mFee = Number(selectedPatientForPayment.pharmacyFee || selectedPatientForPayment.medicineFeeRequested || selectedPatientForPayment.medicineFee) || 0;
-      const cFee = mFee > 0 ? 0 : (selectedPatientForPayment.consultationFee !== undefined && selectedPatientForPayment.consultationFee !== null ? Number(selectedPatientForPayment.consultationFee) : 0);
-      const dFee = Number(selectedPatientForPayment.dietFee || selectedPatientForPayment.dietFeeAmount || selectedPatientForPayment.dietPlan?.dietFeeAmount || selectedPatientForPayment.dietPlan?.dietFee) || 0;
-      const oFee = Number(selectedPatientForPayment.otherCharges) || 0;
-      const disc = Number(selectedPatientForPayment.discount) || 0;
-
-      // Target Amount represents strictly the Doctor's Consultation + Medicine target (Diet Plan is completely separate)
-      const explicitTarget = selectedPatientForPayment.targetAmount ?? selectedPatientForPayment.target_amount;
-      let computedTarget = 0;
-      if (explicitTarget !== undefined && explicitTarget !== null && Number(explicitTarget) > 0) {
-        computedTarget = Number(explicitTarget);
-      } else if (mFee > 0) {
-        computedTarget = mFee;
-      } else if (selectedPatientForPayment.totalAmount !== undefined && selectedPatientForPayment.totalAmount !== null && Number(selectedPatientForPayment.totalAmount) > 0) {
-        // If totalAmount was provided, subtract diet fee so target is strictly consult + medicine
-        computedTarget = Math.max(0, Number(selectedPatientForPayment.totalAmount) - dFee);
-      } else if (cFee > 0) {
-        computedTarget = cFee;
-      } else {
-        computedTarget = 1000;
-      }
-
-      setDietFeeInput(dFee);
-      setOtherChargesInput(oFee);
-      setDiscountInput(disc);
-      setTargetAmount(computedTarget);
-
-      // Care Package fields strictly from doctor prescription if present, else clean empty
-      const presPkgTotal = Number(selectedPatientForPayment?.packageTotalAmount) || '';
-      const presPkgAdvance = Number(selectedPatientForPayment?.packageAdvancePaid ?? selectedPatientForPayment?.packageFee) || '';
-      const presPkgDuration = selectedPatientForPayment?.packageDuration || '3 Months';
-      setPackageTotalAmountInput(presPkgTotal);
-      setPackageAdvancePaidInput(presPkgAdvance);
-      setPackageDurationInput(presPkgDuration);
-
-      if (dFee > 0) {
-        setIncludeDietFee(true);
-      }
-
-      if (mFee > 0 && cFee > 0) {
-        setPaymentTypePreset('split');
-        setIncludeConsultFee(true);
-        setIncludeMedicineFee(true);
-        if (cFee + mFee <= computedTarget) {
-          setConsultFeeInput(cFee);
-          setMedicineFeeInput(mFee);
-        } else {
-          setConsultFeeInput(cFee);
-          setMedicineFeeInput(Math.max(0, computedTarget - cFee));
-        }
-      } else if (mFee > 0) {
-        setPaymentTypePreset('consultation_med');
-        setIncludeConsultFee(true);
-        setIncludeMedicineFee(false);
-        setConsultFeeInput(computedTarget);
-        setMedicineFeeInput(0);
-      } else {
-        setPaymentTypePreset('consultation');
-        setIncludeConsultFee(true);
-        setIncludeMedicineFee(false);
-        setConsultFeeInput(computedTarget > 0 ? computedTarget : 500);
-        setMedicineFeeInput(0);
-      }
-
-      if (isAlreadyPaid) {
-        setInvoiceApp(selectedPatientForPayment);
-      } else {
-        setInvoiceApp(null);
-      }
+    if (!visible || !selectedPatientForPayment) {
+      lastInitPatientIdRef.current = null;
+      return;
     }
-  }, [selectedPatientForPayment, visible]);
+    // Avoid re-running and wiping out user inputs if already initialized for this patient
+    if (lastInitPatientIdRef.current === currentPatientDocId) return;
+    lastInitPatientIdRef.current = currentPatientDocId;
 
-  // Query package_members with strict profile isolation
+    setPaymentSuccessPopup(null);
+    const mFee = Number(selectedPatientForPayment.pharmacyFee || selectedPatientForPayment.medicineFeeRequested || selectedPatientForPayment.medicineFee) || 0;
+    const cFee = mFee > 0 ? 0 : (selectedPatientForPayment.consultationFee !== undefined && selectedPatientForPayment.consultationFee !== null ? Number(selectedPatientForPayment.consultationFee) : 0);
+    const dFee = Number(selectedPatientForPayment.dietFee || selectedPatientForPayment.dietFeeAmount || selectedPatientForPayment.dietPlan?.dietFeeAmount || selectedPatientForPayment.dietPlan?.dietFee) || 0;
+    const oFee = Number(selectedPatientForPayment.otherCharges) || 0;
+    const disc = Number(selectedPatientForPayment.discount) || 0;
+
+    // Target Amount represents strictly the Doctor's Consultation + Medicine target (Diet Plan is completely separate)
+    const explicitTarget = selectedPatientForPayment.targetAmount ?? selectedPatientForPayment.target_amount;
+    let computedTarget = 0;
+    if (explicitTarget !== undefined && explicitTarget !== null && Number(explicitTarget) > 0) {
+      computedTarget = Number(explicitTarget);
+    } else if (mFee > 0) {
+      computedTarget = mFee;
+    } else if (selectedPatientForPayment.totalAmount !== undefined && selectedPatientForPayment.totalAmount !== null && Number(selectedPatientForPayment.totalAmount) > 0) {
+      // If totalAmount was provided, subtract diet fee so target is strictly consult + medicine
+      computedTarget = Math.max(0, Number(selectedPatientForPayment.totalAmount) - dFee);
+    } else if (cFee > 0) {
+      computedTarget = cFee;
+    } else {
+      computedTarget = 1000;
+    }
+
+    setDietFeeInput(dFee);
+    setOtherChargesInput(oFee);
+    setDiscountInput(disc);
+    setTargetAmount(computedTarget);
+
+    // Care Package fields strictly from doctor prescription if present, else clean empty
+    const presPkgTotal = Number(selectedPatientForPayment?.packageTotalAmount) || '';
+    const presPkgAdvance = Number(selectedPatientForPayment?.packageAdvancePaid ?? selectedPatientForPayment?.packageFee) || '';
+    const presPkgDuration = selectedPatientForPayment?.packageDuration || '3 Months';
+    setPackageTotalAmountInput(presPkgTotal);
+    setPackageAdvancePaidInput(presPkgAdvance);
+    setPackageDurationInput(presPkgDuration);
+
+    if (dFee > 0) {
+      setIncludeDietFee(true);
+    }
+
+    if (mFee > 0 && cFee > 0) {
+      setPaymentTypePreset('split');
+      setIncludeConsultFee(true);
+      setIncludeMedicineFee(true);
+      const cPortion = cFee < computedTarget ? cFee : Math.round(computedTarget / 2);
+      const mPortion = Math.max(0, computedTarget - cPortion);
+      setConsultFeeInput(cPortion);
+      setMedicineFeeInput(mPortion);
+      setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+    } else if (mFee > 0) {
+      setPaymentTypePreset('split');
+      setIncludeConsultFee(true);
+      setIncludeMedicineFee(true);
+      const cPortion = Math.max(0, computedTarget - mFee);
+      const mPortion = Math.min(mFee, computedTarget);
+      setConsultFeeInput(cPortion);
+      setMedicineFeeInput(mPortion);
+      setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+    } else {
+      setPaymentTypePreset('consultation');
+      setIncludeConsultFee(true);
+      setIncludeMedicineFee(false);
+      setConsultFeeInput(computedTarget > 0 ? computedTarget : 500);
+      setMedicineFeeInput(0);
+      setMedicineItems([]);
+    }
+
+    if (isAlreadyPaid) {
+      setInvoiceApp(selectedPatientForPayment);
+    } else {
+      setInvoiceApp(null);
+    }
+  }, [currentPatientDocId, visible]);
+
+  // Query package_members and check active duration with in-memory caching + targeted queries
   useEffect(() => {
     if (!selectedPatientForPayment || !visible) {
       setExistingActivePackage(null);
+      lastProcessedPatientIdRef.current = null;
       return;
     }
 
+    if (lastProcessedPatientIdRef.current === currentPatientDocId) return;
+    lastProcessedPatientIdRef.current = currentPatientDocId;
+
     const findPackage = async () => {
       try {
-        const activeDb = getSafeDb();
-        if (!activeDb) return;
-        const snap = await getDocs(collection(activeDb, 'package_members'));
         const targetDocId = String(selectedPatientForPayment.patientDocId || selectedPatientForPayment.patient_id || selectedPatientForPayment.patientId || selectedPatientForPayment.id || '').trim();
         const cleanReg = String(selectedPatientForPayment.regId || selectedPatientForPayment.registrationId || selectedPatientForPayment.patientId || '').trim().toLowerCase();
         const cleanPhone = String(selectedPatientForPayment.phone || selectedPatientForPayment.phoneNumber || '').replace(/\D/g, '').slice(-10);
         const patName = String(selectedPatientForPayment.patientName || selectedPatientForPayment.name || '').trim().toLowerCase();
 
+        // 1. Check in-memory store package members (instant, 0ms, no network freeze)
+        const localPkgs = receptionDataStore.getPackageMembers() || [];
         let found: any = null;
-        snap.forEach(docSnap => {
-          if (found) return;
-          const data = docSnap.data();
+        for (const data of localPkgs) {
           const expTime = data.expiryDate ? new Date(data.expiryDate).getTime() : Infinity;
-          if (!isNaN(expTime) && expTime < Date.now()) return;
+          if (!isNaN(expTime) && expTime < Date.now()) continue;
 
-          if (targetDocId && (data.patientDocId === targetDocId || docSnap.id === targetDocId || data.patientDocId === selectedPatientForPayment.id)) {
-            found = { id: docSnap.id, ...data };
-            return;
+          if (targetDocId && (data.patientDocId === targetDocId || data.id === targetDocId || data.patientDocId === selectedPatientForPayment.id)) {
+            found = data;
+            break;
           }
           if (cleanReg && data.patientId && String(data.patientId).trim().toLowerCase() === cleanReg) {
-            found = { id: docSnap.id, ...data };
-            return;
+            found = data;
+            break;
           }
           if (cleanPhone && data.phone && String(data.phone).replace(/\D/g, '').slice(-10) === cleanPhone) {
             const mName = String(data.patientName || data.name || '').trim().toLowerCase();
             if (patName && (mName === patName || mName.includes(patName) || patName.includes(mName))) {
-              found = { id: docSnap.id, ...data };
-              return;
+              found = data;
+              break;
             }
           }
-        });
+        }
+
+        // 2. Only if not in memory, query Firestore using TARGETED queries (never full table scan)
+        if (!found) {
+          const activeDb = getSafeDb();
+          if (activeDb && cleanPhone) {
+            const qPhone = query(collection(activeDb, 'package_members'), where('phone', '==', cleanPhone), limit(5));
+            const snap = await getDocs(qPhone);
+            snap.forEach(docSnap => {
+              if (found) return;
+              const data = { id: docSnap.id, ...docSnap.data() } as any;
+              const expTime = data.expiryDate ? new Date(data.expiryDate).getTime() : Infinity;
+              if (!isNaN(expTime) && expTime < Date.now()) return;
+              const mName = String(data.patientName || data.name || '').trim().toLowerCase();
+              if (!patName || mName === patName || mName.includes(patName) || patName.includes(mName)) {
+                found = data;
+              }
+            });
+          }
+        }
 
         if (found) {
           setExistingActivePackage(found);
@@ -518,11 +617,6 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
 
     const checkActiveDuration = async () => {
       try {
-        if (!selectedPatientForPayment || !visible) {
-          setActiveDurationInfo(null);
-          return;
-        }
-
         const cleanPhone = (selectedPatientForPayment.phone || selectedPatientForPayment.phoneNumber || '').replace(/\D/g, '').slice(-10);
         const targetDocId = String(selectedPatientForPayment.patientDocId || selectedPatientForPayment.patient_id || selectedPatientForPayment.patientId || selectedPatientForPayment.id || '');
         const patName = String(selectedPatientForPayment.patientName || selectedPatientForPayment.name || '').trim().toLowerCase();
@@ -563,7 +657,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
           console.warn('Error reading visit state from pool in mobile checkout:', poolErr);
         }
 
-        // Check current appointment fields first
+        // 2. Check current appointment fields first
         const curExpStr = selectedPatientForPayment.durationExpiryDate || selectedPatientForPayment.medicineDurationExpiryDate || selectedPatientForPayment.preferredFollowUpDate || selectedPatientForPayment.scheduledDate;
         if (curExpStr) {
           const expTime = new Date(curExpStr).getTime();
@@ -592,15 +686,12 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
           }
         }
 
-        // Query past completed appointments
-        const activeDb = getSafeDb();
-        if (!activeDb) return;
-        const snap = await getDocs(collection(activeDb, 'appointments'));
+        // 3. Check past completed appointments from local pool first (0ms)
+        const localPool = receptionDataStore.getAllCollectionsPool() || [];
         const pastList: any[] = [];
-        snap.forEach(docSnap => {
-          if (docSnap.id === selectedPatientForPayment.id) return;
-          const d = { id: docSnap.id, ...docSnap.data() } as any;
-          if (d.status !== 'completed' && d.paymentStatus !== 'paid') return;
+        for (const d of localPool) {
+          if (d.id === selectedPatientForPayment.id) continue;
+          if (d.status !== 'completed' && d.paymentStatus !== 'paid') continue;
 
           const dDocId = String(d.patientDocId || d.patient_id || d.patientId || d.id || '');
           const dReg = String(d.regId || d.registrationId || d.patientId || '').trim().toLowerCase();
@@ -610,7 +701,23 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
           if (targetDocId && (dDocId === targetDocId || d.patientDocId === selectedPatientForPayment.id)) pastList.push(d);
           else if (cleanReg && dReg === cleanReg) pastList.push(d);
           else if (cleanPhone && dPhone === cleanPhone && patName && (dName === patName || dName.includes(patName))) pastList.push(d);
-        });
+        }
+
+        // 4. If not found in local pool, query Firestore WITH TARGETED FILTERS (limit 5) - NEVER download entire collection
+        if (pastList.length === 0 && cleanPhone) {
+          const activeDb = getSafeDb();
+          if (activeDb) {
+            const qPhone = query(collection(activeDb, 'appointments'), where('phone', '==', cleanPhone), limit(5));
+            const snap = await getDocs(qPhone);
+            snap.forEach(docSnap => {
+              if (docSnap.id === selectedPatientForPayment.id) return;
+              const d = { id: docSnap.id, ...docSnap.data() } as any;
+              if (d.status === 'completed' || d.paymentStatus === 'paid') {
+                pastList.push(d);
+              }
+            });
+          }
+        }
 
         if (pastList.length > 0) {
           pastList.sort((a, b) => {
@@ -660,7 +767,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
 
     findPackage();
     checkActiveDuration();
-  }, [selectedPatientForPayment, visible]);
+  }, [currentPatientDocId, visible]);
 
   // Handle Preset Pills
   const handlePresetSelect = (preset: 'consultation' | 'consultation_med' | 'split' | 'package') => {
@@ -671,38 +778,41 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     const defaultConsult = Number(selectedPatientForPayment?.consultationFee) || 0;
 
     if (preset === 'consultation') {
+      // 100% of target amount goes directly into Consultation Fee (No Prescribed Medicines)
       setIncludeConsultFee(true);
       setIncludeMedicineFee(false);
       setConsultFeeInput(currTarget);
       setMedicineFeeInput(0);
+      setMedicineItems([]);
     } else if (preset === 'consultation_med') {
+      // Direct into combined Consultation & Medicine fee (No prescribed medicine item breakdown needed)
       setIncludeConsultFee(true);
       setIncludeMedicineFee(false);
       setConsultFeeInput(currTarget);
       setMedicineFeeInput(0);
+      setMedicineItems([]);
     } else if (preset === 'split') {
+      // Split wants BOTH Consultation Fee AND Prescribed Medicines Fee with itemized medicines
       setIncludeConsultFee(true);
       setIncludeMedicineFee(true);
-      // Split comes strictly from target amount only (e.g. 1000) and does not touch diet fee
-      const cPortion = currTarget > defaultConsult ? defaultConsult : Math.round(currTarget / 2);
+      setSelectedPaymentMode('Split');
+      const defaultC = defaultConsult > 0 && defaultConsult < currTarget ? defaultConsult : Math.round(currTarget / 2);
+      const cPortion = defaultC;
       const mPortion = Math.max(0, currTarget - cPortion);
       setConsultFeeInput(cPortion);
       setMedicineFeeInput(mPortion);
-      setSelectedPaymentMode('Split');
       if (mPortion > 0) {
         if (medicineItems.length === 0) {
-          // Starts with 1 medicine containing the full medicine target (e.g. 500)
-          setMedicineItems([
-            { id: '1', name: '', amount: mPortion, timing: '' }
-          ]);
+          setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
         } else {
-          // Evenly re-split across existing medicines
           const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
           setMedicineItems(prev => prev.map((item, i) => ({
             ...item,
             amount: splitAmounts[i]
           })));
         }
+      } else {
+        setMedicineItems([{ id: '1', name: '', amount: 0, timing: '' }]);
       }
     } else if (preset === 'package') {
       setIncludeConsultFee(false);
@@ -724,7 +834,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
 
   const handleAddMedicineRow = () => {
     const newCount = medicineItems.length + 1;
-    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : 500;
+    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
     const splitAmounts = distributeAmountEvenly(targetTotal, newCount);
 
     const updated = medicineItems.map((item, i) => ({
@@ -741,18 +851,25 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
 
     setMedicineItems(updated);
     setMedicineFeeInput(targetTotal);
+    if (includeConsultFee && targetAmount > 0) {
+      setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
+    }
   };
 
   const handleRemoveMedicineItem = (idx: number) => {
     const remaining = medicineItems.filter((_, i) => i !== idx);
     if (remaining.length > 0) {
-      const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : 500;
+      const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
       const splitAmounts = distributeAmountEvenly(targetTotal, remaining.length);
       const updated = remaining.map((item, i) => ({
         ...item,
         amount: splitAmounts[i]
       }));
       setMedicineItems(updated);
+      setMedicineFeeInput(targetTotal);
+      if (includeConsultFee && targetAmount > 0) {
+        setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
+      }
     } else {
       setMedicineItems([]);
     }
@@ -760,11 +877,33 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
 
   const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing', val: any) => {
     const updated = [...medicineItems];
-    updated[idx] = { ...updated[idx], [field]: val };
-    setMedicineItems(updated);
-    if (field === 'amount') {
-      const newTotal = updated.reduce((acc, m) => acc + (Number(m.amount) || 0), 0);
-      setMedicineFeeInput(newTotal);
+    if (field !== 'amount') {
+      updated[idx] = { ...updated[idx], [field]: val };
+      setMedicineItems(updated);
+      return;
+    }
+
+    const numVal = Math.max(0, Number(val) || 0);
+    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? targetAmount : 500);
+
+    if (updated.length <= 1) {
+      const safeVal = targetAmount > 0 && includeConsultFee ? Math.min(numVal, targetAmount) : numVal;
+      updated[0] = { ...updated[0], amount: safeVal };
+      setMedicineItems(updated);
+      setMedicineFeeInput(safeVal);
+      if (includeConsultFee && targetAmount > 0) {
+        setConsultFeeInput(Math.max(0, targetAmount - safeVal));
+      }
+    } else {
+      const cappedVal = Math.min(numVal, targetTotal);
+      updated[idx] = { ...updated[idx], amount: cappedVal };
+      const remainingAmount = Math.max(0, targetTotal - cappedVal);
+      const otherIndices = updated.map((_, i) => i).filter(i => i !== idx);
+      const otherSplits = distributeAmountEvenly(remainingAmount, otherIndices.length);
+      otherIndices.forEach((otherIdx, i) => {
+        updated[otherIdx] = { ...updated[otherIdx], amount: otherSplits[i] };
+      });
+      setMedicineItems(updated);
     }
   };
 
@@ -772,41 +911,56 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     setTargetAmount(newTarget);
     const defaultConsult = Number(selectedPatientForPayment?.consultationFee) || 0;
     if (paymentTypePreset === 'package') {
-      // When preset is package, doctor's target fee is ignored - package has its own package amount
       return;
     }
     if (newTarget > 0) {
-      if (paymentTypePreset === 'split') {
+      if (paymentTypePreset === 'consultation' || paymentTypePreset === 'consultation_med') {
+        setConsultFeeInput(newTarget);
+        setMedicineFeeInput(0);
+        setMedicineItems([]);
         setIncludeConsultFee(true);
-        setIncludeMedicineFee(true);
-        const cPortion = newTarget > defaultConsult && defaultConsult > 0 ? defaultConsult : Math.round(newTarget / 2);
+        setIncludeMedicineFee(false);
+      } else if (paymentTypePreset === 'split' || (includeMedicineFee && includeConsultFee)) {
+        const cPortion = defaultConsult > 0 && defaultConsult < newTarget ? defaultConsult : Math.round(newTarget / 2);
         const mPortion = Math.max(0, newTarget - cPortion);
         setConsultFeeInput(cPortion);
         setMedicineFeeInput(mPortion);
+        setIncludeConsultFee(true);
+        setIncludeMedicineFee(true);
         if (mPortion > 0) {
+          const count = medicineItems.length > 0 ? medicineItems.length : 1;
+          const splitAmounts = distributeAmountEvenly(mPortion, count);
           if (medicineItems.length === 0) {
             setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
           } else {
-            const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
             setMedicineItems(prev => prev.map((item, i) => ({
               ...item,
               amount: splitAmounts[i]
             })));
           }
         }
+      } else if (includeMedicineFee) {
+        setMedicineFeeInput(newTarget);
+        setConsultFeeInput(0);
+        const count = medicineItems.length > 0 ? medicineItems.length : 1;
+        const splitAmounts = distributeAmountEvenly(newTarget, count);
+        if (medicineItems.length === 0) {
+          setMedicineItems([{ id: '1', name: '', amount: newTarget, timing: '' }]);
+        } else {
+          setMedicineItems(prev => prev.map((item, i) => ({
+            ...item,
+            amount: splitAmounts[i]
+          })));
+        }
       } else {
-        // consultation or consultation_med
-        setIncludeConsultFee(true);
         setConsultFeeInput(newTarget);
         setMedicineFeeInput(0);
+        setMedicineItems([]);
       }
     } else {
       setConsultFeeInput(0);
       setMedicineFeeInput(0);
-      if (activeDurationInfo) {
-        setIncludeConsultFee(false);
-        setIncludeMedicineFee(false);
-      }
+      setMedicineItems([]);
     }
   };
 
@@ -820,8 +974,11 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     if (includeMedicineFee && targetAmount > 0) {
       const mPortion = Math.max(0, targetAmount - cappedVal);
       setMedicineFeeInput(mPortion);
-      if (medicineItems.length > 0) {
-        const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
+      const count = medicineItems.length > 0 ? medicineItems.length : 1;
+      const splitAmounts = distributeAmountEvenly(mPortion, count);
+      if (medicineItems.length === 0) {
+        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+      } else {
         setMedicineItems(prev => prev.map((item, i) => ({
           ...item,
           amount: splitAmounts[i]
@@ -840,8 +997,11 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     if (includeConsultFee && targetAmount > 0) {
       setConsultFeeInput(Math.max(0, targetAmount - cappedVal));
     }
-    if (medicineItems.length > 0) {
-      const splitAmounts = distributeAmountEvenly(cappedVal, medicineItems.length);
+    const count = medicineItems.length > 0 ? medicineItems.length : 1;
+    const splitAmounts = distributeAmountEvenly(cappedVal, count);
+    if (medicineItems.length === 0) {
+      setMedicineItems([{ id: '1', name: '', amount: cappedVal, timing: '' }]);
+    } else {
       setMedicineItems(prev => prev.map((item, i) => ({
         ...item,
         amount: splitAmounts[i]
@@ -853,7 +1013,12 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   const activeDietFee = includeDietFee ? dietFeeInput : 0;
   const activeOtherCharges = includeOtherCharges ? otherChargesInput : 0;
   const isPackageCoveredFully = existingActivePackage && Number(existingActivePackage.remainingAmount || 0) <= 0;
-  const baseDue = activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges - discountInput;
+
+  const effectiveDiscount = discountRequestStatus === 'approved'
+    ? Number(approvedDiscountAmount || discountInput)
+    : 0;
+
+  const baseDue = activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges - effectiveDiscount;
   let totalAmountDue = Math.max(0, baseDue);
   if (isPackageCoveredFully) {
     totalAmountDue = 0;
@@ -862,6 +1027,88 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   } else if (!existingActivePackage && paymentTypePreset === 'package') {
     totalAmountDue = Number(packageAdvancePaidInput) || 0;
   }
+
+  const handleSubmitDiscountRequest = async () => {
+    if (!selectedPatientForPayment) return;
+    const targetId = selectedPatientForPayment.id || selectedPatientForPayment.patientDocId || selectedPatientForPayment.patientId;
+    const activeDb = getSafeDb();
+    if (!targetId || !activeDb) return;
+
+    if (requestedDiscountAmount <= 0) {
+      Alert.alert('Validation Error', 'Please enter a valid discount amount greater than 0.');
+      return;
+    }
+    if (!discountReason || !discountReason.trim()) {
+      Alert.alert('Validation Error', 'Please enter a note / reason for requesting the discount (Mandatory).');
+      return;
+    }
+
+    const currentTotalBeforeDiscount = activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges;
+    if (requestedDiscountAmount > currentTotalBeforeDiscount) {
+      Alert.alert('Validation Error', `Requested discount (₹${requestedDiscountAmount}) cannot exceed the total bill amount (₹${currentTotalBeforeDiscount}).`);
+      return;
+    }
+
+    setIsSubmittingDiscountRequest(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const requestPayload = {
+        appointmentId: targetId,
+        patientDocId: selectedPatientForPayment.patientDocId || targetId,
+        patientName: patientName,
+        patientPhone: patientPhone,
+        branch: selectedPatientForPayment.branch || selectedPatientForPayment.branchName || 'Main Branch',
+        branchId: resolveCanonicalBranchId(selectedPatientForPayment.branch || selectedPatientForPayment.branchName),
+        originalTotalAmount: currentTotalBeforeDiscount,
+        requestedDiscount: requestedDiscountAmount,
+        reason: discountReason.trim(),
+        status: 'pending',
+        createdAt: nowIso,
+        requestedAt: nowIso,
+        requestedBy: 'Reception',
+        type: 'medicine_discount'
+      };
+
+      const docRef = await addDoc(collection(activeDb, 'fee_requests'), requestPayload);
+      setDiscountRequestId(docRef.id);
+      setDiscountRequestStatus('pending');
+      setShowDiscountInput(false);
+
+      const updatePayload = {
+        discountRequestId: docRef.id,
+        discountRequestStatus: 'pending',
+        requestedDiscount: requestedDiscountAmount,
+        discountReason: discountReason.trim(),
+        discount: 0,
+        discountInput: 0,
+        updatedAt: nowIso
+      };
+      await updateDoc(doc(activeDb, 'appointments', targetId), updatePayload).catch(() => {});
+      await updateDoc(doc(activeDb, 'allpatients', targetId), updatePayload).catch(() => {});
+      await updateDoc(doc(activeDb, 'patients', targetId), updatePayload).catch(() => {});
+
+      // Send Push & In-App Notification to HR & Admin
+      createFeeDiscountRequestNotificationInFirestore({
+        patientName: patientName,
+        patientPhone: patientPhone,
+        branch: requestPayload.branch,
+        requestedDiscount: requestedDiscountAmount,
+        originalTotalAmount: currentTotalBeforeDiscount,
+        reason: discountReason.trim(),
+        appointmentId: targetId
+      }).catch(() => {});
+
+      Alert.alert(
+        '✓ Request Submitted',
+        'Discount request successfully submitted to HR for approval!\n\nStatus is currently PENDING. The discount will only be applied to the bill once HR reviews and approves.'
+      );
+    } catch (err: any) {
+      console.error('Error submitting discount request:', err);
+      Alert.alert('Error', 'Failed to submit discount request. Please try again.');
+    } finally {
+      setIsSubmittingDiscountRequest(false);
+    }
+  };
   const hasPrescription = uploadedPrescriptionList.length > 0 || Boolean(selectedPatientForPayment?.canvasPrescriptionUrl) || Boolean(selectedPatientForPayment?.prescriptionUrl);
   const handleConfirmCheckout = async () => {
     if (!selectedPatientForPayment) return;
@@ -955,7 +1202,10 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       medicineFee: isPkg ? 0 : activeMedicineFee,
       dietFee: isPkg ? 0 : activeDietFee,
       otherCharges: isPkg ? 0 : activeOtherCharges,
-      discount: discountInput,
+      discount: effectiveDiscount,
+      discountRequestStatus: discountRequestStatus,
+      discountReason: discountReason || '',
+      discountRequestId: discountRequestId || null,
       targetAmount: isPkg ? totalAmountDue : targetAmount,
       totalPaid: totalAmountDue,
       paymentMode: paymentModeText,
@@ -1168,8 +1418,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 6 }}>
               <Image source={require('../assets/sh_logo.png')} style={{ width: 150, height: 48, resizeMode: 'contain' }} />
               <View style={{ alignItems: 'flex-end' }}>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: '#334155' }}>www.spiritualhomeoclinic.com</Text>
-                <Text style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>support@spiritualhomeo.com</Text>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#334155' }}>spiritualhomeoclinic.com</Text>
+                <Text style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>support@spiritualhomeoclinic.com</Text>
               </View>
             </View>
 
@@ -1225,7 +1475,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 9.5, fontWeight: '700', color: '#64748b' }}>SPECIALTY</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: '#0f172a', marginTop: 1 }}>General Homeopathy</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: '#0f172a', marginTop: 1 }}>Homeopathy</Text>
                   </View>
                 </View>
               </View>
@@ -1381,18 +1631,18 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
             <View style={{ marginBottom: 16 }}>
               <Text style={{ fontSize: 10, color: '#94a3b8' }}>Payment ID: WALKIN_{(activeInvoice.paymentMode || 'UPI').toUpperCase().replace(/\s+/g, '_')}</Text>
               <Text style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>Issued At: {new Date().toLocaleDateString('en-GB')}, {new Date().toLocaleTimeString()}</Text>
-              <Text style={{ fontSize: 10, color: '#cbd5e1', textAlign: 'center', marginTop: 10 }}>This is a computer generated bill.</Text>
+              <Text style={{ fontSize: 10, color: '#64748b', textAlign: 'center', marginTop: 10, fontWeight: '500' }}>This is a computer generated bill. No signature is required.</Text>
             </View>
 
             {/* 7. Bottom Lime Green Banner Bar */}
             <View style={{
-              backgroundColor: '#99cc00', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 4,
-              flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'
+              backgroundColor: '#99cc00', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 6,
+              flexDirection: 'row', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 10
             }}>
-              <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '700' }}>📞 9069176176</Text>
-              <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '700' }}>✉️ support@spiritualhomeo.com</Text>
-              <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '700' }}>🌐 spiritualhomeoclinic.com</Text>
-              <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '700' }}>📍 {(activeInvoice.branch || 'KPHB').toUpperCase()}</Text>
+              <Text style={{ color: '#ffffff', fontSize: 10.5, fontWeight: '700' }}>📞 {getBranchPhone(activeInvoice.branch)}</Text>
+              <Text style={{ color: '#ffffff', fontSize: 10.5, fontWeight: '700' }}>✉️ support@spiritualhomeoclinic.com</Text>
+              <Text style={{ color: '#ffffff', fontSize: 10.5, fontWeight: '700' }}>🌐 spiritualhomeoclinic.com</Text>
+              <Text style={{ color: '#ffffff', fontSize: 10.5, fontWeight: '700' }}>📍 {(activeInvoice.branch || 'KPHB').toUpperCase()}</Text>
             </View>
           </ScrollView>
 
@@ -1437,8 +1687,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                         <img src="data:image/png;base64,${SH_LOGO_BASE64}" width="260" height="52" style="height: 52px; width: 260px; max-width: 280px; object-fit: contain; display: block;" alt="SPIRITUAL HOMEOPATHY" />
                       </div>
                       <div style="text-align: right; font-size: 11px; font-weight: 700; color: #334155; line-height: 1.4;">
-                        <div>www.spiritualhomeoclinic.com</div>
-                        <div style="color: #64748b; font-weight: 500;">support@spiritualhomeo.com</div>
+                        <div>spiritualhomeoclinic.com</div>
+                        <div style="color: #64748b; font-weight: 500;">support@spiritualhomeoclinic.com</div>
                       </div>
                     </div>
                     <div class="lime-bar"></div>
@@ -1453,7 +1703,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                       <div class="grid-cell"><div class="label">CONSULTANT DOCTOR</div><div class="val">${activeInvoice?.doctorName || activeInvoice?.doctor || 'Dr. Prashanth k vaidya'}</div></div>
                       <div class="grid-cell"><div class="label">CLINIC BRANCH</div><div class="val">${activeInvoice?.branch || 'Kphb'}</div></div>
                       <div class="grid-cell"><div class="label">APPOINTMENT SCHEDULE</div><div class="val">${activeInvoice?.appointmentDate || activeInvoice?.date || new Date().toLocaleDateString('en-GB')} at ${activeInvoice?.timeSlot || activeInvoice?.time || '01:00 PM'}</div></div>
-                      <div class="grid-cell"><div class="label">SPECIALTY</div><div class="val">General Homeopathy</div></div>
+                      <div class="grid-cell"><div class="label">SPECIALTY</div><div class="val">Homeopathy</div></div>
                     </div>
                     <div class="section-head">PAYMENT INFORMATION</div>
                     <div class="pay-box">
@@ -1491,16 +1741,16 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     : ''
                   }
                         ${activeInvoice?.paymentTypePreset === 'consultation_med'
-                          ? `<tr><td>Consultation and Medicine</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
-                          : `
+                    ? `<tr><td>Consultation and Medicine</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
+                    : `
                             ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
-                              ? activeInvoice.medicines.map((m: any, idx: number) => {
-                                  const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
-                                  const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
-                                  const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                                  return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
-                                }).join('')
-                              : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
+                       ? activeInvoice.medicines.map((m: any, idx: number) => {
+                         const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                         const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
+                         const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
+                         return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                       }).join('')
+                       : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
                             ${Number(activeInvoice?.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee).toFixed(2)}</td></tr>` : ''}
                           `}
                         ${Number(activeInvoice?.dietFee) > 0 ? `<tr><td>Diet & Nutrition Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.dietFee).toFixed(2)}</td></tr>` : ''}
@@ -1513,12 +1763,12 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     <div class="meta-info">
                       <div>Payment ID: WALKIN_${(activeInvoice?.paymentMode || 'UPI').toUpperCase().replace(/\s+/g, '_')}</div>
                       <div>Issued At: ${new Date().toLocaleDateString('en-GB')}, ${new Date().toLocaleTimeString()}</div>
-                      <div style="text-align: center; margin-top: 12px; color: #94a3b8;">This is a computer generated bill.</div>
+                      <div style="text-align: center; margin-top: 12px; color: #94a3b8;">This is a computer generated bill. No signature is required.</div>
                     </div>
                     <div class="footer-bar">
-                      <div style="white-space: nowrap;">📞 9069176176</div>
-                      <div style="white-space: nowrap;">✉️ support@spiritualhomeo.com</div>
-                      <div style="white-space: nowrap;">🌐 www.spiritualhomeoclinic.com</div>
+                      <div style="white-space: nowrap;">📞 ${getBranchPhone(activeInvoice?.branch)}</div>
+                      <div style="white-space: nowrap;">✉️ support@spiritualhomeoclinic.com</div>
+                      <div style="white-space: nowrap;">🌐 spiritualhomeoclinic.com</div>
                       <div style="white-space: nowrap;">📍 ${(activeInvoice?.branch || 'KPHB').toUpperCase()}</div>
                     </div>
                   </body>
@@ -1598,8 +1848,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                         <div class="brand-sub">Multispecialty Homeopathy Clinic</div>
                       </div>
                       <div style="text-align: right; font-size: 11px; font-weight: 700; color: #334155; line-height: 1.4;">
-                        <div>www.spiritualhomeoclinic.com</div>
-                        <div style="color: #64748b; font-weight: 500;">support@spiritualhomeo.com</div>
+                        <div>spiritualhomeoclinic.com</div>
+                        <div style="color: #64748b; font-weight: 500;">support@spiritualhomeoclinic.com</div>
                       </div>
                     </div>
                     <div class="lime-bar"></div>
@@ -1614,7 +1864,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                       <div class="grid-cell"><div class="label">CONSULTANT DOCTOR</div><div class="val">${activeInvoice?.doctorName || activeInvoice?.doctor || 'Dr. Prashanth k vaidya'}</div></div>
                       <div class="grid-cell"><div class="label">CLINIC BRANCH</div><div class="val">${activeInvoice?.branch || 'Kphb'}</div></div>
                       <div class="grid-cell"><div class="label">APPOINTMENT SCHEDULE</div><div class="val">${activeInvoice?.appointmentDate || activeInvoice?.date || new Date().toLocaleDateString('en-GB')} at ${activeInvoice?.timeSlot || activeInvoice?.time || '01:00 PM'}</div></div>
-                      <div class="grid-cell"><div class="label">SPECIALTY</div><div class="val">General Homeopathy</div></div>
+                      <div class="grid-cell"><div class="label">SPECIALTY</div><div class="val">Homeopathy</div></div>
                     </div>
                     <div class="section-head">PAYMENT INFORMATION</div>
                     <div class="pay-box">
@@ -1652,16 +1902,16 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     : ''
                   }
                         ${activeInvoice?.paymentTypePreset === 'consultation_med'
-                          ? `<tr><td>Consultation and Medicine</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
-                          : `
+                    ? `<tr><td>Consultation and Medicine</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
+                    : `
                             ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
-                              ? activeInvoice.medicines.map((m: any, idx: number) => {
-                                  const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
-                                  const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
-                                  const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                                  return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
-                                }).join('')
-                              : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
+                      ? activeInvoice.medicines.map((m: any, idx: number) => {
+                        const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                        const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
+                        const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
+                        return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                      }).join('')
+                      : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
                             ${Number(activeInvoice?.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee).toFixed(2)}</td></tr>` : ''}
                           `}
                         ${Number(activeInvoice?.dietFee) > 0 ? `<tr><td>Diet & Nutrition Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.dietFee).toFixed(2)}</td></tr>` : ''}
@@ -1674,12 +1924,12 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     <div class="meta-info">
                       <div>Payment ID: WALKIN_${(activeInvoice?.paymentMode || 'UPI').toUpperCase().replace(/\s+/g, '_')}</div>
                       <div>Issued At: ${new Date().toLocaleDateString('en-GB')}, ${new Date().toLocaleTimeString()}</div>
-                      <div style="text-align: center; margin-top: 12px; color: #94a3b8;">This is a computer generated bill.</div>
+                      <div style="text-align: center; margin-top: 12px; color: #94a3b8;">This is a computer generated bill. No signature is required.</div>
                     </div>
                     <div class="footer-bar">
-                      <div style="white-space: nowrap;">📞 9069176176</div>
-                      <div style="white-space: nowrap;">✉️ support@spiritualhomeo.com</div>
-                      <div style="white-space: nowrap;">🌐 www.spiritualhomeoclinic.com</div>
+                      <div style="white-space: nowrap;">📞 ${getBranchPhone(activeInvoice?.branch)}</div>
+                      <div style="white-space: nowrap;">✉️ support@spiritualhomeoclinic.com</div>
+                      <div style="white-space: nowrap;">🌐 spiritualhomeoclinic.com</div>
                       <div style="white-space: nowrap;">📍 ${(activeInvoice?.branch || 'KPHB').toUpperCase()}</div>
                     </div>
                   </body>
@@ -2306,7 +2556,9 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     <TextInput
                       style={styles.feeNumberInput}
                       keyboardType="numeric"
-                      value={String(consultFeeInput)}
+                      value={consultFeeInput === 0 ? '' : String(consultFeeInput)}
+                      placeholder="0"
+                      placeholderTextColor="#94a3b8"
                       onChangeText={(v) => handleConsultFeeChange(Number(v) || 0)}
                     />
                   </View>
@@ -2316,13 +2568,11 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                 <View style={[
                   styles.feeCard,
                   includeMedicineFee && styles.feeCardActive,
-                  paymentTypePreset === 'consultation_med' && { opacity: 0.5, backgroundColor: '#f8fafc' },
-                  includeMedicineFee && paymentTypePreset !== 'consultation_med' && { flexDirection: 'column', alignItems: 'stretch' }
+                  includeMedicineFee && { flexDirection: 'column', alignItems: 'stretch' }
                 ]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     <TouchableOpacity
                       style={styles.feeCardCheckRow}
-                      disabled={paymentTypePreset === 'consultation_med'}
                       onPress={() => setIncludeMedicineFee(!includeMedicineFee)}
                       activeOpacity={0.8}
                     >
@@ -2332,30 +2582,29 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                         color={includeMedicineFee ? "#258ec8" : "#cbd5e1"}
                       />
                       <View style={{ flex: 1, marginLeft: 10 }}>
-                        <Text style={[styles.feeTitle, paymentTypePreset === 'consultation_med' && { color: '#64748b' }]}>
+                        <Text style={styles.feeTitle}>
                           Prescribed Medicines
                         </Text>
                         <Text style={styles.feeSubtext}>
-                          {paymentTypePreset === 'consultation_med'
-                            ? 'Disabled (Included in Consultation & Med Fee)'
-                            : 'Prescribed Remedies / Pharmacy Fee'}
+                          Prescribed Remedies / Pharmacy Fee
                         </Text>
                       </View>
                     </TouchableOpacity>
                     <View style={styles.feeInputWrapper}>
-                      <Text style={[styles.rupeeSymbolSmall, paymentTypePreset === 'consultation_med' && { color: '#94a3b8' }]}>₹</Text>
+                      <Text style={styles.rupeeSymbolSmall}>₹</Text>
                       <TextInput
-                        editable={paymentTypePreset !== 'consultation_med'}
-                        style={[styles.feeNumberInput, paymentTypePreset === 'consultation_med' && { color: '#94a3b8' }]}
+                        style={styles.feeNumberInput}
                         keyboardType="numeric"
-                        value={String(medicineFeeInput)}
+                        value={medicineFeeInput === 0 ? '' : String(medicineFeeInput)}
+                        placeholder="0"
+                        placeholderTextColor="#94a3b8"
                         onChangeText={(v) => handleMedicineFeeChange(Number(v) || 0)}
                       />
                     </View>
                   </View>
 
                   {/* Duration selector & Add Medicine list */}
-                  {includeMedicineFee && paymentTypePreset !== 'consultation_med' && (
+                  {includeMedicineFee && (
                     <View style={{
                       marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#f1f5f9'
                     }}>
@@ -2412,6 +2661,29 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                           <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#1d4ed8' }}>Add Medicine</Text>
                         </TouchableOpacity>
                       </View>
+
+                      {/* Live Sync Verification Badge */}
+                      {(() => {
+                        const itemizedSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+                        const isMatchingMed = itemizedSum === Number(medicineFeeInput);
+                        return (
+                          <View style={{
+                            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                            paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginBottom: 10,
+                            backgroundColor: isMatchingMed ? '#f0fdf4' : '#fffbeb',
+                            borderWidth: 1, borderColor: isMatchingMed ? '#86efac' : '#fde68a'
+                          }}>
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569' }}>
+                              Prescription Target: <Text style={{ color: '#0f172a', fontWeight: '800' }}>₹{medicineFeeInput}</Text>
+                              {' '}|{' '}
+                              Itemized: <Text style={{ color: isMatchingMed ? '#16a34a' : '#d97706', fontWeight: '800' }}>₹{itemizedSum}</Text>
+                            </Text>
+                            <Text style={{ fontSize: 11, fontWeight: '800', color: isMatchingMed ? '#16a34a' : '#d97706' }}>
+                              {isMatchingMed ? '✓ 100% Matches' : '⚠️ Equalizing...'}
+                            </Text>
+                          </View>
+                        );
+                      })()}
 
                       {/* Medicine Items Rows */}
                       {medicineItems.map((item, idx) => (
@@ -2470,7 +2742,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                               keyboardType="numeric"
                               placeholder="0"
                               placeholderTextColor="#94a3b8"
-                              value={String(item.amount)}
+                              value={item.amount === 0 ? '' : String(item.amount)}
                               onChangeText={(v) => handleUpdateMedicineItem(idx, 'amount', Number(v) || 0)}
                               style={{
                                 flex: 1, textAlign: 'right', fontSize: 12, fontWeight: '700', color: '#0f172a', padding: 0
@@ -2511,35 +2783,165 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     <TextInput
                       style={styles.feeNumberInput}
                       keyboardType="numeric"
-                      value={String(dietFeeInput)}
+                      value={dietFeeInput === 0 ? '' : String(dietFeeInput)}
+                      placeholder="0"
+                      placeholderTextColor="#94a3b8"
                       onChangeText={(v) => setDietFeeInput(Number(v) || 0)}
                     />
                   </View>
                 </View>
 
                 {/* Medicine Discount Status Section */}
-                <View style={styles.discountSectionCard}>
-                  <Text style={styles.discountSectionTitle}>Medicine Discount Status</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
-                    <TouchableOpacity
-                      style={styles.requestDiscountBtn}
-                      onPress={() => setShowDiscountInput(!showDiscountInput)}
-                    >
-                      <Text style={styles.requestDiscountBtnText}>Request Discount</Text>
-                    </TouchableOpacity>
-
-                    {showDiscountInput && (
-                      <View style={styles.discountInputWrapper}>
-                        <Text style={{ fontSize: 13, fontWeight: '700', color: '#ef4444', marginRight: 4 }}>- ₹</Text>
-                        <TextInput
-                          style={styles.discountInput}
-                          keyboardType="numeric"
-                          value={String(discountInput)}
-                          onChangeText={(v) => setDiscountInput(Number(v) || 0)}
-                        />
+                <View style={[styles.discountSectionCard, { borderLeftWidth: 3.5, borderLeftColor: discountRequestStatus === 'approved' ? '#16a34a' : discountRequestStatus === 'pending' ? '#d97706' : discountRequestStatus === 'rejected' ? '#dc2626' : '#cbd5e1' }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <View>
+                      <Text style={styles.discountSectionTitle}>Medicine Discount Status</Text>
+                      <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                        HR Approval Required • Locked until approved
+                      </Text>
+                    </View>
+                    {discountRequestStatus === 'pending' && (
+                      <View style={{ backgroundColor: '#fef3c7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, borderWidth: 1, borderColor: '#fde68a' }}>
+                        <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#b45309' }}>⏳ Pending HR Approval</Text>
+                      </View>
+                    )}
+                    {discountRequestStatus === 'approved' && (
+                      <View style={{ backgroundColor: '#dcfce7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, borderWidth: 1, borderColor: '#86efac' }}>
+                        <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#15803d' }}>✓ Approved (-₹{effectiveDiscount})</Text>
+                      </View>
+                    )}
+                    {discountRequestStatus === 'rejected' && (
+                      <View style={{ backgroundColor: '#fee2e2', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, borderWidth: 1, borderColor: '#fca5a5' }}>
+                        <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#b91c1c' }}>❌ Rejected by HR</Text>
                       </View>
                     )}
                   </View>
+
+                  {/* Pending View */}
+                  {discountRequestStatus === 'pending' && (
+                    <View style={{ marginTop: 10, backgroundColor: '#fffbeb', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#fef3c7' }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#92400e' }}>
+                          Requested Discount: <Text style={{ color: '#b45309', fontWeight: '800' }}>₹{requestedDiscountAmount}</Text>
+                        </Text>
+                        <Text style={{ fontSize: 10.5, color: '#b45309', fontWeight: '700' }}>Awaiting HR action</Text>
+                      </View>
+                      <Text style={{ fontSize: 11.5, color: '#78350f', lineHeight: 16 }}>
+                        <Text style={{ fontWeight: '700' }}>Reason: </Text>{discountReason || 'No note specified'}
+                      </Text>
+                      <Text style={{ fontSize: 10.5, color: '#92400e', fontStyle: 'italic', marginTop: 6 }}>
+                        🔒 Amount is locked and will NOT deduct from total until approved by HR.
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Approved View */}
+                  {discountRequestStatus === 'approved' && (
+                    <View style={{ marginTop: 10, backgroundColor: '#f0fdf4', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#bbf7d0', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 12.5, fontWeight: '800', color: '#166534' }}>
+                          Discount Applied: ₹{effectiveDiscount}
+                        </Text>
+                        {discountReason ? (
+                          <Text style={{ fontSize: 11, color: '#15803d', marginTop: 2 }}>
+                            Reason: {discountReason}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text style={{ fontSize: 13.5, fontWeight: '900', color: '#16a34a' }}>- ₹{effectiveDiscount}</Text>
+                    </View>
+                  )}
+
+                  {/* Rejected View */}
+                  {discountRequestStatus === 'rejected' && (
+                    <View style={{ marginTop: 10, backgroundColor: '#fef2f2', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#fecaca' }}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: '#991b1b', marginBottom: 2 }}>
+                        Request was rejected by HR
+                      </Text>
+                      {hrRejectReason ? (
+                        <Text style={{ fontSize: 11.5, color: '#b91c1c', marginBottom: 6 }}>
+                          Note: {hrRejectReason}
+                        </Text>
+                      ) : null}
+                      <TouchableOpacity
+                        onPress={() => {
+                          setDiscountRequestStatus('none');
+                          setShowDiscountInput(true);
+                        }}
+                        style={{ alignSelf: 'flex-start', backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#fca5a5', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#b91c1c' }}>Submit Revised Request</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {/* Request Button */}
+                  {discountRequestStatus === 'none' && !showDiscountInput && (
+                    <View style={{ marginTop: 10 }}>
+                      <TouchableOpacity
+                        style={styles.requestDiscountBtn}
+                        onPress={() => setShowDiscountInput(true)}
+                      >
+                        <Text style={styles.requestDiscountBtnText}>Request Discount</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {/* Request Form */}
+                  {discountRequestStatus === 'none' && showDiscountInput && (
+                    <View style={{ marginTop: 10, backgroundColor: '#f8fafc', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#e2e8f0', gap: 8 }}>
+                      <View>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 4 }}>
+                          Discount Amount (₹) *
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5 }}>
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: '#ef4444', marginRight: 4 }}>- ₹</Text>
+                          <TextInput
+                            keyboardType="numeric"
+                            placeholder="0"
+                            placeholderTextColor="#94a3b8"
+                            value={requestedDiscountAmount === 0 ? '' : String(requestedDiscountAmount)}
+                            onChangeText={v => setRequestedDiscountAmount(Math.max(0, Number(v) || 0))}
+                            style={{ flex: 1, textAlign: 'right', fontSize: 13, fontWeight: '700', color: '#ef4444', padding: 0 }}
+                          />
+                        </View>
+                      </View>
+
+                      <View>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 4 }}>
+                          Reason / Note for Request *
+                        </Text>
+                        <TextInput
+                          placeholder="e.g. Senior citizen, Special family discount"
+                          placeholderTextColor="#94a3b8"
+                          value={discountReason}
+                          onChangeText={setDiscountReason}
+                          style={{ backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, fontSize: 12, fontWeight: '600', color: '#0f172a' }}
+                        />
+                      </View>
+
+                      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                        <TouchableOpacity
+                          onPress={() => setShowDiscountInput(false)}
+                          style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: '#cbd5e1', backgroundColor: '#ffffff' }}
+                        >
+                          <Text style={{ fontSize: 11.5, fontWeight: '600', color: '#64748b' }}>Cancel</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          disabled={isSubmittingDiscountRequest || requestedDiscountAmount <= 0 || !discountReason.trim()}
+                          onPress={handleSubmitDiscountRequest}
+                          style={{
+                            paddingHorizontal: 14, paddingVertical: 6, borderRadius: 6,
+                            backgroundColor: (requestedDiscountAmount > 0 && discountReason.trim()) ? '#0284c7' : '#94a3b8'
+                          }}
+                        >
+                          <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#ffffff' }}>
+                            {isSubmittingDiscountRequest ? 'Submitting...' : 'Submit to HR'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
                 </View>
               </>
             )}
@@ -2738,10 +3140,10 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                   <Text style={{ fontSize: 13, color: '#15803d', fontWeight: '700' }}>₹ {activeDietFee.toLocaleString('en-IN')}</Text>
                 </View>
               )}
-              {discountInput > 0 && (
+              {effectiveDiscount > 0 && (
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={{ fontSize: 12, color: '#dc2626', fontWeight: '600' }}>- Medicine Discount:</Text>
-                  <Text style={{ fontSize: 13, color: '#dc2626', fontWeight: '700' }}>- ₹ {discountInput.toLocaleString('en-IN')}</Text>
+                  <Text style={{ fontSize: 12, color: '#dc2626', fontWeight: '600' }}>- Medicine Discount (HR Approved):</Text>
+                  <Text style={{ fontSize: 13, color: '#dc2626', fontWeight: '700' }}>- ₹ {effectiveDiscount.toLocaleString('en-IN')}</Text>
                 </View>
               )}
               <View style={{ height: 1, backgroundColor: '#cbd5e1', marginVertical: 3 }} />

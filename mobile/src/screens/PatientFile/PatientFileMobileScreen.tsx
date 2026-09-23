@@ -12,6 +12,7 @@ import {
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { sanitizeDoctorName } from '@app/shared';
+import { receptionDataStore } from '../../utils/receptionDataStore';
 
 // Safe Firebase Storage reference
 const getFirebaseStorage = () => {
@@ -507,14 +508,14 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
     return () => sub.remove();
   }, [onBack]);
 
-  // Patient Info Fallbacks matching reference screenshots
-  const patientName = renderSafeString(patient?.patientName || patient?.name, 'Swpana latha');
-  const regId = renderSafeString(patient?.registrationId || patient?.regId || patient?.patientId, 'SPHDSN-124');
-  const phone = renderSafeString(patient?.phone || patient?.phoneNumber, '9000136260');
-  const branchName = renderSafeString(currentBranch || patient?.branch, 'Dilshuknagar');
-  const doctorName = formatDoctorName(doctorNameProp || patient?.doctorName || patient?.doctor);
-  const source = renderSafeString(patient?.source || patient?.leadSource, 'Old Patient');
-  const subject = renderSafeString(patient?.subject || patient?.diseases, 'Fever');
+  // Patient Info (Clean real data extraction, NO mock fallbacks)
+  const patientName = renderSafeString(patient?.patientName || patient?.fullName || patient?.name || patient?.patient_name || patient?.patient, '');
+  const regId = renderSafeString(patient?.registrationId || patient?.regId || patient?.regNo || patient?.patientId || patient?.registrationNo || patient?.uhid || patient?.patient_id, '');
+  const phone = renderSafeString(patient?.phone || patient?.phoneNumber || patient?.mobile || patient?.mobileNumber || patient?.contact || patient?.contactNumber || patient?.phoneNo, '');
+  const branchName = renderSafeString(currentBranch || patient?.branch || patient?.branchName || patient?.targetBranch, 'Dilshuknagar Branch');
+  const doctorName = formatDoctorName(doctorNameProp || patient?.doctorName || patient?.doctor, branchName);
+  const source = renderSafeString(patient?.source || patient?.leadSource || patient?.marketingSource, '');
+  const subject = renderSafeString(patient?.diseases || patient?.subject || patient?.complaint || patient?.chiefComplaints, '');
 
   // Helper to format any date to DD-MM-YYYY
   const formatDDMMYYYY = (dateStr?: any): string => {
@@ -981,43 +982,20 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
 
       const targetDocId = patient?.id || patient?.appointmentId || patient?.patientId || regId;
 
-      // Upload canvas drawing if present to Firebase Storage
-      let finalCanvasUrl: string | null = null;
-      if (canvasDataUrl) {
-        try {
-          finalCanvasUrl = await uploadPrescriptionToStorage(canvasDataUrl, targetDocId);
-        } catch (e) {
-          finalCanvasUrl = canvasDataUrl;
-        }
+      const initialUploadedImages: string[] = [...uploadedImages];
+      if (canvasDataUrl && !initialUploadedImages.includes(canvasDataUrl)) {
+        initialUploadedImages.push(canvasDataUrl);
       }
+      setUploadedImages(initialUploadedImages);
 
-      // Convert any raw data: in uploadedImages to Firebase Storage URLs, ensuring no single string exceeds 400KB
-      const sanitizedUploadedImages: string[] = [];
-      for (const item of uploadedImages) {
-        if (!item) continue;
-        if (typeof item === 'string' && item.startsWith('data:')) {
-          try {
-            const cloudUrl = await uploadPrescriptionToStorage(item, targetDocId);
-            // Safety guard: if storage upload failed and string is still > 400KB, skip to avoid Firestore 1MB crash
-            if (cloudUrl.startsWith('data:') && cloudUrl.length > 400000) {
-              console.warn("Skipping oversized prescription image (>400KB) to prevent Firestore crash");
-              continue;
-            }
-            sanitizedUploadedImages.push(cloudUrl);
-          } catch (e) {
-            if (item.length <= 400000) sanitizedUploadedImages.push(item);
-          }
-        } else {
-          sanitizedUploadedImages.push(item);
-        }
-      }
+      const numDietFee = Number(dietFeeAmount) || 0;
+      const numPharmacyFee = Number(pharmacyFee) || 0;
+      const numConsultationFee = Number(patient?.consultationFee || patient?.fee || patient?.consultationFeeAmount) || 0;
+      const totalCalculated = numPharmacyFee + numDietFee + numConsultationFee;
+      const computedTarget = numPharmacyFee > 0 ? numPharmacyFee : (totalCalculated > 0 ? totalCalculated : 1000);
+      const docNameToSave = formatDoctorName(doctorName || patient?.doctorName || patient?.doctor);
 
-      if (finalCanvasUrl && !sanitizedUploadedImages.includes(finalCanvasUrl)) {
-        sanitizedUploadedImages.push(finalCanvasUrl);
-      }
-      setUploadedImages(sanitizedUploadedImages);
-
-      const payload = {
+      const basePayload = {
         patientId: targetDocId,
         patientName,
         regId,
@@ -1025,81 +1003,143 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         branchName,
         diagnosisNotes,
         drawPrescription,
-        canvasPrescriptionUrl: finalCanvasUrl,
+        canvasPrescriptionUrl: canvasDataUrl,
         followUpInterval,
         preferredFollowUpDate: formatDDMMYYYY(preferredFollowUpDate),
         pharmacyFee,
-        uploadedPrescriptions: sanitizedUploadedImages,
+        uploadedPrescriptions: initialUploadedImages,
         savedAt: new Date().toISOString()
       };
 
-      if (db) {
-        const targetCol = patient?.collectionName || 'appointments';
-        const docNameToSave = formatDoctorName(doctorName || patient?.doctorName || patient?.doctor);
+      const updatePayload = {
+        uploadedPrescriptions: initialUploadedImages,
+        diagnosisNotes,
+        consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
+        medicineFee: numPharmacyFee,
+        pharmacyFee: numPharmacyFee,
+        totalMedicineFee: numPharmacyFee,
+        medicineFeeRequested: numPharmacyFee,
+        targetAmount: computedTarget,
+        target_amount: computedTarget,
+        dietFee: numDietFee,
+        dietFeeAmount: dietFeeAmount,
+        totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
+        followUpInterval,
+        preferredFollowUpDate: formatDDMMYYYY(preferredFollowUpDate),
+        doctorName: docNameToSave,
+        doctor: docNameToSave,
+        ...(canvasDataUrl ? { canvasPrescriptionUrl: canvasDataUrl } : {}),
+        status: 'collect_fee',
+        paymentStatus: 'pending',
+        paymentPending: true,
+        feeCollectionNeeded: true,
+        updatedAt: new Date().toISOString()
+      };
 
-        const numDietFee = Number(dietFeeAmount) || 0;
-        const numPharmacyFee = Number(pharmacyFee) || 0;
-        const numConsultationFee = Number(patient?.consultationFee || patient?.fee || patient?.consultationFeeAmount) || 0;
-        const totalCalculated = numPharmacyFee + numDietFee + numConsultationFee;
+      // 1. INSTANT LOCAL STORE UPDATE (0ms Delay)
+      if (targetDocId) {
+        receptionDataStore.updateLocalAppointment(targetDocId, updatePayload);
+      }
 
-        await addDoc(collection(db, 'prescriptions'), {
-          ...payload,
-          appointmentId: targetDocId,
-          appointmentDate: patient?.appointmentDate || patient?.date || new Date().toISOString().split('T')[0],
-          doctorName: docNameToSave,
-          doctor: docNameToSave,
-          branch: branchName,
-          consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
-          medicineFee: numPharmacyFee,
-          pharmacyFee: numPharmacyFee,
-          totalMedicineFee: numPharmacyFee,
-          dietFee: numDietFee,
-          totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
-          createdAt: new Date().toISOString()
-        });
+      const fullPayload = {
+        ...basePayload,
+        ...updatePayload,
+        targetAmount: computedTarget,
+        target_amount: computedTarget,
+      };
 
-        if (targetDocId) {
-          const updatePayload = {
-            uploadedPrescriptions: sanitizedUploadedImages,
-            diagnosisNotes,
+      // 2. IMMEDIATE UI TRANSITION
+      if (onSaveConsultation) {
+        onSaveConsultation(fullPayload);
+      } else {
+        Alert.alert("Sent to Reception", "Consultation saved & patient sent to Reception for Fee Collection!");
+        if (onBack) onBack();
+      }
+      setIsSavingConsultation(false);
+
+      // 3. ASYNCHRONOUS BACKGROUND CLOUD PERSISTENCE (Parallel writes)
+      (async () => {
+        try {
+          let finalCanvasUrl = canvasDataUrl;
+
+          // Parallel image uploads
+          const uploadJobs: Promise<string | null>[] = [];
+          if (canvasDataUrl && canvasDataUrl.startsWith('data:')) {
+            uploadJobs.push(uploadPrescriptionToStorage(canvasDataUrl, targetDocId).catch(() => canvasDataUrl));
+          } else {
+            uploadJobs.push(Promise.resolve(canvasDataUrl));
+          }
+
+          const imageJobs = uploadedImages.map(async (item) => {
+            if (!item) return null;
+            if (typeof item === 'string' && item.startsWith('data:')) {
+              try {
+                const cloudUrl = await uploadPrescriptionToStorage(item, targetDocId);
+                if (cloudUrl.startsWith('data:') && cloudUrl.length > 400000) return null;
+                return cloudUrl;
+              } catch {
+                return item.length <= 400000 ? item : null;
+              }
+            }
+            return item;
+          });
+
+          const [resolvedCanvas, ...resolvedImages] = await Promise.all([
+            uploadJobs[0],
+            ...imageJobs
+          ]);
+
+          finalCanvasUrl = resolvedCanvas;
+          const sanitizedImages: string[] = resolvedImages.filter((img): img is string => Boolean(img));
+          if (finalCanvasUrl && !sanitizedImages.includes(finalCanvasUrl)) {
+            sanitizedImages.push(finalCanvasUrl);
+          }
+
+          const finalCloudPayload = {
+            ...basePayload,
+            uploadedPrescriptions: sanitizedImages,
+            canvasPrescriptionUrl: finalCanvasUrl,
+            appointmentId: targetDocId,
+            appointmentDate: patient?.appointmentDate || patient?.date || new Date().toISOString().split('T')[0],
+            doctorName: docNameToSave,
+            doctor: docNameToSave,
+            branch: branchName,
             consultationFee: numConsultationFee > 0 ? numConsultationFee : (patient?.consultationFee || 0),
             medicineFee: numPharmacyFee,
             pharmacyFee: numPharmacyFee,
             totalMedicineFee: numPharmacyFee,
             dietFee: numDietFee,
-            dietFeeAmount: dietFeeAmount,
             totalAmount: totalCalculated > 0 ? totalCalculated : Number(patient?.totalAmount || 0),
-            followUpInterval,
-            preferredFollowUpDate: formatDDMMYYYY(preferredFollowUpDate),
-            doctorName: docNameToSave,
-            doctor: docNameToSave,
-            ...(finalCanvasUrl ? { canvasPrescriptionUrl: finalCanvasUrl } : {}),
-            status: 'collect_fee',
-            paymentStatus: 'pending',
-            paymentPending: true,
-            feeCollectionNeeded: true,
-            updatedAt: new Date().toISOString()
+            createdAt: new Date().toISOString()
           };
 
-          const colsToUpdate = Array.from(new Set([targetCol, 'appointments', 'allpatients', 'patients']));
-          for (const col of colsToUpdate) {
-            try {
-              await updateDoc(doc(db, col, targetDocId), updatePayload);
-            } catch (e) { }
-          }
-        }
-      }
+          const finalUpdatePayload = {
+            ...updatePayload,
+            uploadedPrescriptions: sanitizedImages,
+            ...(finalCanvasUrl ? { canvasPrescriptionUrl: finalCanvasUrl } : {}),
+          };
 
-      if (onSaveConsultation) {
-        onSaveConsultation(payload);
-      } else {
-        Alert.alert("Sent to Reception", "Consultation saved & patient sent to Reception for Fee Collection!");
-        if (onBack) onBack();
-      }
+          if (targetDocId) {
+            receptionDataStore.updateLocalAppointment(targetDocId, finalUpdatePayload);
+          }
+
+          if (db) {
+            const targetCol = patient?.collectionName || 'appointments';
+            const colsToUpdate = Array.from(new Set([targetCol, 'appointments', 'allpatients', 'patients']));
+
+            // Concurrently persist to prescriptions & appointment collections
+            await Promise.allSettled([
+              addDoc(collection(db, 'prescriptions'), finalCloudPayload),
+              ...(targetDocId ? colsToUpdate.map(col => updateDoc(doc(db, col, targetDocId), finalUpdatePayload)) : [])
+            ]);
+          }
+        } catch (bgErr) {
+          console.error("Mobile background consultation save error:", bgErr);
+        }
+      })();
     } catch (err) {
       console.error("Firestore consultation save error:", err);
       Alert.alert("Save Error", "Could not save consultation. Please retry.");
-    } finally {
       setIsSavingConsultation(false);
     }
   };
@@ -1361,9 +1401,34 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
 
   // Uploaded Prescriptions State
   const [uploadedImages, setUploadedImages] = useState<string[]>(() => {
-    if (Array.isArray(patient?.uploadedPrescriptions)) return patient.uploadedPrescriptions;
-    if (patient?.canvasPrescriptionUrl) return [patient.canvasPrescriptionUrl];
-    return [];
+    const list: string[] = [];
+    const add = (v: any) => {
+      if (!v) return;
+      if (Array.isArray(v)) {
+        v.forEach(x => {
+          if (typeof x === 'string') list.push(x);
+          else if (x && typeof x === 'object') {
+            const u = x.url || x.imageUrl || x.prescriptionUrl || x.fileUrl || x.uri;
+            if (u && typeof u === 'string') list.push(u);
+          }
+        });
+      } else if (typeof v === 'string' && v.trim()) {
+        list.push(v.trim());
+      } else if (v && typeof v === 'object') {
+        const u = v.url || v.imageUrl || v.prescriptionUrl || v.fileUrl || v.uri;
+        if (u && typeof u === 'string') list.push(u);
+      }
+    };
+    add(patient?.uploadedPrescriptions);
+    add(patient?.prescriptionUrls);
+    add(patient?.prescriptionUrl);
+    add(patient?.prescriptionImage);
+    add(patient?.prescriptionImages);
+    add(patient?.canvasPrescriptionUrl);
+    add(patient?.canvasUrl);
+    add(patient?.imageUrl);
+    add(patient?.fileUrl);
+    return Array.from(new Set(list.filter(Boolean)));
   });
   const [selectedPreviewImage, setSelectedPreviewImage] = useState<string | null>(null);
   const [showAddImageModal, setShowAddImageModal] = useState(false);
@@ -1661,10 +1726,11 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         ].map(r => String(r || '').trim().toLowerCase()).filter(Boolean);
 
         const docName = String(data.patientName || data.name || data.fullName || data.patient_name || data.patient || '').trim().toLowerCase();
-        const incomingApptId = String(data.appointmentId || data.apptId || '').trim();
+        const incomingApptId = String(data.appointmentId || data.apptId || data.id || '').trim();
 
         const isLinkedDoc = Boolean(
           (patient?.id && (docId === patient.id || incomingApptId === patient.id)) ||
+          (patient?.patientDocId && (docId === patient.patientDocId || incomingApptId === patient.patientDocId)) ||
           regCandidates.includes(docId.toLowerCase()) ||
           (incomingApptId && regCandidates.includes(incomingApptId.toLowerCase()))
         );
@@ -1673,16 +1739,14 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         const isRegMatch = docRegs.some(r => regCandidates.includes(r));
 
         let isMatch = false;
-        if (isPhoneMatch) {
-          isMatch = true;
-        } else if (isRegMatch || isLinkedDoc) {
+        if (isPhoneMatch || isRegMatch || isLinkedDoc) {
           isMatch = true;
         } else if (phoneCandidates.length === 0 && regCandidates.length === 0 && nameCandidates.length > 0) {
           isMatch = Boolean(docName && nameCandidates.includes(docName));
         }
 
         if (isMatch) {
-          let rawDate = data.appointmentDate || data.date || data.scheduledDate || data.visitDate || data.createdAt;
+          let rawDate = data.appointmentDate || data.date || data.scheduledDate || data.visitDate || data.prescriptionDate || data.createdAt;
           let normDate = parseToYMD(rawDate);
           if (!normDate || normDate.toLowerCase() === 'today') {
             normDate = todayYMD;
@@ -1704,24 +1768,43 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
           const visitKey = matchedKey || (normDate ? `visit_${normDate}` : (incomingApptId || docId));
           const existing = storeMap.get(visitKey);
 
+          // Extract ALL images/prescriptions from all possible fields and formats
           const rawImages: string[] = [];
-          if (Array.isArray(data.uploadedPrescriptions)) rawImages.push(...data.uploadedPrescriptions);
-          if (Array.isArray(data.prescriptions)) rawImages.push(...data.prescriptions);
-          if (Array.isArray(data.prescriptionImages)) rawImages.push(...data.prescriptionImages);
-          if (Array.isArray(data.reports)) rawImages.push(...data.reports);
-          if (Array.isArray(data.media)) rawImages.push(...data.media);
-          if (Array.isArray(data.images)) rawImages.push(...data.images);
-          if (Array.isArray(data.documents)) rawImages.push(...data.documents);
-          if (Array.isArray(data.attachments)) rawImages.push(...data.attachments);
+          const extractImages = (val: any) => {
+            if (!val) return;
+            if (Array.isArray(val)) {
+              val.forEach(item => {
+                if (!item) return;
+                if (typeof item === 'string') rawImages.push(item);
+                else if (typeof item === 'object') {
+                  const u = item.url || item.imageUrl || item.prescriptionUrl || item.fileUrl || item.downloadURL || item.uri;
+                  if (u && typeof u === 'string') rawImages.push(u);
+                }
+              });
+            } else if (typeof val === 'string' && val.trim()) {
+              rawImages.push(val.trim());
+            } else if (typeof val === 'object') {
+              const u = val.url || val.imageUrl || val.prescriptionUrl || val.fileUrl || val.downloadURL || val.uri;
+              if (u && typeof u === 'string') rawImages.push(u);
+            }
+          };
 
-          if (typeof data.prescriptionImage === 'string' && data.prescriptionImage) rawImages.push(data.prescriptionImage);
-          if (typeof data.prescriptionUrl === 'string' && data.prescriptionUrl) rawImages.push(data.prescriptionUrl);
-          if (typeof data.reportUrl === 'string' && data.reportUrl) rawImages.push(data.reportUrl);
-          if (typeof data.imageUrl === 'string' && data.imageUrl) rawImages.push(data.imageUrl);
-          if (typeof data.canvasPrescriptionUrl === 'string' && data.canvasPrescriptionUrl) rawImages.push(data.canvasPrescriptionUrl);
-          if (typeof data.canvasUrl === 'string' && data.canvasUrl) rawImages.push(data.canvasUrl);
-          if (typeof data.fileUrl === 'string' && data.fileUrl) rawImages.push(data.fileUrl);
-          if (typeof data.documentUrl === 'string' && data.documentUrl) rawImages.push(data.documentUrl);
+          extractImages(data.uploadedPrescriptions);
+          extractImages(data.prescriptionUrls);
+          extractImages(data.prescriptionUrl);
+          extractImages(data.prescriptionImage);
+          extractImages(data.prescriptionImages);
+          extractImages(data.prescriptions);
+          extractImages(data.reports);
+          extractImages(data.media);
+          extractImages(data.images);
+          extractImages(data.documents);
+          extractImages(data.attachments);
+          extractImages(data.rxUrl);
+          extractImages(data.rxUrls);
+          extractImages(data.fileUrl);
+          extractImages(data.documentUrl);
+          extractImages(data.attachmentUrls);
 
           const canvasUrl = formatFirebaseStorageUrl(data.canvasPrescriptionUrl || data.canvasUrl || existing?.canvasPrescriptionUrl || null);
           const docMedicines = data.items || data.medicines || data.remedies || data.prescribedMedicines || data.prescriptionItems || data.medications || data.rx || data.typedPrescriptions || [];
@@ -1748,24 +1831,59 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
           ]));
 
           const rawDoc = data.doctorName || data.doctor || existing?.doctorName || patient?.doctorName || patient?.doctor || doctorName;
-          const docNameFormatted = formatDoctorName(rawDoc);
+          const targetBranch = data.branch || data.branchName || existing?.branch || branchName;
+          const docNameFormatted = formatDoctorName(rawDoc, targetBranch);
           const displayDate = normDate === todayYMD ? 'Today' : formatDisplayDate(normDate);
+
+          // REAL Amount Paid calculation (NO '500' mock fallback!)
+          const rawPaid = data.totalPaid ?? data.paidAmount ?? data.amountPaid ?? data.targetAmount ?? data.amount;
+          const consultFee = Number(data.consultationFee) || 0;
+          const medFee = Number(data.medicineFee || data.totalMedicineFee) || 0;
+          const dietFee = Number(data.dietFee || data.dietFeeAmount) || 0;
+          const otherFee = Number(data.otherCharges) || 0;
+          const discount = Number(data.discount) || 0;
+          const computedTotal = Math.max(0, consultFee + medFee + dietFee + otherFee - discount);
+
+          let finalPaidAmount = 0;
+          let paymentStatus = 'pending';
+
+          if (rawPaid !== undefined && rawPaid !== null && rawPaid !== '' && !isNaN(Number(rawPaid))) {
+            finalPaidAmount = Number(rawPaid);
+            paymentStatus = finalPaidAmount > 0 ? 'paid' : (data.paymentStatus || 'pending');
+          } else if (String(data.paymentStatus).toLowerCase() === 'paid') {
+            finalPaidAmount = computedTotal > 0 ? computedTotal : (existing?.paidAmount || 0);
+            paymentStatus = 'paid';
+          } else if (existing?.paidAmount !== undefined) {
+            finalPaidAmount = Number(existing.paidAmount);
+            paymentStatus = existing.paymentStatus || 'pending';
+          } else {
+            finalPaidAmount = 0;
+            paymentStatus = data.paymentStatus || 'pending';
+          }
+
+          const realDiagnosis = data.diagnosisNotes && data.diagnosisNotes !== 'Clinical consultation & prescription recorded.'
+            ? data.diagnosisNotes
+            : (existing?.diagnosisNotes || data.notes || data.prescriptionNotes || data.chiefComplaints || data.complaints || data.subject || data.diseases || '');
 
           storeMap.set(visitKey, {
             id: existing?.id || incomingApptId || docId || visitKey,
             appointmentId: existing?.appointmentId || incomingApptId || docId,
+            patientName: data.patientName || data.fullName || data.name || patientName,
+            regId: data.registrationId || data.regId || data.regNo || regId,
             normalizedDate: normDate,
             normalizedBranch: normBranch || existing?.normalizedBranch,
             visitDate: displayDate,
             visitTime: data.appointmentTime || data.time || existing?.visitTime || '10:00 AM',
             doctorName: docNameFormatted,
-            branch: data.branch || data.branchName || existing?.branch || branchName || 'Dilshuknagar Branch',
+            branch: targetBranch || 'Dilshuknagar Branch',
             consultationMode: data.consultationMode || existing?.consultationMode || 'In-Clinic',
-            paidAmount: data.paidAmount || data.amountPaid || data.totalMedicineFee || data.consultationFee || data.totalAmount || existing?.paidAmount || '500',
-            paymentStatus: data.paymentStatus || existing?.paymentStatus || 'paid',
-            subject: data.diseases || data.subject || existing?.subject || 'General Consultation',
+            paidAmount: finalPaidAmount,
+            totalAmount: computedTotal > 0 ? computedTotal : finalPaidAmount,
+            paymentStatus: paymentStatus,
+            paymentMode: data.paymentMode || existing?.paymentMode || 'Cash',
+            subject: data.diseases || data.subject || existing?.subject || '',
             diseases: data.diseases || data.subject || existing?.diseases || '',
-            diagnosisNotes: (data.diagnosisNotes && data.diagnosisNotes !== 'Clinical consultation & prescription recorded.') ? data.diagnosisNotes : (existing?.diagnosisNotes || data.notes || data.prescriptionNotes || data.chiefComplaints || 'Clinical consultation & prescription recorded.'),
+            diagnosisNotes: realDiagnosis,
             medicines: mergedMedicines,
             canvasPrescriptionUrl: canvasUrl,
             uploadedPrescriptions: combinedPrescriptions,
@@ -1774,7 +1892,25 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         }
       };
 
-      // Fast, targeted queries for ONLY this patient (prevents downloading 10,000 documents)
+      // 1. Process current patient appointment data immediately
+      if (patient) {
+        processDoc(patient, patient.id || 'current_patient');
+      }
+
+      // 2. Process records from memory receptionDataStore pool immediately (0ms instant display)
+      try {
+        const memoryPool = receptionDataStore.getAllCollectionsPool();
+        if (Array.isArray(memoryPool) && memoryPool.length > 0) {
+          memoryPool.forEach((item: any) => {
+            if (item) processDoc(item, item.id || item.docId || '');
+          });
+          updateVisitsState();
+        }
+      } catch (e) {
+        console.warn('Memory pool visit processing notice:', e);
+      }
+
+      // 3. Fast targeted queries for ONLY this patient in Firestore
       try {
         const safeGet = (q: any) => Promise.race([
           getDocs(q).catch(() => ({ docs: [] })),
@@ -1787,21 +1923,23 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
 
         if (primaryPhone) {
           ['appointments', 'allpatients', 'patients', 'medicine_requests', 'prescriptions'].forEach(col => {
-            queriesToRun.push(safeGet(query(collection(db, col), where('phone', '==', primaryPhone), limit(20))));
-            queriesToRun.push(safeGet(query(collection(db, col), where('phoneNumber', '==', primaryPhone), limit(20))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phone', '==', primaryPhone), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phoneNumber', '==', primaryPhone), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phone', '==', `+91${primaryPhone}`), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('phoneNumber', '==', `+91${primaryPhone}`), limit(25))));
           });
         }
 
         if (primaryReg) {
-          ['appointments', 'allpatients', 'patients'].forEach(col => {
-            queriesToRun.push(safeGet(query(collection(db, col), where('registrationId', '==', primaryReg), limit(20))));
-            queriesToRun.push(safeGet(query(collection(db, col), where('regId', '==', primaryReg), limit(20))));
-            queriesToRun.push(safeGet(query(collection(db, col), where('patientId', '==', primaryReg), limit(20))));
+          ['appointments', 'allpatients', 'patients', 'prescriptions'].forEach(col => {
+            queriesToRun.push(safeGet(query(collection(db, col), where('registrationId', '==', primaryReg), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('regId', '==', primaryReg), limit(25))));
+            queriesToRun.push(safeGet(query(collection(db, col), where('patientId', '==', primaryReg), limit(25))));
           });
         }
 
         if (patient?.id) {
-          ['appointments', 'allpatients', 'patients'].forEach(col => {
+          ['appointments', 'allpatients', 'patients', 'prescriptions'].forEach(col => {
             queriesToRun.push(
               getDoc(doc(db, col, patient.id))
                 .then(snap => snap.exists() ? { docs: [snap] } : { docs: [] })
@@ -1825,7 +1963,7 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         console.warn('Error in targeted live visits query:', queryErr);
       }
 
-      // Single targeted real-time listener ONLY on the current appointment document
+      // 4. Targeted real-time listener on the current appointment document
       if (patient?.id) {
         try {
           const unsub = onSnapshot(doc(db, 'appointments', patient.id), (snap) => {
@@ -2768,7 +2906,7 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
                       </Text>
                     </View>
                     <Text style={{ fontSize: 12, fontWeight: '700', color: '#0369a1' }}>
-                      📍 {renderSafeString(visit.branch, 'Main Branch')}
+                      📍 {renderSafeString(visit.branch, 'Dilshuknagar Branch')}
                     </Text>
                   </View>
 
@@ -2846,23 +2984,42 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
               <View style={{ width: '100%', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 12, gap: 8, marginBottom: 14 }}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={{ fontSize: 11.5, color: '#64748b', fontWeight: '600' }}>Patient</Text>
-                  <Text style={{ fontSize: 12.5, color: '#0f172a', fontWeight: '800' }}>{renderSafeString(patientName)} ({renderSafeString(regId)})</Text>
+                  <Text style={{ fontSize: 12.5, color: '#0f172a', fontWeight: '800' }}>
+                    {renderSafeString(selectedVisitModal?.patientName || patientName, '')} {selectedVisitModal?.regId || regId ? `(${selectedVisitModal?.regId || regId})` : ''}
+                  </Text>
                 </View>
                 <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={{ fontSize: 11.5, color: '#64748b', fontWeight: '600' }}>Doctor</Text>
-                  <Text style={{ fontSize: 12.5, color: '#0284c7', fontWeight: '800' }}>{renderSafeString(formatDoctorName(selectedVisitModal?.doctorName), 'Dr. Ramakrishna Chanduri')}</Text>
+                  <Text style={{ fontSize: 12.5, color: '#0284c7', fontWeight: '800' }}>
+                    {renderSafeString(formatDoctorName(selectedVisitModal?.doctorName, selectedVisitModal?.branch), 'Resident Doctor')}
+                  </Text>
                 </View>
                 <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={{ fontSize: 11.5, color: '#64748b', fontWeight: '600' }}>Branch & Mode</Text>
-                  <Text style={{ fontSize: 12.5, color: '#0f172a', fontWeight: '800' }}>{renderSafeString(selectedVisitModal?.branch, 'Main Branch')} • {renderSafeString(selectedVisitModal?.consultationMode, 'In-Clinic')}</Text>
+                  <Text style={{ fontSize: 12.5, color: '#0f172a', fontWeight: '800' }}>
+                    {renderSafeString(selectedVisitModal?.branch, 'Dilshuknagar Branch')} • {renderSafeString(selectedVisitModal?.consultationMode, 'In-Clinic')}
+                  </Text>
                 </View>
                 <View style={{ height: 1, backgroundColor: '#f1f5f9' }} />
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={{ fontSize: 11.5, color: '#64748b', fontWeight: '600' }}>Amount Paid</Text>
-                  <View style={{ backgroundColor: '#dcfce7', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: '#15803d' }}>₹{renderSafeString(selectedVisitModal?.paidAmount, '500')} Paid ✓</Text>
+                  <View style={{
+                    backgroundColor: selectedVisitModal?.paymentStatus === 'paid' || Number(selectedVisitModal?.paidAmount) > 0 ? '#dcfce7' : '#fef3c7',
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
+                    borderRadius: 6
+                  }}>
+                    <Text style={{
+                      fontSize: 12,
+                      fontWeight: '800',
+                      color: selectedVisitModal?.paymentStatus === 'paid' || Number(selectedVisitModal?.paidAmount) > 0 ? '#15803d' : '#b45309'
+                    }}>
+                      {selectedVisitModal?.paymentStatus === 'paid' || Number(selectedVisitModal?.paidAmount) > 0
+                        ? `₹${selectedVisitModal?.paidAmount || '0'} Paid ✓`
+                        : `Payment Pending (₹${selectedVisitModal?.totalAmount || '0'})`}
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -2921,7 +3078,10 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
                 {(() => {
                   const images = Array.from(new Set([
                     ...(selectedVisitModal?.canvasPrescriptionUrl ? [selectedVisitModal.canvasPrescriptionUrl] : []),
-                    ...(selectedVisitModal?.uploadedPrescriptions || [])
+                    ...(selectedVisitModal?.uploadedPrescriptions || []),
+                    ...(selectedVisitModal?.prescriptionUrls || []),
+                    ...(selectedVisitModal?.prescriptionUrl ? [selectedVisitModal.prescriptionUrl] : []),
+                    ...(selectedVisitModal?.prescriptionImage ? [selectedVisitModal.prescriptionImage] : [])
                   ].filter(Boolean)));
 
                   if (images.length === 0) {
@@ -3020,7 +3180,7 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
                           </Text>
                         </View>
                         <Text style={{ fontSize: 12, fontWeight: '700', color: '#0369a1' }}>
-                          📍 {renderSafeString(visit.branch, 'Main Branch')}
+                          📍 {renderSafeString(visit.branch, 'Dilshuknagar Branch')}
                         </Text>
                       </View>
 

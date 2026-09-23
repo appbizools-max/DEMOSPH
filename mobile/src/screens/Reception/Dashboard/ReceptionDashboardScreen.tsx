@@ -130,32 +130,44 @@ const isMatchingDate = (app: any, targetDate: string): boolean => {
 
   if (clean === targetDate || clean.startsWith(targetDate)) return true;
 
-  // Fast ISO & DD-MM-YYYY direct match without regex
-  if (clean.length >= 10) {
-    if (clean[4] === '-' && clean[7] === '-') {
-      const y = clean.substring(0, 4);
-      const m = clean.substring(5, 7);
-      const d = clean.substring(8, 10);
-      return `${d}-${m}-${y}` === targetDate;
-    }
-    if (clean[2] === '-' && clean[5] === '-') {
-      return clean.substring(0, 10) === targetDate;
-    }
+  // targetDate is DD-MM-YYYY (e.g. 23-09-2026)
+  // Fast ISO direct match e.g. 2026-09-23 or 2026-09-23T...
+  if (clean.length >= 10 && clean[4] === '-' && clean[7] === '-') {
+    const y = clean.substring(0, 4);
+    const m = clean.substring(5, 7);
+    const d = clean.substring(8, 10);
+    if (`${d}-${m}-${y}` === targetDate) return true;
   }
 
+  // Fast DD-MM-YYYY direct match e.g. 23-09-2026 10:00 AM
+  if (clean.length >= 10 && clean[2] === '-' && clean[5] === '-') {
+    if (clean.substring(0, 10) === targetDate) return true;
+  }
+
+  // Handle DD/MM/YYYY or DD-MM-YYYY with slashes and optional timestamp
   const parts = clean.split(/[-/]/);
-  if (parts.length === 3) {
-    let d = parts[0];
-    let m = parts[1];
-    let y = parts[2];
-    if (parts[0].length === 4) {
-      y = parts[0];
-      m = parts[1];
-      d = parts[2];
+  if (parts.length >= 3) {
+    let d = parts[0].trim();
+    let m = parts[1].trim();
+    let y = parts[2].trim().substring(0, 4);
+    if (d.length === 4) {
+      y = d;
+      m = parts[1].trim();
+      d = parts[2].trim().substring(0, 2);
     }
     const ddmmyyyy = `${d.padStart(2, '0')}-${m.padStart(2, '0')}-${y}`;
-    return ddmmyyyy === targetDate;
+    if (ddmmyyyy === targetDate) return true;
   }
+
+  try {
+    const parsed = new Date(clean);
+    if (!isNaN(parsed.getTime())) {
+      const py = parsed.getFullYear();
+      const pm = String(parsed.getMonth() + 1).padStart(2, '0');
+      const pd = String(parsed.getDate()).padStart(2, '0');
+      if (`${pd}-${pm}-${py}` === targetDate) return true;
+    }
+  } catch (_) {}
 
   return false;
 };

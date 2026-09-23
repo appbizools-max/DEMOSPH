@@ -21,6 +21,7 @@ import {
 import { db } from '@app/shared';
 import { collection, onSnapshot, updateDoc, doc, addDoc, query, limit, orderBy } from 'firebase/firestore';
 import { PatientFileUI } from '../../../components/PatientFileUI';
+import { receptionDataStore } from '../../../utils/receptionDataStore';
 
 interface DoctorDashboardPageProps {
   doctorCategory?: string;
@@ -331,89 +332,112 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
     setCanvasHasContent(false);
   };
 
-  const handleSubmitConsultation = async () => {
+  const handleSubmitConsultation = async (consultData?: any) => {
     if (!activeConsultPatient) return;
-    setSubmitting(true);
 
-    try {
-      let canvasUrl = '';
-      if (canvasRef.current && canvasHasContent) {
+    const patientId = activeConsultPatient.patientId || activeConsultPatient.id || 'PAT-' + Date.now();
+    const patName = activeConsultPatient.patientName || activeConsultPatient.name || 'Patient';
+    const patPhone = activeConsultPatient.phone || activeConsultPatient.phoneNumber || '';
+    const patBranch = activeConsultPatient.branch || 'KPHB Branch';
+    const appId = activeConsultPatient.id;
+    const targetCol = activeConsultPatient.collectionName || 'appointments';
+
+    let canvasUrl = '';
+    if (canvasRef.current && canvasHasContent) {
+      try {
         canvasUrl = canvasRef.current.toDataURL('image/png');
-      }
-
-      const patientId = activeConsultPatient.patientId || activeConsultPatient.id || 'PAT-' + Date.now();
-      const patName = activeConsultPatient.patientName || activeConsultPatient.name || 'Patient';
-      const patPhone = activeConsultPatient.phone || activeConsultPatient.phoneNumber || '';
-      const patBranch = activeConsultPatient.branch || 'KPHB Branch';
-
-      // 1. Update status to 'collect_fee' for Reception Billing Checkout
-      const mFee = Number(medicineFeeRequested) || 0;
-      const cFee = mFee > 0 ? 0 : (Number(consultationFee) || 0);
-      const targetVal = mFee > 0 ? mFee : (Number(consultationFee) || 500);
-
-      const feePayload = {
-        status: 'collect_fee',
-        feeCollectionNeeded: true,
-        paymentStatus: 'pending',
-        consultationFee: cFee,
-        medicineFee: mFee,
-        pharmacyFee: mFee,
-        medicineFeeRequested: mFee,
-        targetAmount: targetVal,
-        updatedAt: new Date().toISOString()
-      };
-      const appId = activeConsultPatient.id;
-      const targetCol = activeConsultPatient.collectionName || 'appointments';
-      await updateDoc(doc(db, targetCol, appId), feePayload).catch(() => { });
-      await updateDoc(doc(db, 'appointments', appId), feePayload).catch(() => { });
-      await updateDoc(doc(db, 'allpatients', appId), feePayload).catch(() => { });
-      await updateDoc(doc(db, 'patients', appId), feePayload).catch(() => { });
-
-      // 2. Create record in `medicine_requests`
-      await addDoc(collection(db, 'medicine_requests'), {
-        appointmentId: activeConsultPatient.id,
-        patientId,
-        patientName: patName,
-        phone: patPhone,
-        doctorName: doctorName,
-        branch: patBranch,
-        items: typedPrescriptions,
-        totalMedicineFee: Number(medicineFeeRequested) || 0,
-        consultationFee: Number(consultationFee) || 0,
-        canvasPrescriptionUrl: canvasUrl || `prescriptions/${patientId}_${Date.now()}_canvas.png`,
-        status: 'pending_dispense',
-        createdAt: new Date().toISOString()
-      });
-
-      // 3. Create record in `followups` if scheduled
-      if (followUpDate) {
-        const genuineReg = activeConsultPatient.registrationId || activeConsultPatient.regId || activeConsultPatient.uhid || '';
-        await addDoc(collection(db, 'followups'), {
-          patientId,
-          regId: genuineReg,
-          registrationId: genuineReg,
-          patientName: patName,
-          phone: patPhone,
-          doctorName,
-          branch: patBranch,
-          scheduledDate: followUpDate,
-          interval: followUpInterval,
-          status: 'scheduled',
-          notes: chiefComplaints,
-          createdAt: new Date().toISOString()
-        });
-      }
-      setSuccessToast(`Prescription for ${patName} submitted successfully! Sent to Reception counter.`);
-      setActiveConsultPatient(null);
-      setTimeout(() => {
-        setSuccessToast('');
-      }, 3000);
-
-    } catch (err) {
-      console.error('Error submitting consultation:', err);
-    } finally {
-      setSubmitting(false);
+      } catch (e) { }
     }
+
+    // 1. Calculate fees
+    const mFee = Number(consultData?.pharmacyFee || consultData?.medicineFee || medicineFeeRequested) || 0;
+    const cFee = mFee > 0 ? 0 : (Number(consultData?.consultationFee || consultationFee) || 0);
+    const targetVal = Number(consultData?.targetAmount) || (mFee > 0 ? mFee : (Number(consultData?.consultationFee || consultationFee) || 500));
+
+    const feePayload = {
+      status: 'collect_fee',
+      feeCollectionNeeded: true,
+      paymentStatus: 'pending',
+      consultationFee: cFee,
+      medicineFee: mFee,
+      pharmacyFee: mFee,
+      medicineFeeRequested: mFee,
+      targetAmount: targetVal,
+      target_amount: targetVal,
+      updatedAt: new Date().toISOString()
+    };
+
+    // 2. INSTANT UI UPDATE (0ms Delay)
+    if (appId) {
+      receptionDataStore.updateLocalAppointment(appId, feePayload);
+      setAppointments((prev) =>
+        prev.map((a) => (a.id === appId || a.docId === appId ? { ...a, displayStatus: 'collect_fee', ...feePayload } : a))
+      );
+    }
+
+    // Close consultation modal & show confirmation toast immediately!
+    setActiveConsultPatient(null);
+    setSubmitting(false);
+    setSuccessToast(`Prescription for ${patName} submitted successfully! Sent to Reception counter.`);
+    setTimeout(() => {
+      setSuccessToast('');
+    }, 3000);
+
+    // 3. BACKGROUND ASYNC FIRESTORE PERSISTENCE (Parallel writes)
+    (async () => {
+      try {
+        const bgPromises: Promise<any>[] = [];
+
+        // Update appointment collections
+        const colsToUpdate = Array.from(new Set([targetCol, 'appointments', 'allpatients', 'patients']));
+        for (const col of colsToUpdate) {
+          bgPromises.push(updateDoc(doc(db, col, appId), feePayload).catch(() => { }));
+        }
+
+        // Create record in medicine_requests
+        bgPromises.push(
+          addDoc(collection(db, 'medicine_requests'), {
+            appointmentId: appId,
+            patientId,
+            patientName: patName,
+            phone: patPhone,
+            doctorName: doctorName,
+            branch: patBranch,
+            items: typedPrescriptions,
+            totalMedicineFee: mFee,
+            consultationFee: cFee,
+            canvasPrescriptionUrl: canvasUrl || `prescriptions/${patientId}_${Date.now()}_canvas.png`,
+            status: 'pending_dispense',
+            createdAt: new Date().toISOString()
+          }).catch(() => { })
+        );
+
+        // Create record in followups if scheduled
+        if (followUpDate) {
+          const genuineReg = activeConsultPatient.registrationId || activeConsultPatient.regId || activeConsultPatient.uhid || '';
+          bgPromises.push(
+            addDoc(collection(db, 'followups'), {
+              patientId,
+              regId: genuineReg,
+              registrationId: genuineReg,
+              patientName: patName,
+              phone: patPhone,
+              doctorName,
+              branch: patBranch,
+              scheduledDate: followUpDate,
+              interval: followUpInterval,
+              status: 'scheduled',
+              notes: chiefComplaints,
+              createdAt: new Date().toISOString()
+            }).catch(() => { })
+          );
+        }
+
+        await Promise.allSettled(bgPromises);
+      } catch (err) {
+        console.error('Background consultation persistence notice:', err);
+      }
+    })();
   };
 
   const displayedList = appointments.filter((a) => {
@@ -630,7 +654,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
           isDoctor={true}
           onClose={() => setActiveConsultPatient(null)}
           onSubmitConsultation={async (data) => {
-            await handleSubmitConsultation();
+            await handleSubmitConsultation(data);
           }}
         />
       )}

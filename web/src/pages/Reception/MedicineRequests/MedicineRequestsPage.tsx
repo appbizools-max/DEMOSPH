@@ -1,14 +1,51 @@
 import React, { useState } from 'react';
 import { Pill, Printer, Plus, Trash2, RotateCcw, Check, Save } from 'lucide-react';
-import { db } from '@app/shared';
+import { db, getBranchPhone } from '@app/shared';
 import { collection, addDoc } from 'firebase/firestore';
 import { SH_LOGO_BASE64 } from '../../../utils/logoBase64';
+
+const DOSAGE_TIMING_OPTIONS = [
+  { value: '', label: 'Select Pill Timing' },
+  { value: 'M - A - N', label: 'M - A - N (Morning - Afternoon - Night)' },
+  { value: 'M - - E', label: 'M - - E (Morning - Evening)' },
+  { value: 'M - - N', label: 'M - - N (Morning - Night)' },
+  { value: 'M - A -', label: 'M - A - (Morning - Afternoon)' },
+  { value: '- A - N', label: '- A - N (Afternoon - Night)' },
+  { value: 'M - - -', label: 'M - - - (Morning Only)' },
+  { value: '- A -', label: '- A - (Afternoon Only)' },
+  { value: '- - E', label: '- - E (Evening Only)' },
+  { value: '- - N', label: '- - N (Night Only)' },
+  { value: '1-0-1', label: '1-0-1 (Morning & Night)' },
+  { value: '1-1-1', label: '1-1-1 (Morning, Afternoon, Night)' },
+  { value: '1-0-0', label: '1-0-0 (Morning Only)' },
+  { value: '0-0-1', label: '0-0-1 (Night Only)' },
+  { value: 'SOS', label: 'SOS (As Needed)' },
+];
 
 export interface MedicineItem {
   name: string;
   timing: string;
-  duration: string;
+  amount: number;
 }
+
+const BRANCH_OPTIONS = [
+  'KPHB Branch',
+  'Nallagandla Branch',
+  'Dilshuknagar Branch',
+  'Chandanagar Branch',
+];
+
+const computeSplitLabel = (timing: string, perMedAmount: number): string => {
+  if (!timing || perMedAmount <= 0) return '';
+  const t = timing.toLowerCase().replace(/\s/g, '');
+  let parts = 0;
+  if (t === 'm-a-n' || t === '1-1-1') parts = 3;
+  else if (t === 'm--e' || t === 'm--n' || t === 'm-a-' || t === '-a-n' || t === '1-0-1') parts = 2;
+  else if (t === 'm---' || t === '-a-' || t === '--e' || t === '--n' || t === '1-0-0' || t === '0-0-1' || t === 'sos') parts = 1;
+  if (parts <= 1) return `₹${perMedAmount}`;
+  const perDose = Math.round(perMedAmount / parts);
+  return `₹${perMedAmount} → ₹${perDose} × ${parts}`;
+};
 
 export interface MedicineRequest {
   id?: string;
@@ -19,6 +56,7 @@ export interface MedicineRequest {
   branchName: string;
   condition: string;
   duration?: string;
+  totalAmount?: number;
   medicines: MedicineItem[];
   deliveryAddress?: string;
   status?: 'pending' | 'completed' | 'dispatched';
@@ -38,15 +76,16 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   const [branch, setBranch] = useState(currentBranch);
   const [condition, setCondition] = useState('');
   const [duration, setDuration] = useState('');
-  const [address, setAddress] = useState('');
+
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '', duration: '' }
+    { name: '', timing: '', amount: 0 }
   ]);
+  const [totalAmount, setTotalAmount] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const handleAddMedicineRow = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '', duration: '' }]);
+    setMedicines(prev => [...prev, { name: '', timing: '', amount: 0 }]);
   };
 
   const handleRemoveMedicineRow = (idx: number) => {
@@ -54,7 +93,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setMedicines(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleUpdateMedicineRow = (idx: number, field: keyof MedicineItem, val: string) => {
+  const handleUpdateMedicineRow = (idx: number, field: keyof MedicineItem, val: string | number) => {
     setMedicines(prev => {
       const updated = [...prev];
       updated[idx] = { ...updated[idx], [field]: val };
@@ -70,8 +109,8 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setBranch(currentBranch);
     setCondition('');
     setDuration('');
-    setAddress('');
-    setMedicines([{ name: '', timing: '', duration: '' }]);
+    setMedicines([{ name: '', timing: '', amount: 0 }]);
+    setTotalAmount(0);
     setSaveSuccess(false);
   };
 
@@ -107,7 +146,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     const conditionVal = (req.condition || 'GENERAL HEALTH CONSULTATION').toUpperCase();
     const branchDisplay = (req.branchName || currentBranch || 'KPHB Branch').toUpperCase();
     
-    const rawDuration = (req.duration || req.medicines?.[0]?.duration || '').replace(/months?/gi, '').trim();
+    const rawDuration = (req.duration || '').replace(/months?/gi, '').trim();
     const durationDisplay = rawDuration;
     const formattedDate = new Date().toLocaleDateString('en-GB'); // DD/MM/YYYY e.g. 10/09/2026
 
@@ -116,14 +155,17 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
       : [];
     const displayMedicines = validMedicines.length > 0 ? validMedicines : (req.medicines || []);
 
-    const rowsHtml = displayMedicines.map((m, idx) => `
+    const rowsHtml = displayMedicines.map((m, idx) => {
+      const splitLabel = computeSplitLabel(m.timing, m.amount || 0);
+      return `
       <tr>
         <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
         <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; font-size: 13.5px;">${m.name || '-'}</td>
         <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #475569;">${m.timing || '-'}</td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #0284c7; font-weight: 600;">${m.duration || '-'}</td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #0284c7; font-weight: 600;">${splitLabel || (m.amount > 0 ? '₹' + m.amount : '-')}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -340,7 +382,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                 <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
               </svg>
             </div>
-            <span>WWW.SPIRITUALHOMEO.COM</span>
+            <span>spiritualhomeoclinic.com</span>
           </div>
         </div>
 
@@ -370,7 +412,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                 <th style="width: 8%; text-align: center;">#</th>
                 <th style="width: 42%;">Remedy / Medicine Name</th>
                 <th style="width: 30%;">Dosage & Timing</th>
-                <th style="width: 20%;">Duration</th>
+                <th style="width: 20%;">Amount / Split</th>
               </tr>
             </thead>
             <tbody>
@@ -378,11 +420,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             </tbody>
           </table>
 
-          ${req.deliveryAddress ? `
-            <div style="margin-top: 18px; background: #f0fdf4; border: 1px solid #bbf7d0; padding: 10px 14px; border-radius: 8px; font-size: 12.5px; color: #166534;">
-              <strong>Home Delivery Address:</strong> ${req.deliveryAddress}
-            </div>
-          ` : ''}
+
 
           <div style="margin-top: 50px; text-align: center; font-size: 11.5px; color: #64748b; font-style: italic; border-top: 1px dashed #cbd5e1; padding-top: 14px;">
             This is a computer-generated document. No signature required.
@@ -397,7 +435,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
               </svg>
             </div>
-            <span>9095 176 176</span>
+            <span>${getBranchPhone(req.branchName)}</span>
           </div>
 
           <div class="footer-v-divider"></div>
@@ -409,7 +447,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                 <polyline points="22,6 12,13 2,6"></polyline>
               </svg>
             </div>
-            <span>SUPPORT@SPH.COM</span>
+            <span>support@spiritualhomeoclinic.com</span>
           </div>
 
           <div class="footer-v-divider"></div>
@@ -447,8 +485,9 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
       condition: condition.trim() || 'General Consultation Follow-up',
       duration: cleanDuration,
       status: 'pending',
-      deliveryAddress: address.trim(),
+
       requestedAt: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+      totalAmount: totalAmount,
       medicines: medicines.filter(m => m.name.trim().length > 0)
     };
   };
@@ -611,10 +650,13 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             <div>
               <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Phone Number *</label>
               <input
-                type="text"
+                type="tel"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={10}
                 placeholder="Enter phone number"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                 style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
               />
             </div>
@@ -634,13 +676,15 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
           <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.4fr 110px', gap: '12px', marginBottom: '14px' }}>
             <div>
               <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Branch Name</label>
-              <input
-                type="text"
-                placeholder="e.g. KPHB Branch"
+              <select
                 value={branch}
                 onChange={(e) => setBranch(e.target.value)}
-                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
-              />
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' as any, outline: 'none', cursor: 'pointer', background: '#fff' }}
+              >
+                {BRANCH_OPTIONS.map(b => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -666,16 +710,6 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             </div>
           </div>
 
-          <div>
-            <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Courier / Home Delivery Address (Optional)</label>
-            <input
-              type="text"
-              placeholder="Plot / Flat, Street, Landmark, Area, Hyderabad"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
-            />
-          </div>
         </div>
 
         {/* Section 2: Prescribed Remedies */}
@@ -705,6 +739,44 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             </button>
           </div>
 
+          {/* Total Amount & Per-Medicine Split */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '14px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '12px 16px', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: '13px', fontWeight: 800, color: '#166534' }}>Total Medicine Amount</div>
+            <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#ffffff', border: '1.5px solid #16a34a', borderRadius: '8px', padding: '6px 10px', width: '120px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 700, color: '#16a34a', marginRight: '3px' }}>₹</span>
+              <input
+                type="number"
+                placeholder="0"
+                value={totalAmount === 0 ? '' : totalAmount}
+                onChange={(e) => {
+                  const newTotal = e.target.value === '' ? 0 : Number(e.target.value) || 0;
+                  setTotalAmount(newTotal);
+                  // Auto-distribute equally across filled medicines
+                  const filled = medicines.filter(x => x.name.trim());
+                  if (filled.length > 0 && newTotal > 0) {
+                    const perMed = Math.round(newTotal / filled.length);
+                    setMedicines(prev => prev.map(m => m.name.trim() ? { ...m, amount: perMed } : m));
+                  }
+                }}
+                onWheel={(e) => e.currentTarget.blur()}
+                style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 800, color: '#0f172a' }}
+              />
+            </div>
+            {(() => {
+              const usedAmt = medicines.reduce((s, m) => s + (m.amount || 0), 0);
+              const remaining = totalAmount - usedAmt;
+              if (totalAmount <= 0) return null;
+              return (
+                <span style={{ fontSize: '12px', fontWeight: 700, color: remaining === 0 ? '#16a34a' : remaining > 0 ? '#d97706' : '#ef4444' }}>
+                  Allocated: ₹{usedAmt} / ₹{totalAmount}
+                  {remaining > 0 && ` (₹${remaining} remaining)`}
+                  {remaining < 0 && ` (₹${Math.abs(remaining)} over)`}
+                  {remaining === 0 && ' ✔'}
+                </span>
+              );
+            })()}
+          </div>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {medicines.map((m, idx) => (
               <div key={idx} style={{ display: 'flex', gap: '10px', alignItems: 'center', background: '#f8fafc', padding: '10px 14px', borderRadius: '10px', border: '1px solid #f1f5f9' }}>
@@ -718,20 +790,31 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                   onChange={(e) => handleUpdateMedicineRow(idx, 'name', e.target.value)}
                   style={{ flex: 1.5, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
                 />
-                <input
-                  type="text"
-                  placeholder="Dosage & Timing (e.g. 4 Drops Twice Daily)"
+                <select
                   value={m.timing}
                   onChange={(e) => handleUpdateMedicineRow(idx, 'timing', e.target.value)}
-                  style={{ flex: 1.2, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
-                />
-                <input
-                  type="text"
-                  placeholder="Duration (e.g. 1 Month)"
-                  value={m.duration}
-                  onChange={(e) => handleUpdateMedicineRow(idx, 'duration', e.target.value)}
-                  style={{ flex: 0.9, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
-                />
+                  style={{ flex: 1.2, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none', cursor: 'pointer' }}
+                >
+                  {DOSAGE_TIMING_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 8px', width: '100px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    value={m.amount === 0 ? '' : m.amount}
+                    onChange={(e) => handleUpdateMedicineRow(idx, 'amount', e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '13px', fontWeight: 700, color: '#0f172a' }}
+                  />
+                </div>
+                {m.timing && m.amount > 0 && (
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#16a34a', whiteSpace: 'nowrap', minWidth: '90px' }}>
+                    {computeSplitLabel(m.timing, m.amount)}
+                  </span>
+                )}
                 {medicines.length > 1 && (
                   <button
                     type="button"

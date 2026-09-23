@@ -10,6 +10,7 @@ import { ManageBranchesScreen } from './ManageBranches/ManageBranchesScreen';
 import { AttendanceRosterScreen } from '../HR/AttendanceRoster/AttendanceRosterScreen';
 import { EmployeeDailyWorksScreen } from '../HR/EmployeeWorks/EmployeeDailyWorksScreen';
 import { BranchCleaningScreen } from './BranchCleaning/BranchCleaningScreen';
+import { createFeeDiscountResponseNotificationInFirestore } from '../../utils/fcmService';
 
 interface AdminScreenProps {
   currentTab?: string;
@@ -647,6 +648,100 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
 
   const pendingLeaveCount = leaveRequests.filter(r => normalizeStatus(r.status) === 'Pending').length;
 
+  // Fee / Discount Requests State (Connected to Firestore 'fee_requests' collection)
+  const [feeRequests, setFeeRequests] = useState<any[]>([]);
+  const [feeStatusFilter, setFeeStatusFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected'>('All');
+
+  useEffect(() => {
+    if (!db) return;
+    const feeColRef = collection(db, 'fee_requests');
+    const unsub = onSnapshot(feeColRef, (snap) => {
+      const validDocs: any[] = [];
+      snap.forEach(d => {
+        validDocs.push({ id: d.id, ...d.data() });
+      });
+
+      validDocs.sort((a, b) => {
+        const tA = new Date(a.createdAt || a.requestedAt || 0).getTime();
+        const tB = new Date(b.createdAt || b.requestedAt || 0).getTime();
+        return tB - tA;
+      });
+
+      setFeeRequests(validDocs);
+    }, (err) => console.warn('Firestore mobile fee_requests error:', err));
+    return () => unsub();
+  }, []);
+
+  const normalizeFeeStatus = (status?: string) => {
+    if (!status) return 'Pending';
+    const s = String(status).toLowerCase();
+    if (s === 'approved') return 'Approved';
+    if (s === 'rejected') return 'Rejected';
+    return 'Pending';
+  };
+
+  const handleUpdateFeeRequestStatus = async (id: string, newStatus: 'Approved' | 'Rejected', req: any) => {
+    try {
+      if (!db) return;
+      const nowIso = new Date().toISOString();
+      let rejectNote = '';
+      if (newStatus === 'Rejected') {
+        rejectNote = 'Discount request rejected by HR';
+      }
+
+      const updateData: any = {
+        status: newStatus.toLowerCase(),
+        reviewedAt: nowIso,
+        reviewedBy: 'Admin / HR'
+      };
+      if (newStatus === 'Approved') {
+        updateData.approvedDiscount = Number(req.requestedDiscount || 0);
+      } else {
+        updateData.rejectReason = rejectNote;
+      }
+
+      await updateDoc(doc(db, 'fee_requests', id), updateData);
+
+      // Dual-sync to appointment doc if appointmentId is present
+      if (req.appointmentId) {
+        const appPayload: any = {
+          discountRequestStatus: newStatus.toLowerCase(),
+          updatedAt: nowIso
+        };
+        if (newStatus === 'Approved') {
+          appPayload.discount = Number(req.requestedDiscount || 0);
+          appPayload.discountInput = Number(req.requestedDiscount || 0);
+          appPayload.approvedDiscount = Number(req.requestedDiscount || 0);
+        } else {
+          appPayload.discount = 0;
+          appPayload.discountInput = 0;
+          appPayload.hrRejectReason = updateData.rejectReason;
+        }
+        await updateDoc(doc(db, 'appointments', req.appointmentId), appPayload).catch(() => {});
+        await updateDoc(doc(db, 'allpatients', req.appointmentId), appPayload).catch(() => {});
+        await updateDoc(doc(db, 'patients', req.appointmentId), appPayload).catch(() => {});
+      }
+
+      // Send Push & In-App Notification to Reception & Admin
+      createFeeDiscountResponseNotificationInFirestore({
+        patientName: req.patientName || 'Patient',
+        branch: req.branch || 'Main Branch',
+        status: newStatus,
+        discountAmount: Number(req.requestedDiscount || 0),
+        rejectReason: rejectNote,
+        reviewedBy: 'HR',
+        appointmentId: req.appointmentId || id
+      }).catch(() => {});
+
+      Alert.alert('Status Updated', `Fee Discount Request successfully marked as ${newStatus}!`);
+    } catch (e) {
+      console.error('Error updating fee request status in mobile Firestore:', e);
+      Alert.alert('Error', 'Failed to update fee request status. Please try again.');
+    }
+  };
+
+  const pendingFeeCount = feeRequests.filter(r => normalizeFeeStatus(r.status) === 'Pending').length;
+
   const [pendingCleaningCount, setPendingCleaningCount] = useState(0);
   useEffect(() => {
     if (!db) return;
@@ -1021,35 +1116,160 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
         </View>
       )}
 
-      {/* TAB: FEE REQUESTS (EMPTY PAGE READY FOR FUTURE USER SPECS) */}
+      {/* TAB: FEE REQUESTS (LIVE FIRESTORE WORKFLOW) */}
       {activeTab === 'fee_requests' && (
-        <View style={{
-          backgroundColor: '#ffffff',
-          borderRadius: 16,
-          padding: 36,
-          borderWidth: 1,
-          borderColor: '#e2e8f0',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginTop: 8
-        }}>
-          <View style={{
-            width: 52,
-            height: 52,
-            borderRadius: 14,
-            backgroundColor: '#eff6ff',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: 12
-          }}>
-            <Ionicons name="document-text-outline" size={26} color="#258ec8" />
+        <View style={{ gap: 10 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>
+              Medicine Discount Requests ({feeRequests.length})
+            </Text>
+            <View style={{ backgroundColor: '#eff6ff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+              <Text style={{ fontSize: 11, color: '#258ec8', fontWeight: '800' }}>FIRESTORE LIVE</Text>
+            </View>
           </View>
-          <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a', marginBottom: 4 }}>
-            Fee Requests
-          </Text>
-          <Text style={{ fontSize: 13, color: '#64748b', textAlign: 'center' }}>
-            This section is currently empty.
-          </Text>
+
+          {/* Filter Chips */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 4 }}>
+            {(['All', 'Pending', 'Approved', 'Rejected'] as const).map(st => {
+              const count = st === 'All'
+                ? feeRequests.length
+                : feeRequests.filter(r => normalizeFeeStatus(r.status) === st).length;
+              const isSelected = feeStatusFilter === st;
+              return (
+                <TouchableOpacity
+                  key={st}
+                  onPress={() => setFeeStatusFilter(st)}
+                  style={{
+                    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+                    backgroundColor: isSelected ? '#258ec8' : '#ffffff',
+                    borderWidth: 1, borderColor: isSelected ? '#258ec8' : '#cbd5e1'
+                  }}
+                >
+                  <Text style={{ fontSize: 11.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#ffffff' : '#64748b' }}>
+                    {st} {count > 0 ? `(${count})` : ''}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {feeRequests.length === 0 ? (
+            <View style={{
+              backgroundColor: '#ffffff',
+              borderRadius: 16,
+              padding: 32,
+              borderWidth: 1,
+              borderColor: '#e2e8f0',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginTop: 4
+            }}>
+              <Ionicons name="document-text-outline" size={32} color="#94a3b8" style={{ marginBottom: 8 }} />
+              <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a', marginBottom: 2 }}>
+                No Fee Requests
+              </Text>
+              <Text style={{ fontSize: 12, color: '#64748b', textAlign: 'center' }}>
+                All discount requests submitted by reception desks will appear here live from Firestore.
+              </Text>
+            </View>
+          ) : (
+            feeRequests
+              .filter(f => feeStatusFilter === 'All' ? true : normalizeFeeStatus(f.status) === feeStatusFilter)
+              .map(f => {
+                const status = normalizeFeeStatus(f.status);
+                const origTotal = Number(f.originalTotalAmount || 0);
+                const reqDisc = Number(f.requestedDiscount || 0);
+                const netAmount = Math.max(0, origTotal - reqDisc);
+                const formattedDate = f.createdAt || f.requestedAt
+                  ? new Date(f.createdAt || f.requestedAt).toLocaleString('en-IN', {
+                      day: '2-digit', month: 'short',
+                      hour: '2-digit', minute: '2-digit', hour12: true
+                    })
+                  : '-';
+
+                return (
+                  <View key={f.id} style={styles.card}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '800', color: '#0f172a' }}>
+                          {f.patientName || 'Patient'}
+                        </Text>
+                        <Text style={{ fontSize: 11.5, color: '#64748b' }}>
+                          +91 {f.patientPhone || '-'} • {f.branch || 'Main Branch'}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                          📅 {formattedDate}
+                        </Text>
+
+                        {/* Amount Breakdown Box */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, backgroundColor: '#f8fafc', padding: 6, borderRadius: 6, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                          <Text style={{ fontSize: 11, color: '#475569', fontWeight: '600' }}>
+                            Total: <Text style={{ fontWeight: '700', color: '#0f172a' }}>₹{origTotal}</Text>
+                          </Text>
+                          <Text style={{ fontSize: 11, color: '#dc2626', fontWeight: '700' }}>
+                            Disc: -₹{reqDisc}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: '#16a34a', fontWeight: '800' }}>
+                            Net: ₹{netAmount}
+                          </Text>
+                        </View>
+
+                        {/* Reason / Note */}
+                        <Text style={{ fontSize: 11.5, color: '#334155', marginTop: 6 }}>
+                          <Text style={{ fontWeight: '700' }}>Reason: </Text>{f.reason || 'No note specified'}
+                        </Text>
+                        {f.rejectReason && status === 'Rejected' ? (
+                          <Text style={{ fontSize: 11, color: '#dc2626', marginTop: 2 }}>
+                            Reject Note: {f.rejectReason}
+                          </Text>
+                        ) : null}
+                      </View>
+
+                      <View style={{
+                        backgroundColor: status === 'Approved' ? '#f0fdf4' : status === 'Rejected' ? '#fef2f2' : '#fffbeb',
+                        paddingHorizontal: 8,
+                        paddingVertical: 3,
+                        borderRadius: 6,
+                        borderWidth: 1,
+                        borderColor: status === 'Approved' ? '#bbf7d0' : status === 'Rejected' ? '#fecaca' : '#fde68a'
+                      }}>
+                        <Text style={{
+                          fontSize: 11,
+                          fontWeight: '800',
+                          color: status === 'Approved' ? '#16a34a' : status === 'Rejected' ? '#ef4444' : '#d97706'
+                        }}>
+                          {status}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Action Buttons for Pending */}
+                    {status === 'Pending' ? (
+                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, borderTopWidth: 1, borderTopColor: '#f1f5f9', paddingTop: 8 }}>
+                        <TouchableOpacity
+                          onPress={() => handleUpdateFeeRequestStatus(f.id, 'Approved', f)}
+                          style={{
+                            flex: 1, backgroundColor: '#16a34a', paddingVertical: 7, borderRadius: 6,
+                            alignItems: 'center', justifyContent: 'center'
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: '800', color: '#ffffff' }}>Approve ✓</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => handleUpdateFeeRequestStatus(f.id, 'Rejected', f)}
+                          style={{
+                            flex: 1, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#cbd5e1', paddingVertical: 7, borderRadius: 6,
+                            alignItems: 'center', justifyContent: 'center'
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: '800', color: '#ef4444' }}>Reject ✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })
+          )}
         </View>
       )}
 

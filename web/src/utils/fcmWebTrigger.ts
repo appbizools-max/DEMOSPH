@@ -233,3 +233,92 @@ export async function createStaffDailyReportNotificationInFirestore(payload: {
   }
 }
 
+/**
+ * Notifies HR and Admin when a Reception desk requests a medicine discount approval
+ */
+export async function createFeeDiscountRequestNotificationInFirestore(payload: {
+  patientName: string;
+  branch: string;
+  requestedDiscount: number | string;
+  originalTotalAmount: number | string;
+  reason: string;
+  appointmentId?: string;
+  patientPhone?: string;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const cleanBranch = normalizeBranchTopic(payload.branch);
+    const patientDisplay = payload.patientName || 'Patient';
+    const branchDisplay = payload.branch || 'Clinic Branch';
+    const discountNum = Number(payload.requestedDiscount || 0);
+    const totalNum = Number(payload.originalTotalAmount || 0);
+
+    const notiDoc = {
+      type: 'fee_discount_request',
+      title: 'New Discount Approval Request',
+      body: `₹${discountNum.toLocaleString('en-IN')} discount requested for ${patientDisplay} (${branchDisplay}). Reason: "${payload.reason}"`,
+      patientName: patientDisplay,
+      patientPhone: payload.patientPhone || '',
+      branch: branchDisplay,
+      targetBranch: cleanBranch,
+      requestedDiscount: discountNum,
+      originalTotalAmount: totalNum,
+      reason: payload.reason,
+      appointmentId: payload.appointmentId || '',
+      targetRoles: ['hr', 'admin'],
+      targetTopic: 'topic_all_branches_hr',
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+    };
+    await addDoc(collection(db, 'notifications'), notiDoc);
+    cleanupOldNotifications().catch(() => {});
+  } catch (e) {
+    console.warn('[FCM-Web] Error saving discount request notification:', e);
+  }
+}
+
+/**
+ * Notifies Reception and Admin when HR Approves or Rejects a discount request
+ */
+export async function createFeeDiscountResponseNotificationInFirestore(payload: {
+  patientName: string;
+  branch: string;
+  status: 'Approved' | 'Rejected';
+  discountAmount?: number | string;
+  rejectReason?: string;
+  reviewedBy?: string;
+  appointmentId?: string;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const cleanBranch = normalizeBranchTopic(payload.branch);
+    const patientDisplay = payload.patientName || 'Patient';
+    const branchDisplay = payload.branch || 'Clinic Branch';
+    const isApproved = payload.status === 'Approved';
+    const discountNum = Number(payload.discountAmount || 0);
+
+    const notiDoc = {
+      type: 'fee_discount_response',
+      title: isApproved ? 'Discount Request Approved ✓' : 'Discount Request Rejected ❌',
+      body: isApproved
+        ? `HR approved ₹${discountNum.toLocaleString('en-IN')} discount for ${patientDisplay} (${branchDisplay})`
+        : `HR rejected discount request for ${patientDisplay} (${branchDisplay}). ${payload.rejectReason ? `Note: "${payload.rejectReason}"` : ''}`,
+      patientName: patientDisplay,
+      branch: branchDisplay,
+      targetBranch: cleanBranch,
+      discountAmount: discountNum,
+      rejectReason: payload.rejectReason || '',
+      reviewedBy: payload.reviewedBy || 'HR',
+      status: payload.status.toLowerCase(),
+      targetRoles: ['reception', 'admin'],
+      targetTopic: `topic_branch_${cleanBranch}`,
+      appointmentId: payload.appointmentId || '',
+      createdAt: new Date().toISOString(),
+    };
+    await addDoc(collection(db, 'notifications'), notiDoc);
+    cleanupOldNotifications().catch(() => {});
+  } catch (e) {
+    console.warn('[FCM-Web] Error saving discount response notification:', e);
+  }
+}
+

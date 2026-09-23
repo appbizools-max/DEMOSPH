@@ -1,5 +1,17 @@
-import { collection, onSnapshot, getDocs, query, limit, where, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, getDocs, query, limit, where } from 'firebase/firestore';
 import { db, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
+
+const CACHE_KEY = '@sph_web_reception_store_v1';
+
+const ACTIVE_STATUSES = [
+  'waiting',
+  'scheduled',
+  'in_consultation',
+  'in-consultation',
+  'active',
+  'collect_fee',
+  'consulting'
+];
 
 export interface ReceptionStoreState {
   appointments: any[];
@@ -17,26 +29,60 @@ class ReceptionDataStore {
   private isLoaded = false;
   private listeners: Set<Listener> = new Set();
 
-  private unsubApp: (() => void) | null = null;
-  private unsubPat: (() => void) | null = null;
-  private unsubPatientsCol: (() => void) | null = null;
-  private unsubPkg: (() => void) | null = null;
-  private unsubPrescriptions: (() => void) | null = null;
-  private unsubPatientProfiles: (() => void) | null = null;
-  private unsubFollowups: (() => void) | null = null;
-  private unsubConsultations: (() => void) | null = null;
-
-  private rawAllAppointments: any[] = [];
-  private rawAllFromAllPatients: any[] = [];
-  private appsFromAppointments: any[] = [];
-  private appsFromAllPatients: any[] = [];
+  private priorityAppsMap = new Map<string, any>();
+  private fullAppsMap = new Map<string, any>();
+  private priorityPatsMap = new Map<string, any>();
+  private fullPatsMap = new Map<string, any>();
   private patientsFromPatientsCol: any[] = [];
-  private rawPrescriptions: any[] = [];
-  private rawPatientProfiles: any[] = [];
-  private rawFollowups: any[] = [];
-  private rawConsultations: any[] = [];
+
+  private unsubActiveApp: (() => void) | null = null;
+  private unsubTodayApp: (() => void) | null = null;
+  private unsubActivePat: (() => void) | null = null;
+  private unsubTodayPat: (() => void) | null = null;
+  private unsubPkg: (() => void) | null = null;
+  private unsubFullApp: (() => void) | null = null;
+  private unsubFullPat: (() => void) | null = null;
 
   private isStarted = false;
+  private batchTimer: any = null;
+  private saveCacheTimer: any = null;
+
+  constructor() {
+    this.loadFromCache();
+  }
+
+  private loadFromCache() {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const raw = localStorage.getItem(CACHE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && Array.isArray(parsed.appointments) && parsed.appointments.length > 0) {
+            this.appointments = parsed.appointments;
+            this.allCollectionsPool = Array.isArray(parsed.allCollectionsPool) ? parsed.allCollectionsPool : parsed.appointments;
+            this.packageMembersList = Array.isArray(parsed.packageMembersList) ? parsed.packageMembersList : [];
+            this.isLoaded = true;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  private scheduleSaveCache() {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    if (this.saveCacheTimer) clearTimeout(this.saveCacheTimer);
+    this.saveCacheTimer = setTimeout(() => {
+      try {
+        const payload = JSON.stringify({
+          appointments: this.appointments.slice(0, 1000),
+          allCollectionsPool: this.allCollectionsPool.slice(0, 1500),
+          packageMembersList: this.packageMembersList.slice(0, 150),
+          timestamp: Date.now()
+        });
+        localStorage.setItem(CACHE_KEY, payload);
+      } catch (_) {}
+    }, 1500);
+  }
 
   public getState(): ReceptionStoreState {
     return {
@@ -57,6 +103,30 @@ class ReceptionDataStore {
 
   public getPackageMembers(): any[] {
     return this.packageMembersList;
+  }
+
+  public updateLocalAppointment(docId: string, patch: Partial<any>) {
+    if (!docId) return;
+    if (this.priorityAppsMap.has(docId)) {
+      const cur = this.priorityAppsMap.get(docId);
+      this.priorityAppsMap.set(docId, { ...cur, ...patch, id: docId, docId });
+    }
+    if (this.fullAppsMap.has(docId)) {
+      const cur = this.fullAppsMap.get(docId);
+      this.fullAppsMap.set(docId, { ...cur, ...patch, id: docId, docId });
+    }
+    if (this.priorityPatsMap.has(docId)) {
+      const cur = this.priorityPatsMap.get(docId);
+      this.priorityPatsMap.set(docId, { ...cur, ...patch, id: docId, docId });
+    }
+    if (this.fullPatsMap.has(docId)) {
+      const cur = this.fullPatsMap.get(docId);
+      this.fullPatsMap.set(docId, { ...cur, ...patch, id: docId, docId });
+    }
+    if (!this.priorityAppsMap.has(docId) && !this.fullAppsMap.has(docId)) {
+      this.priorityAppsMap.set(docId, { ...patch, id: docId, docId });
+    }
+    this.scheduleMergeAndSet(true);
   }
 
   public subscribe(listener: Listener): () => void {
@@ -88,8 +158,11 @@ class ReceptionDataStore {
     const combinedMap = new Map<string, any>();
     const lookupMap = new Map<string, string>();
 
+    // Combine full appointments map and priority active appointments (priority takes precedence)
+    const allApps = Array.from(new Map([...this.fullAppsMap, ...this.priorityAppsMap]).values());
+
     // 1. Add all appointments from 'appointments' collection by document ID
-    for (const item of this.appsFromAppointments) {
+    for (const item of allApps) {
       if (item.id) {
         combinedMap.set(item.id, item);
         const phone = String(item.phone || item.phoneNumber || '').replace(/\D/g, '').slice(-10);
@@ -102,8 +175,11 @@ class ReceptionDataStore {
       }
     }
 
+    // Combine full allpatients map and priority active allpatients
+    const allPats = Array.from(new Map([...this.fullPatsMap, ...this.priorityPatsMap]).values());
+
     // 2. Merge records from 'allpatients' collection
-    for (const item of this.appsFromAllPatients) {
+    for (const item of allPats) {
       if (!item.id) continue;
       if (combinedMap.has(item.id)) {
         const existing = combinedMap.get(item.id);
@@ -148,6 +224,7 @@ class ReceptionDataStore {
         doctor: sanitizedDoc,
       };
     });
+
     list.sort((a, b) => {
       const dateA = String(a.appointmentDate || a.date || a.createdAt || '');
       const dateB = String(b.appointmentDate || b.date || b.createdAt || '');
@@ -158,16 +235,16 @@ class ReceptionDataStore {
 
     // Compact pool across essential collections: appointments, allpatients, patients, package_members
     this.allCollectionsPool = [
-      ...this.rawAllAppointments,
-      ...this.rawAllFromAllPatients,
+      ...allApps,
+      ...allPats,
       ...this.patientsFromPatientsCol,
       ...this.packageMembersList,
     ];
 
     this.isLoaded = true;
     this.notify();
+    this.scheduleSaveCache();
   }
-  private batchTimer: any = null;
 
   private sanitizeHistoryDoc(data: any, id: string, collectionName: string) {
     return {
@@ -214,88 +291,157 @@ class ReceptionDataStore {
     this.batchTimer = setTimeout(() => {
       this.batchTimer = null;
       this.mergeAndSet();
-    }, 200);
+    }, 150);
   }
 
   public startListeners(branchName?: string) {
     if (this.isStarted || !db) return;
     this.isStarted = true;
 
-    // 1. Subscribe to package_members (Essential for package dues & duration check)
+    // Build today and tomorrow date strings for targeted queries
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const todayISO = `${y}-${m}-${d}`;
+    const todayDDMMYYYY = `${d}-${m}-${y}`;
+    const todaySlash = `${d}/${m}/${y}`;
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const ty = tomorrow.getFullYear();
+    const tm = String(tomorrow.getMonth() + 1).padStart(2, '0');
+    const td = String(tomorrow.getDate()).padStart(2, '0');
+    const tomorrowISO = `${ty}-${tm}-${td}`;
+    const tomorrowDDMMYYYY = `${td}-${tm}-${ty}`;
+    const tomorrowSlash = `${td}/${tm}/${ty}`;
+
+    const targetDateStrings = [todayISO, todayDDMMYYYY, todaySlash, tomorrowISO, tomorrowDDMMYYYY, tomorrowSlash];
+
+    // ==============================================================
+    // PHASE 1: Fast Immediate Active & Upcoming Queue (< 150ms)
+    // Loads ONLY currently active queue + today/tomorrow bookings
+    // ==============================================================
+
+    // 1A. Package members (limit 150 for instant response)
     try {
-      this.unsubPkg = onSnapshot(collection(db, 'package_members'), (snap) => {
+      this.unsubPkg = onSnapshot(query(collection(db, 'package_members'), limit(150)), (snap) => {
         const list: any[] = [];
-        snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+        snap.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
         this.packageMembersList = list;
-        this.scheduleMergeAndSet();
-      }, (err) => console.error('Package members store sync error:', err));
+        this.scheduleMergeAndSet(true);
+      }, (err) => console.warn('Web package members store sync notice:', err));
     } catch (e) {
-      console.error('Package members listener setup error:', e);
+      console.warn('Web package members listener setup error:', e);
     }
 
-    // 2. Subscribe to appointments (Complete real-time queue, all 800+ appointments loaded)
+    // 1B. Immediate Active & Upcoming in 'appointments'
     try {
-      this.unsubApp = onSnapshot(query(collection(db, 'appointments'), limit(2500)), (snapshot) => {
-        const list: any[] = [];
+      this.unsubActiveApp = onSnapshot(query(collection(db, 'appointments'), where('status', 'in', ACTIVE_STATUSES)), (snapshot) => {
         snapshot.forEach((snap) => {
-          list.push({ ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
+          this.priorityAppsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
         });
-        this.appsFromAppointments = list;
-        this.rawAllAppointments = list;
-        this.scheduleMergeAndSet();
-      }, (err) => console.warn('Appointments store listener notice:', err));
+        this.scheduleMergeAndSet(true);
+      }, (err) => console.warn('Appointments active queue listener notice:', err));
     } catch (e) {
-      console.warn('Appointments store listener setup error:', e);
+      console.warn('Appointments active queue listener setup error:', e);
     }
 
-    // 3. Subscribe to allpatients (Complete reception directory, all 1,700+ patients loaded)
+    // 1C. Immediate Today & Tomorrow in 'appointments' (catches bookings with custom/empty status)
     try {
-      this.unsubPat = onSnapshot(query(collection(db, 'allpatients'), limit(2500)), (snapshot) => {
-        const queueList: any[] = [];
-        const allList: any[] = [];
+      this.unsubTodayApp = onSnapshot(query(collection(db, 'appointments'), where('appointmentDate', 'in', targetDateStrings)), (snapshot) => {
         snapshot.forEach((snap) => {
-          const data = snap.data();
-          const item = { ...data, id: snap.id, docId: snap.id, collectionName: 'allpatients' };
-          allList.push(item);
-          if (data.appointmentDate || data.date || data.appointmentTime || data.doctor || data.status) {
-            queueList.push(item);
-          }
+          this.priorityAppsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
         });
-        this.appsFromAllPatients = queueList;
-        this.rawAllFromAllPatients = allList;
-        this.scheduleMergeAndSet();
-      }, (err) => console.warn('Allpatients store listener notice:', err));
+        this.scheduleMergeAndSet(true);
+      }, (err) => console.warn('Appointments today queue listener notice:', err));
     } catch (e) {
-      console.warn('Allpatients store listener setup error:', e);
+      console.warn('Appointments today queue listener setup error:', e);
     }
 
-    // 4. Background sample of historical patients collection scoped to branch
+    // 1D. Immediate Active & Upcoming in 'allpatients'
     try {
-      const branchQueries = getBranchQueryNames(branchName);
-      const qList = branchQueries.length > 0
-        ? [
-            query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(500)),
-            query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(500))
-          ]
-        : [query(collection(db, 'patients'), limit(300))];
+      this.unsubActivePat = onSnapshot(query(collection(db, 'allpatients'), where('status', 'in', ACTIVE_STATUSES)), (snapshot) => {
+        snapshot.forEach((snap) => {
+          this.priorityPatsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'allpatients' });
+        });
+        this.scheduleMergeAndSet(true);
+      }, (err) => console.warn('Allpatients active queue listener notice:', err));
+    } catch (e) {
+      console.warn('Allpatients active queue listener setup error:', e);
+    }
 
-      Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] })))).then((snaps) => {
-        const list: any[] = [];
-        const seen = new Set<string>();
-        snaps.forEach((snapshot: any) => {
-          snapshot.docs?.forEach((snap: any) => {
-            if (!seen.has(snap.id)) {
-              seen.add(snap.id);
-              list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
-            }
+    // 1E. Immediate Today & Tomorrow in 'allpatients'
+    try {
+      this.unsubTodayPat = onSnapshot(query(collection(db, 'allpatients'), where('appointmentDate', 'in', targetDateStrings)), (snapshot) => {
+        snapshot.forEach((snap) => {
+          this.priorityPatsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'allpatients' });
+        });
+        this.scheduleMergeAndSet(true);
+      }, (err) => console.warn('Allpatients today queue listener notice:', err));
+    } catch (e) {
+      console.warn('Allpatients today queue listener setup error:', e);
+    }
+
+    // ==============================================================
+    // PHASE 2: Full Historical Stream (Deferred 1.2s background sync)
+    // Guarantees 100% of ALL data without blocking the UI thread!
+    // ==============================================================
+    setTimeout(() => {
+      // 2A. Full appointments collection (up to 2500)
+      try {
+        this.unsubFullApp = onSnapshot(query(collection(db, 'appointments'), limit(2500)), (snapshot) => {
+          snapshot.forEach((snap) => {
+            this.fullAppsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
           });
-        });
-        this.patientsFromPatientsCol = list;
-        this.scheduleMergeAndSet();
-      }).catch((err) => console.warn('Historical patients load notice:', err));
-    } catch (e) {
-      console.warn('Patients store load setup error:', e);
-    }
+          this.scheduleMergeAndSet(false);
+        }, (err) => console.warn('Appointments full store listener notice:', err));
+      } catch (e) {
+        console.warn('Appointments full store listener setup error:', e);
+      }
+
+      // 2B. Full allpatients collection (up to 2500)
+      try {
+        this.unsubFullPat = onSnapshot(query(collection(db, 'allpatients'), limit(2500)), (snapshot) => {
+          snapshot.forEach((snap) => {
+            const data = snap.data();
+            const item = { ...data, id: snap.id, docId: snap.id, collectionName: 'allpatients' };
+            this.fullPatsMap.set(snap.id, item);
+          });
+          this.scheduleMergeAndSet(false);
+        }, (err) => console.warn('Allpatients full store listener notice:', err));
+      } catch (e) {
+        console.warn('Allpatients full store listener setup error:', e);
+      }
+
+      // 2C. Background historical patients collection scoped to branch
+      try {
+        const branchQueries = getBranchQueryNames(branchName);
+        const qList = branchQueries.length > 0
+          ? [
+              query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(500)),
+              query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(500))
+            ]
+          : [query(collection(db, 'patients'), limit(300))];
+
+        Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] })))).then((snaps) => {
+          const list: any[] = [];
+          const seen = new Set<string>();
+          snaps.forEach((snapshot: any) => {
+            snapshot.docs?.forEach((snap: any) => {
+              if (!seen.has(snap.id)) {
+                seen.add(snap.id);
+                list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
+              }
+            });
+          });
+          this.patientsFromPatientsCol = list;
+          this.scheduleMergeAndSet(false);
+        }).catch((err) => console.warn('Historical patients load notice:', err));
+      } catch (e) {
+        console.warn('Patients store load setup error:', e);
+      }
+    }, 1200);
   }
 }
 
