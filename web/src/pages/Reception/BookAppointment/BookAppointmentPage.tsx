@@ -4,7 +4,7 @@ import {
   CheckCircle2, ChevronDown, Check, Home, Megaphone, ArrowRight, ShieldCheck, Info,
   ChevronLeft, ChevronRight, X, Building2, Lock, Search, Printer, UserX
 } from 'lucide-react';
-import { createDocument, db, sendBookingWhatsAppNotification, sanitizeDoctorName } from '@app/shared';
+import { createDocument, db, sendBookingWhatsAppNotification, sanitizeDoctorName, resolveCanonicalBranchId, getBranchQueryNames } from '@app/shared';
 import { collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
 import { generateRegistrationId, getBranchShortcut } from '../../../utils/idGenerator';
 import { createBookingNotificationInFirestore } from '../../../utils/fcmWebTrigger';
@@ -22,12 +22,23 @@ let GLOBAL_WEB_PATIENTS_CACHE: any[] = [];
 let GLOBAL_WEB_ALLPATIENTS_CACHE: any[] = [];
 let GLOBAL_WEB_APPTS_CACHE: any[] = [];
 
-export const CLINIC_BRANCHES = [
+const CLINIC_BRANCHES = [
   'KPHB Branch',
   'Nallagandla Branch',
   'Dilshuknagar Branch',
   'Chandanagar Branch',
 ];
+
+const normalizeBranchKey = (raw: string = ''): string => {
+  const resolved = resolveCanonicalBranchId(raw);
+  if (resolved) return resolved;
+  const clean = String(raw || '').toLowerCase().replace(/branch$/i, '').trim();
+  if (clean.includes('kphb') || clean.includes('kukatpally') || clean.includes('kpb')) return 'kphb';
+  if (clean.includes('nalla') || clean.includes('nallagandla') || clean.includes('ngl')) return 'nallagandla';
+  if (clean.includes('chanda') || clean.includes('chnr') || clean.includes('chandanagar') || clean.includes('chn')) return 'chandanagar';
+  if (clean.includes('dilshuk') || clean.includes('dilsukh') || clean.includes('dsnr') || clean.includes('dshnr') || clean.includes('dil')) return 'dilshuknagar';
+  return clean;
+};
 
 const WebAnalogClockModal: React.FC<{
   isOpen: boolean;
@@ -652,6 +663,27 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
 
   // Section 1: Patient Details
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
+  const [searchBranchFilter, setSearchBranchFilter] = useState<string>(() => currentBranch || 'Chandanagar Branch');
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (currentBranch && currentBranch !== 'All Branches') {
+      setSearchBranchFilter(currentBranch);
+    }
+  }, [currentBranch]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
   const [patientName, setPatientName] = useState('');
   const [diseases, setDiseases] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -995,10 +1027,13 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   const [existingAppointments, setExistingAppointments] = useState<any[]>(GLOBAL_WEB_APPTS_CACHE);
   const [patientsList, setPatientsList] = useState<any[]>(GLOBAL_WEB_PATIENTS_CACHE);
   const [allPatientsList, setAllPatientsList] = useState<any[]>(GLOBAL_WEB_ALLPATIENTS_CACHE);
+  const [liveSearchResults, setLiveSearchResults] = useState<any[]>([]);
+  const [isSearchingLive, setIsSearchingLive] = useState(false);
 
+  // 1. Realtime listener for appointments (today's queue and all recent bookings)
   useEffect(() => {
     try {
-      const appColRef = collection(db, 'appointments');
+      const appColRef = query(collection(db, 'appointments'), limit(2500));
       const unsubscribe = onSnapshot(appColRef, (snapshot) => {
         const appList: any[] = [];
         snapshot.forEach((snap) => {
@@ -1011,24 +1046,10 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     } catch (e) { }
   }, []);
 
+  // 2. Realtime listener for allpatients (reception directory)
   useEffect(() => {
     try {
-      const patColRef = collection(db, 'patients');
-      const unsubscribe = onSnapshot(patColRef, (snapshot) => {
-        const list: any[] = [];
-        snapshot.forEach((snap) => {
-          list.push({ id: snap.id, ...snap.data() });
-        });
-        GLOBAL_WEB_PATIENTS_CACHE = list;
-        setPatientsList(list);
-      }, () => { });
-      return () => unsubscribe();
-    } catch (e) { }
-  }, []);
-
-  useEffect(() => {
-    try {
-      const allPatColRef = collection(db, 'allpatients');
+      const allPatColRef = query(collection(db, 'allpatients'), limit(2500));
       const unsubscribe = onSnapshot(allPatColRef, (snapshot) => {
         const list: any[] = [];
         snapshot.forEach((snap) => {
@@ -1041,19 +1062,285 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     } catch (e) { }
   }, []);
 
-  // Deduplicated Patient History Database
+  // 3. Load historical patients scoped to selected branch
+  useEffect(() => {
+    let isMounted = true;
+    const loadBranchPatients = async () => {
+      try {
+        const branchQueries = getBranchQueryNames(searchBranchFilter);
+        const qList = branchQueries.length > 0
+          ? [
+              query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(1000)),
+              query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(1000))
+            ]
+          : [query(collection(db, 'patients'), limit(500))];
+
+        const snaps = await Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] }))));
+        if (!isMounted) return;
+        const list: any[] = [];
+        const seen = new Set<string>();
+        snaps.forEach((snap: any) => {
+          snap.docs?.forEach((docSnap: any) => {
+            if (!seen.has(docSnap.id)) {
+              seen.add(docSnap.id);
+              list.push({ id: docSnap.id, ...docSnap.data() });
+            }
+          });
+        });
+        GLOBAL_WEB_PATIENTS_CACHE = list;
+        setPatientsList(list);
+      } catch (err) {
+        console.warn('Branch patients load notice:', err);
+      }
+    };
+    loadBranchPatients();
+    return () => { isMounted = false; };
+  }, [searchBranchFilter]);
+
+  // 4. Live Firestore Search Fallback for any query (checks across all 11,600+ patients and appointments in Firestore)
+  useEffect(() => {
+    const trimmed = activeSearchQuery.trim();
+    if (trimmed.length < 2) {
+      setLiveSearchResults([]);
+      setIsSearchingLive(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearchingLive(true);
+      try {
+        const cleanDigits = trimmed.replace(/\D/g, '');
+        const isPureDigits = cleanDigits.length >= 2 && /^\d+$/.test(trimmed.replace(/[\s\-\+]/g, ''));
+        const queriesToRun: any[] = [];
+
+        if (isPureDigits || cleanDigits.length >= 7) {
+          const tenDigit = cleanDigits.slice(-10);
+          queriesToRun.push(
+            getDocs(query(collection(db, 'patients'), where('phone', '==', tenDigit), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('phone', '==', tenDigit), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('phone', '==', tenDigit), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('phoneNumber', '==', tenDigit), limit(25))),
+            getDocs(query(collection(db, 'patients'), where('phone', '==', '+91' + tenDigit), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('phone', '==', '+91' + tenDigit), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('phone', '==', '+91' + tenDigit), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('phoneNumber', '==', '+91' + tenDigit), limit(25))),
+            getDocs(query(collection(db, 'patients'), where('phoneNumber', '==', tenDigit), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('phoneNumber', '==', tenDigit), limit(25)))
+          );
+        } else {
+          const titleCase = trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+          const upperCase = trimmed.toUpperCase();
+
+          queriesToRun.push(
+            // Registration IDs
+            getDocs(query(collection(db, 'patients'), where('registrationId', '==', trimmed), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('registrationId', '==', trimmed), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('registrationId', '==', trimmed), limit(25))),
+            getDocs(query(collection(db, 'patients'), where('regNo', '==', trimmed), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('regNo', '==', trimmed), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('regId', '==', trimmed), limit(25))),
+            // Full name prefixes across patients, allpatients, and appointments
+            getDocs(query(collection(db, 'patients'), where('fullName', '>=', titleCase), where('fullName', '<=', titleCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('patientName', '>=', titleCase), where('patientName', '<=', titleCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('patientName', '>=', titleCase), where('patientName', '<=', titleCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('name', '>=', titleCase), where('name', '<=', titleCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('fullName', '>=', titleCase), where('fullName', '<=', titleCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'patients'), where('fullName', '>=', upperCase), where('fullName', '<=', upperCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'allpatients'), where('patientName', '>=', upperCase), where('patientName', '<=', upperCase + '\uf8ff'), limit(25))),
+            getDocs(query(collection(db, 'appointments'), where('patientName', '>=', upperCase), where('patientName', '<=', upperCase + '\uf8ff'), limit(25)))
+          );
+        }
+
+        const results = await Promise.all(queriesToRun.map(q => q.catch(() => ({ docs: [] }))));
+        const matchedList: any[] = [];
+        const seenIds = new Set<string>();
+
+        results.forEach((snap: any) => {
+          snap.docs?.forEach((docSnap: any) => {
+            if (!seenIds.has(docSnap.id)) {
+              seenIds.add(docSnap.id);
+              matchedList.push({ id: docSnap.id, ...docSnap.data() });
+            }
+          });
+        });
+
+        setLiveSearchResults(matchedList);
+      } catch (err) {
+        console.warn('Live search error:', err);
+      } finally {
+        setIsSearchingLive(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [activeSearchQuery]);
+
+  // Deduplicated Patient History Database across allpatients, patients, appointments, receptionDataStore & live search
   interface PatientRecordItem {
     id: string;
+    regId: string;
     name: string;
     phone: string;
     email: string;
     diseases: string;
     branch: string;
+    branchKeys: Set<string>;
     nameLower: string;
-    phoneLower: string;
+    phoneClean: string;
+    source: string;
+    apptDate?: string;
+    apptTime?: string;
   }
 
-  const patientSuggestions: PatientRecordItem[] = [];
+  // Unified patient records from both allpatients and patients (plus appointments, receptionDataStore, and liveSearchResults)
+  const allUnifiedPatients = useMemo<PatientRecordItem[]>(() => {
+    const map = new Map<string, PatientRecordItem>();
+
+    const addRecord = (item: any) => {
+      if (!item) return;
+      const rawName = String(item.patientName || item.fullName || item.name || '').trim();
+      const rawPhone = String(item.phone || item.phoneNumber || item.mobile || item.contactNumber || '').replace(/\D/g, '');
+      const cleanPhone = rawPhone.slice(-10);
+
+      // Must have at least a valid name or phone number
+      if (!rawName && cleanPhone.length < 10) return;
+
+      const regId = String(item.registrationId || item.regId || item.regNo || item.patientId || item.uhid || item.id || '').trim();
+      const docId = String(item.id || item.patientDocId || regId || '').trim();
+      const email = String(item.email || item.emailAddress || '').trim();
+      const diseases = String(item.subject || item.symptoms || item.diseases || item.problem || item.disease || item.healthIssue || item.complaint || item.issue || '').trim();
+      const rawBranch = String(item.branchName || item.branch || item.targetBranch || item.homeBranch || item.branchId || '').trim();
+      const branchKey = normalizeBranchKey(rawBranch) || normalizeBranchKey(regId);
+      const apptDate = String(item.appointmentDate || item.date || item.dateString || '').trim();
+      const apptTime = String(item.appointmentTime || item.time || item.timeSlot || '').trim();
+
+      const dedupeKey = cleanPhone.length >= 10
+        ? `phone:${cleanPhone}`
+        : regId
+          ? `reg:${regId.toLowerCase()}`
+          : `name:${rawName.toLowerCase()}`;
+
+      if (map.has(dedupeKey)) {
+        const existing = map.get(dedupeKey)!;
+        if (!existing.email && email) existing.email = email;
+        if (!existing.diseases && diseases) existing.diseases = diseases;
+        if (!existing.regId && regId) existing.regId = regId;
+        if (apptDate && !existing.apptDate) {
+          existing.apptDate = apptDate;
+          existing.apptTime = apptTime;
+        }
+        if (rawName && existing.name === 'Patient') {
+          existing.name = rawName;
+          existing.nameLower = rawName.toLowerCase();
+        }
+        if (branchKey) existing.branchKeys.add(branchKey);
+        if (!existing.branch && rawBranch) existing.branch = rawBranch;
+        return;
+      }
+
+      const branchKeysSet = new Set<string>();
+      if (branchKey) branchKeysSet.add(branchKey);
+
+      map.set(dedupeKey, {
+        id: docId || regId || cleanPhone,
+        regId: regId || docId,
+        name: rawName || 'Patient',
+        phone: cleanPhone || rawPhone,
+        email,
+        diseases,
+        branch: rawBranch || '',
+        branchKeys: branchKeysSet,
+        nameLower: rawName.toLowerCase(),
+        phoneClean: cleanPhone || rawPhone,
+        source: item.source || item.marketingSource || 'Old Patient',
+        apptDate,
+        apptTime
+      });
+    };
+
+    // 1. Process allpatients collection
+    if (Array.isArray(allPatientsList)) {
+      for (const p of allPatientsList) addRecord(p);
+    }
+
+    // 2. Process patients collection
+    if (Array.isArray(patientsList)) {
+      for (const p of patientsList) addRecord(p);
+    }
+
+    // 3. Process appointments collection
+    if (Array.isArray(existingAppointments)) {
+      for (const a of existingAppointments) addRecord(a);
+    }
+
+    // 4. Process receptionDataStore allCollectionsPool
+    try {
+      const storePool = receptionDataStore.getAllCollectionsPool();
+      if (Array.isArray(storePool)) {
+        for (const sp of storePool) addRecord(sp);
+      }
+    } catch (e) { }
+
+    // 5. Process liveSearchResults
+    if (Array.isArray(liveSearchResults)) {
+      for (const lr of liveSearchResults) addRecord(lr);
+    }
+
+    return Array.from(map.values());
+  }, [allPatientsList, patientsList, existingAppointments, liveSearchResults]);
+
+  // Live filter patient suggestions based on activeSearchQuery and searchBranchFilter
+  const patientSuggestions = useMemo<PatientRecordItem[]>(() => {
+    const queryStr = activeSearchQuery.trim().toLowerCase();
+    if (queryStr.length < 2) return [];
+
+    const digitsOnly = queryStr.replace(/\D/g, '');
+    const targetBranchKey = normalizeBranchKey(searchBranchFilter);
+
+    const branchMatches: PatientRecordItem[] = [];
+    const otherBranchMatches: PatientRecordItem[] = [];
+
+    for (const p of allUnifiedPatients) {
+      // 1. Query match: check name, phone, or registration/patient ID
+      const nameMatches = p.nameLower.includes(queryStr);
+      const phoneMatches = digitsOnly.length >= 2 && p.phoneClean.includes(digitsOnly);
+      const idMatches = p.id.toLowerCase().includes(queryStr) || (p.regId && p.regId.toLowerCase().includes(queryStr));
+
+      if (!nameMatches && !phoneMatches && !idMatches) {
+        continue;
+      }
+
+      // 2. Branch check:
+      // Prioritize selected branch first, while keeping other branches accessible
+      const isCurrentBranch = !targetBranchKey || p.branchKeys.size === 0 || p.branchKeys.has(targetBranchKey);
+
+      if (isCurrentBranch) {
+        branchMatches.push(p);
+      } else {
+        otherBranchMatches.push(p);
+      }
+    }
+
+    const sortFn = (a: PatientRecordItem, b: PatientRecordItem) => {
+      const aNameStarts = a.nameLower.startsWith(queryStr) ? 0 : 1;
+      const bNameStarts = b.nameLower.startsWith(queryStr) ? 0 : 1;
+      if (aNameStarts !== bNameStarts) return aNameStarts - bNameStarts;
+
+      if (digitsOnly.length >= 2) {
+        const aPhoneStarts = a.phoneClean.startsWith(digitsOnly) ? 0 : 1;
+        const bPhoneStarts = b.phoneClean.startsWith(digitsOnly) ? 0 : 1;
+        if (aPhoneStarts !== bPhoneStarts) return aPhoneStarts - bPhoneStarts;
+      }
+
+      return a.nameLower.localeCompare(b.nameLower);
+    };
+
+    branchMatches.sort(sortFn);
+    otherBranchMatches.sort(sortFn);
+
+    // Return current branch matches at the top, followed by other branch matches (max 35)
+    return [...branchMatches, ...otherBranchMatches].slice(0, 35);
+  }, [allUnifiedPatients, activeSearchQuery, searchBranchFilter]);
 
   const handleSelectPatientSuggestion = (item: PatientRecordItem) => {
     setPatientName(item.name || '');
@@ -1064,12 +1351,20 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     setPatientData(prev => ({
       ...prev,
       patientId: item.id,
+      regID: item.regId || item.id,
+      registrationId: item.regId || item.id,
       fullName: item.name,
       patientName: item.name,
       phone: item.phone,
-      source: 'Old Patient'
+      homeBranch: item.branch || prev.homeBranch,
+      branchName: item.branch || prev.branchName,
+      source: 'Old Patient',
+      patientType: 'revisit',
+      isNewPatient: false,
+      isExistingProfile: true
     }));
-    setPatientSearchTerm(item.name || item.phone || '');
+    setBypassPhoneCheck(true);
+    setPatientSearchTerm(item.name ? `${item.name} (${item.phone || 'No Phone'})` : item.phone || '');
     setActiveSearchQuery('');
     setShowSuggestions(false);
   };
@@ -1812,67 +2107,117 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
             <div style={{ flex: 1, height: '1px', background: '#f1f5f9', marginLeft: '8px' }} />
           </div>
 
-          {/* DEDICATED PROMINENT PATIENT SEARCH BAR */}
-          <div style={{ position: 'relative', marginBottom: '22px' }}>
-            <label style={{ display: 'block', fontSize: '12.5px !important', fontWeight: 800, color: '#258ec8', marginBottom: '8px' }}>
-              🔎 Search Existing Patient (Type 2+ letters or phone digits)
-            </label>
-            <div style={{
-              background: '#f8fafc',
-              border: '2px solid #258ec8',
-              borderRadius: '14px',
-              padding: '0 16px',
-              height: '52px',
-              display: 'flex',
-              alignItems: 'center',
-              boxSizing: 'border-box',
-              boxShadow: '0 2px 12px rgba(37, 142, 200, 0.12)'
-            }}>
-              <Search size={22} color="#258ec8" style={{ marginRight: '12px', flexShrink: 0 }} />
-              <input
-                type="text"
-                placeholder="Search patient by Name or Mobile Number..."
-                value={patientSearchTerm}
-                onFocus={() => {
-                  setActiveSearchQuery(patientSearchTerm);
-                  setShowSuggestions(true);
-                }}
-                onChange={e => {
-                  const val = e.target.value;
-                  setPatientSearchTerm(val);
-                  setActiveSearchQuery(val);
-                  setShowSuggestions(true);
-                }}
-                style={{ border: 'none', outline: 'none', width: '100%', fontSize: '14px !important', color: '#0f172a', fontWeight: 600, background: 'transparent' }}
-              />
-              {patientSearchTerm ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPatientSearchTerm('');
-                    setActiveSearchQuery('');
-                    setShowSuggestions(false);
+          {/* DEDICATED PROMINENT PATIENT SEARCH BAR WITH COMPACT BRANCH DROPDOWN */}
+          <div ref={searchContainerRef} style={{ position: 'relative', marginBottom: '22px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <label style={{ display: 'block', fontSize: '12.5px !important', fontWeight: 800, color: '#258ec8' }}>
+                🔎 Search Existing Patient (Type 2+ letters or phone digits)
+              </label>
+              <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>
+                Branch: <strong style={{ color: '#0284c7' }}>{searchBranchFilter}</strong>
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}>
+              {/* Search Input Box */}
+              <div style={{
+                flex: 1,
+                background: '#f8fafc',
+                border: '2px solid #258ec8',
+                borderRadius: '12px',
+                padding: '0 16px',
+                height: '48px',
+                display: 'flex',
+                alignItems: 'center',
+                boxSizing: 'border-box',
+                boxShadow: '0 2px 10px rgba(37, 142, 200, 0.08)'
+              }}>
+                <Search size={20} color="#258ec8" style={{ marginRight: '10px', flexShrink: 0 }} />
+                <input
+                  type="text"
+                  placeholder={`Search patient in ${searchBranchFilter.replace(' Branch', '')} by Name, Mobile, or Reg ID...`}
+                  value={patientSearchTerm}
+                  onFocus={() => {
+                    setActiveSearchQuery(patientSearchTerm);
+                    setShowSuggestions(true);
                   }}
-                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: '4px', color: '#64748b' }}
+                  onChange={e => {
+                    const val = e.target.value;
+                    setPatientSearchTerm(val);
+                    setActiveSearchQuery(val);
+                    setShowSuggestions(true);
+                  }}
+                  style={{ border: 'none', outline: 'none', width: '100%', fontSize: '13.5px !important', color: '#0f172a', fontWeight: 600, background: 'transparent' }}
+                />
+                {patientSearchTerm ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPatientSearchTerm('');
+                      setActiveSearchQuery('');
+                      setShowSuggestions(false);
+                    }}
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', padding: '4px', color: '#64748b' }}
+                    title="Clear search"
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
+              </div>
+
+              {/* Small Compact Branch Dropdown */}
+              <div style={{
+                width: '145px',
+                flexShrink: 0,
+                background: '#ffffff',
+                border: '1.5px solid #cbd5e1',
+                borderRadius: '12px',
+                padding: '0 8px 0 10px',
+                height: '48px',
+                display: 'flex',
+                alignItems: 'center',
+                boxSizing: 'border-box'
+              }}>
+                <Building2 size={15} color="#0284c7" style={{ marginRight: '6px', flexShrink: 0 }} />
+                <select
+                  value={searchBranchFilter}
+                  onChange={(e) => {
+                    setSearchBranchFilter(e.target.value);
+                    setShowSuggestions(true);
+                  }}
+                  style={{
+                    border: 'none',
+                    outline: 'none',
+                    width: '100%',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    color: '#0f172a',
+                    background: 'transparent',
+                    cursor: 'pointer'
+                  }}
+                  title="Change branch to search other branch patients"
                 >
-                  <X size={18} />
-                </button>
-              ) : null}
+                  <option value="Chandanagar Branch">Chandanagar</option>
+                  <option value="KPHB Branch">KPHB</option>
+                  <option value="Dilshuknagar Branch">Dilshuknagar</option>
+                  <option value="Nallagandla Branch">Nallagandla</option>
+                </select>
+              </div>
             </div>
 
             {/* PATIENT RECOMMENDATIONS DROPDOWN FROM SEARCH BAR */}
-            {showSuggestions && activeSearchQuery.trim().length >= 2 && patientSuggestions.length > 0 && (
+            {showSuggestions && activeSearchQuery.trim().length >= 2 && (
               <div style={{
                 position: 'absolute',
                 top: '84px',
-                left: '-8px',
-                right: '-8px',
+                left: '0',
+                right: '0',
                 background: '#ffffff',
                 border: '1px solid #cbd5e1',
                 borderRadius: '16px',
                 boxShadow: '0 20px 45px -10px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.04)',
                 zIndex: 9999,
-                maxHeight: '340px',
+                maxHeight: '360px',
                 overflowY: 'auto',
                 overflowX: 'hidden'
               }}>
@@ -1889,87 +2234,119 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                   justifyContent: 'space-between',
                   alignItems: 'center'
                 }}>
-                  <span>Matching Patients</span>
-                  <span style={{ background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: '10px', fontSize: '10px !important' }}>
-                    {patientSuggestions.length} Found
-                  </span>
+                  <span>Matching Patients ({searchBranchFilter.replace(' Branch', '')})</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {isSearchingLive && (
+                      <span style={{ fontSize: '10.5px !important', color: '#0284c7', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        ⚡ Searching database...
+                      </span>
+                    )}
+                    <span style={{ background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: '10px', fontSize: '10px !important' }}>
+                      {patientSuggestions.length} Found
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowSuggestions(false)}
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#94a3b8', padding: '2px' }}
+                      title="Close"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
                 </div>
-                {patientSuggestions.map((item, idx) => (
-                  <div
-                    key={idx}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      handleSelectPatientSuggestion(item);
-                    }}
-                    onClick={() => handleSelectPatientSuggestion(item)}
-                    style={{
-                      padding: '12px 16px',
-                      borderBottom: idx < patientSuggestions.length - 1 ? '1px solid #f1f5f9' : 'none',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '12px',
-                      background: '#ffffff',
-                      transition: 'all 0.15s ease'
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f9ff')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = '#ffffff')}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        width: '38px',
-                        height: '38px',
-                        borderRadius: '50%',
-                        background: '#eff6ff',
-                        border: '1px solid #dbeafe',
+
+                {patientSuggestions.length === 0 ? (
+                  <div style={{ padding: '20px 16px', textAlign: 'center', color: '#64748b' }}>
+                    <div style={{ fontWeight: 700, fontSize: '13px', color: '#334155', marginBottom: '4px' }}>
+                      {isSearchingLive ? `Searching patient records for "${activeSearchQuery}"...` : `No patients found matching "${activeSearchQuery}"`}
+                    </div>
+                    <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+                      {isSearchingLive ? 'Scanning all collections and historical database...' : 'Check spelling or phone digits, or continue entering new patient details below.'}
+                    </div>
+                  </div>
+                ) : (
+                  patientSuggestions.map((item, idx) => (
+                    <div
+                      key={item.id + '_' + idx}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        handleSelectPatientSuggestion(item);
+                      }}
+                      onClick={() => handleSelectPatientSuggestion(item)}
+                      style={{
+                        padding: '12px 16px',
+                        borderBottom: idx < patientSuggestions.length - 1 ? '1px solid #f1f5f9' : 'none',
+                        cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#0284c7',
-                        fontWeight: 700,
-                        flexShrink: 0
-                      }}>
-                        <User size={18} />
-                      </div>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: '14px !important', fontWeight: 700, color: '#0f172a' }}>{item.name || 'Unnamed Patient'}</span>
-                          {item.id && (
-                            <span style={{ background: '#e0f2fe', border: '1px solid #bae6fd', color: '#0284c7', padding: '1px 7px', borderRadius: '6px', fontSize: '10.5px !important', fontWeight: 800 }}>
-                              🆔 {item.id}
-                            </span>
-                          )}
-                          {item.branch && (
-                            <span style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', padding: '1px 7px', borderRadius: '6px', fontSize: '10.5px !important', fontWeight: 600 }}>
-                              📍 {item.branch}
-                            </span>
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        background: '#ffffff',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f9ff')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = '#ffffff')}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          width: '38px',
+                          height: '38px',
+                          borderRadius: '50%',
+                          background: '#eff6ff',
+                          border: '1px solid #dbeafe',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#0284c7',
+                          fontWeight: 700,
+                          flexShrink: 0
+                        }}>
+                          <User size={18} />
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '14px !important', fontWeight: 700, color: '#0f172a' }}>{item.name || 'Unnamed Patient'}</span>
+                            {item.regId && (
+                              <span style={{ background: '#e0f2fe', border: '1px solid #bae6fd', color: '#0284c7', padding: '1px 7px', borderRadius: '6px', fontSize: '10.5px !important', fontWeight: 800 }}>
+                                🆔 {item.regId}
+                              </span>
+                            )}
+                            {item.branch && (
+                              <span style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', padding: '1px 7px', borderRadius: '6px', fontSize: '10.5px !important', fontWeight: 600 }}>
+                                📍 {item.branch}
+                              </span>
+                            )}
+                            {item.apptDate && (
+                              <span style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '1px 7px', borderRadius: '6px', fontSize: '10.5px !important', fontWeight: 700 }}>
+                                📅 Appt: {item.apptDate} {item.apptTime ? `• ${item.apptTime}` : ''}
+                              </span>
+                            )}
+                          </div>
+                          {item.diseases && (
+                            <div style={{ fontSize: '11.5px !important', color: '#64748b', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              🩺 {item.diseases}
+                            </div>
                           )}
                         </div>
-                        {item.diseases && (
-                          <div style={{ fontSize: '11.5px !important', color: '#64748b', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            🩺 {item.diseases}
-                          </div>
-                        )}
                       </div>
+                      <span style={{
+                        background: '#f0f9ff',
+                        border: '1px solid #bae6fd',
+                        color: '#0369a1',
+                        padding: '4px 10px',
+                        borderRadius: '8px',
+                        fontSize: '11.5px !important',
+                        fontWeight: 700,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        flexShrink: 0
+                      }}>
+                        <Phone size={12} /> {item.phone || 'No Phone'}
+                      </span>
                     </div>
-                    <span style={{
-                      background: '#f0f9ff',
-                      border: '1px solid #bae6fd',
-                      color: '#0369a1',
-                      padding: '4px 10px',
-                      borderRadius: '8px',
-                      fontSize: '11.5px !important',
-                      fontWeight: 700,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      flexShrink: 0
-                    }}>
-                      <Phone size={12} /> {item.phone || 'No Phone'}
-                    </span>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             )}
           </div>

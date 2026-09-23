@@ -233,9 +233,9 @@ class ReceptionDataStore {
       console.error('Package members listener setup error:', e);
     }
 
-    // 2. Subscribe to appointments (Essential for live queue, sorted newest first, limited to 400 for fast loading)
+    // 2. Subscribe to appointments (Complete real-time queue, all 800+ appointments loaded)
     try {
-      this.unsubApp = onSnapshot(query(collection(db, 'appointments'), orderBy('createdAt', 'desc'), limit(400)), (snapshot) => {
+      this.unsubApp = onSnapshot(query(collection(db, 'appointments'), limit(2500)), (snapshot) => {
         const list: any[] = [];
         snapshot.forEach((snap) => {
           list.push({ ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
@@ -248,9 +248,9 @@ class ReceptionDataStore {
       console.warn('Appointments store listener setup error:', e);
     }
 
-    // 3. Subscribe to allpatients (Essential for reception directory, sorted newest first, limited to 400 for fast loading)
+    // 3. Subscribe to allpatients (Complete reception directory, all 1,700+ patients loaded)
     try {
-      this.unsubPat = onSnapshot(query(collection(db, 'allpatients'), orderBy('createdAt', 'desc'), limit(400)), (snapshot) => {
+      this.unsubPat = onSnapshot(query(collection(db, 'allpatients'), limit(2500)), (snapshot) => {
         const queueList: any[] = [];
         const allList: any[] = [];
         snapshot.forEach((snap) => {

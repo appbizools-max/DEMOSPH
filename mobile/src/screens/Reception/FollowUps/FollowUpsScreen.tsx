@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, memo } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Linking, ActivityIndicator, ScrollView, Modal, TextInput, Alert, Platform } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { sendBookingWhatsAppNotification, CanonicalBranchId, resolveCanonicalBranchId, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
-import { getSafeDb, collection, onSnapshot, query, limit, updateDoc, doc, addDoc, orderBy, getDocs, where } from '../../../utils/firebaseSafe';
+import { getSafeDb, collection, onSnapshot, query, limit, updateDoc, doc, addDoc, orderBy, getDocs, where, setDoc } from '../../../utils/firebaseSafe';
 import { receptionDataStore } from '../../../utils/receptionDataStore';
 import { getPatientVisitState } from '../../../utils/patientVisitState';
 import { createBookingNotificationInFirestore } from '../../../utils/fcmService';
@@ -509,6 +509,7 @@ const FollowUpCardItem = memo(({
   item,
   badge,
   onBook,
+  onReschedule,
   onComplete,
   onWhatsApp,
   onCall,
@@ -516,6 +517,7 @@ const FollowUpCardItem = memo(({
   item: FollowUp;
   badge: { bg: string; text: string; label: string };
   onBook: (item: FollowUp) => void;
+  onReschedule: (item: FollowUp) => void;
   onComplete: (item: FollowUp) => void;
   onWhatsApp: (phone: string, name: string, doc: string) => void;
   onCall: (phone: string) => void;
@@ -596,6 +598,16 @@ const FollowUpCardItem = memo(({
             <Text style={styles.bookBtnText}>Book Appt</Text>
           </TouchableOpacity>
 
+          {/* Reschedule Button */}
+          <TouchableOpacity
+            style={styles.rescheduleBtn}
+            onPress={() => onReschedule(item)}
+            activeOpacity={0.7}
+          >
+            <Feather name="clock" size={11} color="#b45309" />
+            <Text style={styles.rescheduleBtnText}>Reschedule</Text>
+          </TouchableOpacity>
+
           {/* Quick WhatsApp */}
           <TouchableOpacity
             style={styles.iconBtnWA}
@@ -647,6 +659,15 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
   const [bookingTime, setBookingTime] = useState<string>('10:00 AM');
   const [bookingFee, setBookingFee] = useState<string>('');
   const [isBooking, setIsBooking] = useState<boolean>(false);
+
+  // Reschedule Follow-up Modal State
+  const [rescheduleModalItem, setRescheduleModalItem] = useState<FollowUp | null>(null);
+  const [rescheduleDateISO, setRescheduleDateISO] = useState<string>(todayStr);
+  const [rescheduleReason, setRescheduleReason] = useState<string>('Patient requested date change');
+  const [isRescheduling, setIsRescheduling] = useState<boolean>(false);
+  const [rescheduleDatePickerVisible, setRescheduleDatePickerVisible] = useState<boolean>(false);
+  const [rescheduleCalMonth, setRescheduleCalMonth] = useState<number>(new Date().getMonth());
+  const [rescheduleCalYear, setRescheduleCalYear] = useState<number>(new Date().getFullYear());
 
   // Calendar Modal State
   const [calendarModalVisible, setCalendarModalVisible] = useState<boolean>(false);
@@ -1327,6 +1348,115 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
     );
   }, []);
 
+  const handleOpenReschedule = useCallback((item: FollowUp) => {
+    const initialIso = formatISO(item.preferredDate) || todayStr;
+    setRescheduleModalItem(item);
+    setRescheduleDateISO(initialIso);
+    setRescheduleReason('Patient requested date change');
+    try {
+      const parts = initialIso.split('-');
+      if (parts.length === 3) {
+        setRescheduleCalYear(parseInt(parts[0], 10));
+        setRescheduleCalMonth(parseInt(parts[1], 10) - 1);
+      }
+    } catch (_) {}
+  }, []);
+
+  const handleShiftRescheduleDays = useCallback((daysToAdd: number) => {
+    const base = rescheduleDateISO ? new Date(rescheduleDateISO) : new Date();
+    base.setDate(base.getDate() + daysToAdd);
+    const y = base.getFullYear();
+    const m = String(base.getMonth() + 1).padStart(2, '0');
+    const d = String(base.getDate()).padStart(2, '0');
+    setRescheduleDateISO(`${y}-${m}-${d}`);
+  }, [rescheduleDateISO]);
+
+  const handleConfirmReschedule = useCallback(async () => {
+    if (!rescheduleModalItem || !rescheduleDateISO) return;
+    setIsRescheduling(true);
+    try {
+      const activeDb = getSafeDb();
+      const cleanPhone = rescheduleModalItem.phone ? rescheduleModalItem.phone.replace(/\D/g, '').slice(-10) : '';
+      const rawId = rescheduleModalItem.raw?.id || rescheduleModalItem.id;
+      const targetDateISO = formatISO(rescheduleDateISO);
+
+      const updatePayload = {
+        preferredFollowUpDate: targetDateISO,
+        followUpDate: targetDateISO,
+        nextFollowUpDate: targetDateISO,
+        scheduledDate: targetDateISO,
+        rescheduledAt: new Date().toISOString(),
+        rescheduledFromDate: rescheduleModalItem.preferredDate,
+        rescheduleReason: rescheduleReason || 'Patient requested date change',
+        updatedAt: new Date().toISOString()
+      };
+
+      // 1. Update/set in Firestore
+      if (activeDb) {
+        if (rawId) {
+          await setDoc(doc(activeDb, 'followups', rawId), {
+            ...(rescheduleModalItem.raw || {}),
+            patientName: rescheduleModalItem.patientName,
+            phone: cleanPhone || rescheduleModalItem.phone,
+            registrationId: rescheduleModalItem.regId,
+            doctorName: rescheduleModalItem.doctorName,
+            branchName: rescheduleModalItem.branchName || currentBranch,
+            diseases: rescheduleModalItem.diseases,
+            ...updatePayload
+          }, { merge: true }).catch(() => {});
+
+          const otherCollections = ['appointments', 'allpatients', 'prescriptions', 'patients'];
+          for (const col of otherCollections) {
+            updateDoc(doc(activeDb, col, rawId), updatePayload).catch(() => {});
+          }
+        } else if (cleanPhone) {
+          await setDoc(doc(activeDb, 'followups', `${cleanPhone}_followup`), {
+            patientName: rescheduleModalItem.patientName,
+            phone: cleanPhone,
+            registrationId: rescheduleModalItem.regId,
+            doctorName: rescheduleModalItem.doctorName,
+            branchName: rescheduleModalItem.branchName || currentBranch,
+            diseases: rescheduleModalItem.diseases,
+            ...updatePayload
+          }, { merge: true }).catch(() => {});
+        }
+      }
+
+      // 2. Immediate 0ms local state update on rawFollowups
+      setRawFollowups(prev => {
+        const idx = prev.findIndex(f => f.id === rawId || (cleanPhone && (f.phone || '').includes(cleanPhone)));
+        if (idx !== -1) {
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], ...updatePayload };
+          return updated;
+        } else {
+          return [{
+            id: rawId || `${cleanPhone}_followup`,
+            patientName: rescheduleModalItem.patientName,
+            phone: cleanPhone || rescheduleModalItem.phone,
+            regId: rescheduleModalItem.regId,
+            doctorName: rescheduleModalItem.doctorName,
+            branchName: rescheduleModalItem.branchName || currentBranch,
+            diseases: rescheduleModalItem.diseases,
+            ...updatePayload
+          }, ...prev];
+        }
+      });
+
+      // 3. Close modal & alert
+      setRescheduleModalItem(null);
+      Alert.alert(
+        'Follow-Up Rescheduled ✓',
+        `${rescheduleModalItem.patientName}'s follow-up moved to ${toDDMMYYYY(targetDateISO)}.`
+      );
+    } catch (err) {
+      console.error('Error rescheduling follow-up:', err);
+      Alert.alert('Error', 'Failed to reschedule follow-up.');
+    } finally {
+      setIsRescheduling(false);
+    }
+  }, [rescheduleModalItem, rescheduleDateISO, rescheduleReason, currentBranch]);
+
   const renderFollowUpItem = useCallback(({ item }: { item: FollowUp }) => {
     const badge = getBadgeStyle(item.preferredDate);
     return (
@@ -1334,12 +1464,13 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
         item={item}
         badge={badge}
         onBook={handleBookAppt}
+        onReschedule={handleOpenReschedule}
         onComplete={handleCompleteAppointment}
         onWhatsApp={openWhatsApp}
         onCall={makeCall}
       />
     );
-  }, [getBadgeStyle, handleBookAppt, handleCompleteAppointment, openWhatsApp, makeCall]);
+  }, [getBadgeStyle, handleBookAppt, handleOpenReschedule, handleCompleteAppointment, openWhatsApp, makeCall]);
 
   return (
     <View style={styles.container}>
@@ -1936,6 +2067,285 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      {/* ================= RESCHEDULE FOLLOW-UP MODAL ================= */}
+      {rescheduleModalItem && (
+        <Modal
+          transparent
+          animationType="fade"
+          visible={!!rescheduleModalItem}
+          onRequestClose={() => setRescheduleModalItem(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalCard, { maxHeight: '90%' }]}>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Header */}
+                <View style={styles.modalHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 6, backgroundColor: '#fef3c7', alignItems: 'center', justifyContent: 'center' }}>
+                      <Feather name="clock" size={16} color="#b45309" />
+                    </View>
+                    <View>
+                      <Text style={styles.modalTitle}>Reschedule Follow-Up</Text>
+                      <Text style={{ fontSize: 10.5, color: '#64748b' }}>Move to a new scheduled date</Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setRescheduleModalItem(null)}
+                    style={{ padding: 4 }}
+                  >
+                    <Feather name="x" size={18} color="#64748b" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Patient Banner */}
+                <View style={styles.patientBanner}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                    <Text style={styles.bannerName}>{rescheduleModalItem.patientName}</Text>
+                    <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#0284c7' }}>{rescheduleModalItem.regId}</Text>
+                  </View>
+                  <Text style={styles.bannerSub}>
+                    📞 {rescheduleModalItem.phone} • 👨‍⚕️ {rescheduleModalItem.doctorName}
+                  </Text>
+                  {rescheduleModalItem.diseases ? (
+                    <Text style={{ fontSize: 10.5, color: '#475569', marginTop: 2, fontStyle: 'italic' }}>
+                      🩺 {rescheduleModalItem.diseases}
+                    </Text>
+                  ) : null}
+                </View>
+
+                {/* Current Scheduled Date */}
+                <View style={{
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  backgroundColor: '#fffbeb',
+                  borderWidth: 1,
+                  borderColor: '#fde68a',
+                  borderRadius: 8,
+                  paddingHorizontal: 10,
+                  paddingVertical: 7,
+                  marginBottom: 12
+                }}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#92400e' }}>Current Scheduled Date:</Text>
+                  <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#b45309' }}>
+                    📅 {formatDisplayDate(rescheduleModalItem.preferredDate)}
+                  </Text>
+                </View>
+
+                {/* Target Date Selector */}
+                <Text style={styles.inputLabel}>Select New Follow-Up Date *</Text>
+                <TouchableOpacity
+                  style={styles.datePickerBtn}
+                  onPress={() => setRescheduleDatePickerVisible(true)}
+                  activeOpacity={0.7}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Feather name="calendar" size={14} color="#0284c7" />
+                    <Text style={{ fontSize: 12.5, fontWeight: '700', color: '#0f172a' }}>
+                      {toDDMMYYYY(rescheduleDateISO)}
+                    </Text>
+                  </View>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284c7' }}>Change Date</Text>
+                </TouchableOpacity>
+
+                {/* Quick Shift Chips */}
+                <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                  {[
+                    { label: '+3 Days', days: 3 },
+                    { label: '+1 Week', days: 7 },
+                    { label: '+15 Days', days: 15 },
+                    { label: '+1 Month', days: 30 }
+                  ].map(chip => (
+                    <TouchableOpacity
+                      key={chip.label}
+                      onPress={() => handleShiftRescheduleDays(chip.days)}
+                      style={{
+                        backgroundColor: '#f1f5f9',
+                        borderWidth: 1,
+                        borderColor: '#cbd5e1',
+                        borderRadius: 6,
+                        paddingHorizontal: 8,
+                        paddingVertical: 4
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#475569' }}>{chip.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {/* Reason / Notes */}
+                <Text style={styles.inputLabel}>Reason / Note</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={rescheduleReason}
+                  onChangeText={setRescheduleReason}
+                  placeholder="e.g. Patient requested date change"
+                  placeholderTextColor="#94a3b8"
+                />
+
+                {/* Quick Reason Chips */}
+                <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16, flexWrap: 'wrap' }}>
+                  {['Patient Requested', 'Out of Station', 'Doctor Unavailable', 'Follow-up Delayed'].map(r => {
+                    const isSelected = rescheduleReason === r;
+                    return (
+                      <TouchableOpacity
+                        key={r}
+                        onPress={() => setRescheduleReason(r)}
+                        style={{
+                          backgroundColor: isSelected ? '#e0f2fe' : '#f8fafc',
+                          borderWidth: 1,
+                          borderColor: isSelected ? '#0284c7' : '#e2e8f0',
+                          borderRadius: 5,
+                          paddingHorizontal: 7,
+                          paddingVertical: 3
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={{ fontSize: 10, fontWeight: '600', color: isSelected ? '#0284c7' : '#64748b' }}>
+                          {r}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Bottom Actions */}
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                  <TouchableOpacity
+                    style={styles.cancelBtn}
+                    onPress={() => setRescheduleModalItem(null)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.cancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.confirmBtn,
+                      { backgroundColor: '#d97706', flexDirection: 'row', alignItems: 'center', gap: 5 },
+                      (isRescheduling || !rescheduleDateISO) && { opacity: 0.6 }
+                    ]}
+                    disabled={isRescheduling || !rescheduleDateISO}
+                    onPress={handleConfirmReschedule}
+                    activeOpacity={0.7}
+                  >
+                    {isRescheduling ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Feather name="check" size={13} color="#ffffff" />
+                    )}
+                    <Text style={styles.confirmBtnText}>Confirm Reschedule</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Reschedule Date Picker Sub-Modal */}
+      <Modal
+        visible={rescheduleDatePickerVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setRescheduleDatePickerVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxWidth: 340, padding: 16 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (rescheduleCalMonth === 0) {
+                    setRescheduleCalMonth(11);
+                    setRescheduleCalYear(prev => prev - 1);
+                  } else {
+                    setRescheduleCalMonth(prev => prev - 1);
+                  }
+                }}
+                style={{ padding: 6, backgroundColor: '#f1f5f9', borderRadius: 8 }}
+              >
+                <Feather name="chevron-left" size={18} color="#d97706" />
+              </TouchableOpacity>
+              <Text style={{ fontSize: 14.5, fontWeight: '800', color: '#0f172a' }}>
+                {monthNames[rescheduleCalMonth]} {rescheduleCalYear}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  if (rescheduleCalMonth === 11) {
+                    setRescheduleCalMonth(0);
+                    setRescheduleCalYear(prev => prev + 1);
+                  } else {
+                    setRescheduleCalMonth(prev => prev + 1);
+                  }
+                }}
+                style={{ padding: 6, backgroundColor: '#f1f5f9', borderRadius: 8 }}
+              >
+                <Feather name="chevron-right" size={18} color="#d97706" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 }}>
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
+                <Text key={d} style={{ width: 34, textAlign: 'center', fontSize: 10.5, fontWeight: '700', color: '#64748b' }}>
+                  {d}
+                </Text>
+              ))}
+            </View>
+
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+              {Array.from({ length: new Date(rescheduleCalYear, rescheduleCalMonth, 1).getDay() }).map((_, i) => (
+                <View key={`r-empty-${i}`} style={{ width: `${100 / 7}%`, height: 36 }} />
+              ))}
+              {Array.from({ length: new Date(rescheduleCalYear, rescheduleCalMonth + 1, 0).getDate() }).map((_, i) => {
+                const dayNum = i + 1;
+                const formattedMonth = (rescheduleCalMonth + 1) < 10 ? `0${rescheduleCalMonth + 1}` : `${rescheduleCalMonth + 1}`;
+                const formattedDay = dayNum < 10 ? `0${dayNum}` : `${dayNum}`;
+                const isoStr = `${rescheduleCalYear}-${formattedMonth}-${formattedDay}`;
+                const isSelected = rescheduleDateISO === isoStr;
+                const isToday = todayStr === isoStr;
+
+                return (
+                  <TouchableOpacity
+                    key={`r-day-${dayNum}`}
+                    onPress={() => {
+                      setRescheduleDateISO(isoStr);
+                      setRescheduleDatePickerVisible(false);
+                    }}
+                    style={{
+                      width: `${100 / 7}%`,
+                      height: 36,
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  >
+                    <View style={[
+                      { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+                      isSelected && { backgroundColor: '#d97706' },
+                      !isSelected && isToday && { borderWidth: 1.5, borderColor: '#d97706' }
+                    ]}>
+                      <Text style={[
+                        { fontSize: 12, fontWeight: '700', color: '#0f172a' },
+                        isSelected && { color: '#ffffff', fontWeight: '800' },
+                        !isSelected && isToday && { color: '#d97706', fontWeight: '800' }
+                      ]}>
+                        {dayNum}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setRescheduleDatePickerVisible(false)}
+              style={{ marginTop: 14, backgroundColor: '#f1f5f9', paddingVertical: 9, borderRadius: 8, alignItems: 'center' }}
+            >
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#475569' }}>Close Calendar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -2007,6 +2417,8 @@ const styles = StyleSheet.create({
   completeBtnText: { color: '#ffffff', fontSize: 10.5, fontWeight: '800' },
   bookBtn: { flexDirection: 'row', alignItems: 'center', gap: 3.5, backgroundColor: '#0284c7', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5 },
   bookBtnText: { color: '#ffffff', fontSize: 10.5, fontWeight: '700' },
+  rescheduleBtn: { flexDirection: 'row', alignItems: 'center', gap: 3.5, backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fcd34d', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5 },
+  rescheduleBtnText: { color: '#b45309', fontSize: 10.5, fontWeight: '700' },
   iconBtnCall: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe', alignItems: 'center', justifyContent: 'center' },
   iconBtnWA: { width: 26, height: 26, borderRadius: 5, backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0', alignItems: 'center', justifyContent: 'center' },
   emptyContainer: { padding: 40, alignItems: 'center', gap: 6 },

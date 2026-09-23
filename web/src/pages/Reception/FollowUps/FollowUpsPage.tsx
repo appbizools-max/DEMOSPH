@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { RefreshCw, Phone, Calendar, Clock, MessageSquare, X, Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { db, sendBookingWhatsAppNotification, CanonicalBranchId, resolveCanonicalBranchId, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
-import { collection, onSnapshot, query, limit, updateDoc, doc, addDoc, orderBy, getDocs, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, limit, updateDoc, setDoc, doc, addDoc, orderBy, getDocs, where } from 'firebase/firestore';
 import { createBookingNotificationInFirestore } from '../../../utils/fcmWebTrigger';
 import { receptionDataStore } from '../../../utils/receptionDataStore';
 import { getPatientVisitState } from '../../../utils/patientVisitState';
@@ -506,6 +506,12 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
   const [bookingTime, setBookingTime] = useState<string>('10:00 AM');
   const [bookingFee, setBookingFee] = useState<number | ''>('');
   const [isBooking, setIsBooking] = useState<boolean>(false);
+
+  // Reschedule Follow-Up Modal State
+  const [rescheduleModalItem, setRescheduleModalItem] = useState<FollowUpItem | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState<string>(''); // YYYY-MM-DD
+  const [rescheduleReason, setRescheduleReason] = useState<string>('Patient requested date change');
+  const [isRescheduling, setIsRescheduling] = useState<boolean>(false);
 
   // Calendar Modal State
   const [calendarModalOpen, setCalendarModalOpen] = useState<boolean>(false);
@@ -1025,6 +1031,106 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
       }
     } catch (err) {
       console.error('Error completing appointment:', err);
+    }
+  };
+
+  // Handler: Open Reschedule Follow-up Modal
+  const handleOpenReschedule = (item: FollowUpItem) => {
+    setRescheduleModalItem(item);
+    setRescheduleDate(item.preferredDate || todayISO);
+    setRescheduleReason('Patient requested date change');
+  };
+
+  const handleShiftRescheduleDays = (daysToAdd: number) => {
+    const base = rescheduleDate ? new Date(rescheduleDate) : new Date();
+    base.setDate(base.getDate() + daysToAdd);
+    const y = base.getFullYear();
+    const m = String(base.getMonth() + 1).padStart(2, '0');
+    const d = String(base.getDate()).padStart(2, '0');
+    setRescheduleDate(`${y}-${m}-${d}`);
+  };
+
+  // Handler: Confirm Reschedule Follow-up Date
+  const handleConfirmReschedule = async () => {
+    if (!rescheduleModalItem || !rescheduleDate) return;
+    setIsRescheduling(true);
+    try {
+      const cleanPhone = rescheduleModalItem.phone.replace(/\D/g, '').slice(-10);
+      const rawId = rescheduleModalItem.raw?.id || rescheduleModalItem.id;
+      const targetDateISO = formatISO(rescheduleDate);
+
+      const updatePayload = {
+        preferredFollowUpDate: targetDateISO,
+        followUpDate: targetDateISO,
+        nextFollowUpDate: targetDateISO,
+        scheduledDate: targetDateISO,
+        rescheduledAt: new Date().toISOString(),
+        rescheduledFromDate: rescheduleModalItem.preferredDate,
+        rescheduleReason: rescheduleReason || 'Patient requested date change',
+        updatedAt: new Date().toISOString()
+      };
+
+      // 1. Update/set in followups collection so the live listener picks it up immediately
+      if (rawId) {
+        await setDoc(doc(db, 'followups', rawId), {
+          ...rescheduleModalItem.raw,
+          patientName: rescheduleModalItem.patientName,
+          phone: cleanPhone || rescheduleModalItem.phone,
+          registrationId: rescheduleModalItem.regId,
+          doctorName: rescheduleModalItem.doctorName,
+          branchName: rescheduleModalItem.branchName || currentBranch,
+          diseases: rescheduleModalItem.diseases,
+          ...updatePayload
+        }, { merge: true }).catch(() => { });
+
+        // Update in other collections if document exists there
+        const otherCollections = ['appointments', 'allpatients', 'prescriptions', 'patients'];
+        for (const col of otherCollections) {
+          updateDoc(doc(db, col, rawId), updatePayload).catch(() => { });
+        }
+      } else if (cleanPhone) {
+        await setDoc(doc(db, 'followups', `${cleanPhone}_followup`), {
+          patientName: rescheduleModalItem.patientName,
+          phone: cleanPhone,
+          registrationId: rescheduleModalItem.regId,
+          doctorName: rescheduleModalItem.doctorName,
+          branchName: rescheduleModalItem.branchName || currentBranch,
+          diseases: rescheduleModalItem.diseases,
+          ...updatePayload
+        }, { merge: true }).catch(() => { });
+      }
+
+      // 2. Immediate 0ms local state update
+      setRawFollowups(prev => {
+        const idx = prev.findIndex(f => f.id === rawId || (cleanPhone && (f.phone || '').includes(cleanPhone)));
+        if (idx !== -1) {
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], ...updatePayload };
+          return updated;
+        } else {
+          return [{
+            id: rawId || `${cleanPhone}_followup`,
+            patientName: rescheduleModalItem.patientName,
+            phone: cleanPhone || rescheduleModalItem.phone,
+            regId: rescheduleModalItem.regId,
+            doctorName: rescheduleModalItem.doctorName,
+            branchName: rescheduleModalItem.branchName || currentBranch,
+            diseases: rescheduleModalItem.diseases,
+            ...updatePayload
+          }, ...prev];
+        }
+      });
+
+      // 3. Feedback message
+      setFeedbackMsg(`Follow-up for ${rescheduleModalItem.patientName} moved to ${toDDMMYYYY(targetDateISO)}`);
+      setTimeout(() => setFeedbackMsg(null), 4000);
+
+      // 4. Close modal
+      setRescheduleModalItem(null);
+    } catch (err) {
+      console.error('Error rescheduling follow-up:', err);
+    } finally {
+      setIsRescheduling(false);
     }
   };
 
@@ -1553,8 +1659,32 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
                             gap: '4px',
                             boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
                           }}
+                          title="Book an appointment for this follow-up"
                         >
                           <Calendar size={12} /> Book Appt
+                        </button>
+
+                        {/* Reschedule Follow-Up Button */}
+                        <button
+                          type="button"
+                          onClick={() => handleOpenReschedule(item)}
+                          style={{
+                            background: '#fffbeb',
+                            border: '1.5px solid #fde68a',
+                            color: '#b45309',
+                            padding: '5px 10px',
+                            borderRadius: '6px',
+                            fontWeight: 700,
+                            fontSize: '11.5px',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            boxShadow: '0 1px 3px rgba(217, 119, 6, 0.08)'
+                          }}
+                          title="Reschedule this follow-up to a different date"
+                        >
+                          <Clock size={12} color="#b45309" /> Reschedule
                         </button>
 
                         {/* Quick Call */}
@@ -2231,6 +2361,251 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
           </div>
         )
       }
+
+      {/* ================= RESCHEDULE FOLLOW-UP MODAL ================= */}
+      {rescheduleModalItem && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(15, 23, 42, 0.55)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '16px'
+        }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '16px',
+            width: '100%',
+            maxWidth: '460px',
+            padding: '24px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            boxSizing: 'border-box'
+          }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{
+                  width: '34px',
+                  height: '34px',
+                  borderRadius: '10px',
+                  background: '#fef3c7',
+                  color: '#d97706',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <Clock size={18} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#0f172a' }}>
+                    Reschedule Follow-Up
+                  </h3>
+                  <p style={{ margin: '1px 0 0 0', fontSize: '11px', color: '#64748b' }}>
+                    Move this patient's follow-up to a new scheduled date
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRescheduleModalItem(null)}
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#94a3b8', padding: '4px' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Patient Info Card */}
+            <div style={{
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: '10px',
+              padding: '12px 14px',
+              marginBottom: '18px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <span style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a' }}>
+                  {rescheduleModalItem.patientName}
+                </span>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#0284c7', background: '#e0f2fe', padding: '2px 8px', borderRadius: '6px' }}>
+                  {rescheduleModalItem.regId}
+                </span>
+              </div>
+              <div style={{ fontSize: '11.5px', color: '#64748b', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <span>📞 {rescheduleModalItem.phone}</span>
+                <span>👨‍⚕️ {rescheduleModalItem.doctorName}</span>
+                <span>📍 {rescheduleModalItem.branchName}</span>
+              </div>
+              {rescheduleModalItem.diseases && (
+                <div style={{ fontSize: '11.5px', color: '#475569', marginTop: '4px', fontStyle: 'italic' }}>
+                  🩺 {rescheduleModalItem.diseases}
+                </div>
+              )}
+            </div>
+
+            {/* Current Date Display */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: '#fffbeb',
+              border: '1px solid #fde68a',
+              borderRadius: '8px',
+              padding: '8px 12px',
+              marginBottom: '16px'
+            }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#92400e' }}>
+                Current Scheduled Date:
+              </span>
+              <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#b45309' }}>
+                📅 {toDDMMYYYY(rescheduleModalItem.preferredDate)}
+              </span>
+            </div>
+
+            {/* New Date Picker */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>
+                Select New Follow-Up Date *
+              </label>
+              <input
+                type="date"
+                value={rescheduleDate}
+                min={todayISO}
+                onChange={(e) => setRescheduleDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: '1.5px solid #cbd5e1',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  color: '#0f172a',
+                  outline: 'none',
+                  boxSizing: 'border-box'
+                }}
+              />
+
+              {/* Quick Shift Shortcut Chips */}
+              <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                {[
+                  { label: '+3 Days', days: 3 },
+                  { label: '+1 Week', days: 7 },
+                  { label: '+15 Days', days: 15 },
+                  { label: '+1 Month', days: 30 }
+                ].map(chip => (
+                  <button
+                    key={chip.label}
+                    type="button"
+                    onClick={() => handleShiftRescheduleDays(chip.days)}
+                    style={{
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '6px',
+                      padding: '3px 8px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      color: '#475569',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Reason / Notes */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>
+                Reason / Note
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Patient requested to visit on 15th"
+                value={rescheduleReason}
+                onChange={(e) => setRescheduleReason(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: '1.5px solid #cbd5e1',
+                  fontSize: '12px',
+                  color: '#0f172a',
+                  outline: 'none',
+                  boxSizing: 'border-box'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '5px', marginTop: '6px', flexWrap: 'wrap' }}>
+                {['Patient Requested', 'Out of Station', 'Doctor Unavailable', 'Follow-up Delayed'].map(r => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setRescheduleReason(r)}
+                    style={{
+                      background: rescheduleReason === r ? '#e0f2fe' : '#f8fafc',
+                      border: rescheduleReason === r ? '1px solid #0284c7' : '1px solid #e2e8f0',
+                      color: rescheduleReason === r ? '#0284c7' : '#64748b',
+                      borderRadius: '4px',
+                      padding: '2px 7px',
+                      fontSize: '10.5px',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom Actions */}
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setRescheduleModalItem(null)}
+                style={{
+                  padding: '9px 16px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '12px',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isRescheduling || !rescheduleDate}
+                onClick={handleConfirmReschedule}
+                style={{
+                  padding: '9px 18px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: isRescheduling || !rescheduleDate ? '#cbd5e1' : '#d97706',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  fontSize: '12px',
+                  cursor: isRescheduling || !rescheduleDate ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 6px rgba(217, 119, 6, 0.25)'
+                }}
+              >
+                {isRescheduling ? 'Rescheduling...' : `Confirm Reschedule to ${rescheduleDate ? toDDMMYYYY(rescheduleDate) : ''}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
