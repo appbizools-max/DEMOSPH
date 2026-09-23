@@ -1,4 +1,5 @@
-import { getSafeDb, collection, onSnapshot, getDocs, query, limit, orderBy } from './firebaseSafe';
+import { getSafeDb, collection, onSnapshot, getDocs, query, limit, orderBy, where } from './firebaseSafe';
+import { getBranchQueryNames } from '@app/shared';
 
 export interface ReceptionStoreState {
   appointments: any[];
@@ -168,9 +169,15 @@ class ReceptionDataStore {
       docId: id,
       collectionName,
       patientName: data.patientName || data.name || data.fullName || '',
-      phone: data.phone || data.phoneNumber || data.mobile || '',
-      regId: data.regId || data.registrationId || data.patientId || data.uhid || '',
+      phone: data.phone || data.phoneNumber || data.mobile || data.contactNumber || '',
+      regId: data.regNo || data.regId || data.registrationId || data.patientId || data.uhid || '',
+      regNo: data.regNo || data.registrationId || data.regId || '',
+      registrationId: data.registrationId || data.regNo || data.regId || '',
       patientDocId: data.patientDocId || data.patient_id || data.patientId || '',
+      patientType: data.patientType || '',
+      isNewPatient: data.isNewPatient,
+      source: data.source || data.marketingSource || '',
+      prescriptionUrls: data.prescriptionUrls || [],
       duration: data.duration || '',
       medicineDuration: data.medicineDuration || '',
       followUpInterval: data.followUpInterval || data.interval || '',
@@ -204,14 +211,14 @@ class ReceptionDataStore {
     }, 200);
   }
 
-  public startListeners() {
+  public startListeners(branchName?: string) {
     const activeDb = getSafeDb();
     if (this.isStarted || !activeDb) return;
     this.isStarted = true;
 
-    // 1. Subscribe to package_members (Essential for package dues & duration check)
+    // 1. Subscribe to package_members (Essential for package dues & duration check, limited to 150)
     try {
-      this.unsubPkg = onSnapshot(collection(activeDb, 'package_members'), (snap) => {
+      this.unsubPkg = onSnapshot(query(collection(activeDb, 'package_members'), limit(150)), (snap) => {
         const list: any[] = [];
         snap.forEach(d => list.push({ id: d.id, ...d.data() }));
         this.packageMembersList = list;
@@ -221,9 +228,9 @@ class ReceptionDataStore {
       console.warn('Mobile package members listener setup error:', e);
     }
 
-    // 2. Subscribe to appointments (Essential for live queue, sorted newest first, limited to 300 for maximum speed)
+    // 2. Subscribe to appointments (Essential for live queue, sorted newest first, limited to 400 for maximum speed)
     try {
-      this.unsubApp = onSnapshot(query(collection(activeDb, 'appointments'), orderBy('createdAt', 'desc'), limit(300)), (snapshot) => {
+      this.unsubApp = onSnapshot(query(collection(activeDb, 'appointments'), orderBy('createdAt', 'desc'), limit(400)), (snapshot) => {
         const list: any[] = [];
         snapshot.forEach((snap) => {
           list.push({ ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
@@ -236,9 +243,9 @@ class ReceptionDataStore {
       console.warn('Appointments store listener setup error:', e);
     }
 
-    // 3. Subscribe to allpatients (Essential for reception directory, sorted newest first, limited to 300 for maximum speed)
+    // 3. Subscribe to allpatients (Essential for reception directory, sorted newest first, limited to 400 for maximum speed)
     try {
-      this.unsubPat = onSnapshot(query(collection(activeDb, 'allpatients'), orderBy('createdAt', 'desc'), limit(300)), (snapshot) => {
+      this.unsubPat = onSnapshot(query(collection(activeDb, 'allpatients'), orderBy('createdAt', 'desc'), limit(400)), (snapshot) => {
         const queueList: any[] = [];
         const allList: any[] = [];
         snapshot.forEach((snap) => {
@@ -257,12 +264,26 @@ class ReceptionDataStore {
       console.warn('Mobile allpatients store listener setup error:', e);
     }
 
-    // 4. One-time background load of historical patients collection (limited to 200 to prevent heavy websocket streaming)
+    // 4. Background sample of historical patients collection scoped to branch
     try {
-      getDocs(query(collection(activeDb, 'patients'), limit(200))).then((snapshot) => {
+      const branchQueries = getBranchQueryNames(branchName);
+      const qList = branchQueries.length > 0
+        ? [
+            query(collection(activeDb, 'patients'), where('branchName', 'in', branchQueries), limit(500)),
+            query(collection(activeDb, 'patients'), where('branch', 'in', branchQueries), limit(500))
+          ]
+        : [query(collection(activeDb, 'patients'), limit(300))];
+
+      Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] })))).then((snaps) => {
         const list: any[] = [];
-        snapshot.forEach((snap) => {
-          list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
+        const seen = new Set<string>();
+        snaps.forEach((snapshot: any) => {
+          snapshot.docs?.forEach((snap: any) => {
+            if (!seen.has(snap.id)) {
+              seen.add(snap.id);
+              list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
+            }
+          });
         });
         this.patientsFromPatientsCol = list;
         this.scheduleMergeAndSet();

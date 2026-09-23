@@ -1,5 +1,5 @@
-import { collection, onSnapshot, getDocs, query, limit } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { collection, onSnapshot, getDocs, query, limit, where, orderBy } from 'firebase/firestore';
+import { db, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
 
 export interface ReceptionStoreState {
   appointments: any[];
@@ -61,6 +61,13 @@ class ReceptionDataStore {
 
   public subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
+    if (this.isLoaded || this.allCollectionsPool.length > 0 || this.appointments.length > 0) {
+      try {
+        listener(this.getState());
+      } catch (err) {
+        console.error('Error notifying reception store listener on subscribe:', err);
+      }
+    }
     return () => {
       this.listeners.delete(listener);
     };
@@ -133,7 +140,14 @@ class ReceptionDataStore {
       }
     }
 
-    const list = Array.from(combinedMap.values());
+    const list = Array.from(combinedMap.values()).map(item => {
+      const sanitizedDoc = sanitizeDoctorName(item.doctorName || item.doctor, item.branch || item.branchName);
+      return {
+        ...item,
+        doctorName: sanitizedDoc,
+        doctor: sanitizedDoc,
+      };
+    });
     list.sort((a, b) => {
       const dateA = String(a.appointmentDate || a.date || a.createdAt || '');
       const dateB = String(b.appointmentDate || b.date || b.createdAt || '');
@@ -161,9 +175,15 @@ class ReceptionDataStore {
       docId: id,
       collectionName,
       patientName: data.patientName || data.name || data.fullName || '',
-      phone: data.phone || data.phoneNumber || data.mobile || '',
-      regId: data.regId || data.registrationId || data.patientId || data.uhid || '',
+      phone: data.phone || data.phoneNumber || data.mobile || data.contactNumber || '',
+      regId: data.regNo || data.regId || data.registrationId || data.patientId || data.uhid || '',
+      regNo: data.regNo || data.registrationId || data.regId || '',
+      registrationId: data.registrationId || data.regNo || data.regId || '',
       patientDocId: data.patientDocId || data.patient_id || data.patientId || '',
+      patientType: data.patientType || '',
+      isNewPatient: data.isNewPatient,
+      source: data.source || data.marketingSource || '',
+      prescriptionUrls: data.prescriptionUrls || [],
       duration: data.duration || '',
       medicineDuration: data.medicineDuration || '',
       followUpInterval: data.followUpInterval || data.interval || '',
@@ -197,7 +217,7 @@ class ReceptionDataStore {
     }, 200);
   }
 
-  public startListeners() {
+  public startListeners(branchName?: string) {
     if (this.isStarted || !db) return;
     this.isStarted = true;
 
@@ -213,9 +233,9 @@ class ReceptionDataStore {
       console.error('Package members listener setup error:', e);
     }
 
-    // 2. Subscribe to appointments (Essential for live queue, limited to 400 for fast loading)
+    // 2. Subscribe to appointments (Essential for live queue, sorted newest first, limited to 400 for fast loading)
     try {
-      this.unsubApp = onSnapshot(query(collection(db, 'appointments'), limit(400)), (snapshot) => {
+      this.unsubApp = onSnapshot(query(collection(db, 'appointments'), orderBy('createdAt', 'desc'), limit(400)), (snapshot) => {
         const list: any[] = [];
         snapshot.forEach((snap) => {
           list.push({ ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
@@ -228,9 +248,9 @@ class ReceptionDataStore {
       console.warn('Appointments store listener setup error:', e);
     }
 
-    // 3. Subscribe to allpatients (Essential for reception directory, limited to 400 for fast loading)
+    // 3. Subscribe to allpatients (Essential for reception directory, sorted newest first, limited to 400 for fast loading)
     try {
-      this.unsubPat = onSnapshot(query(collection(db, 'allpatients'), limit(400)), (snapshot) => {
+      this.unsubPat = onSnapshot(query(collection(db, 'allpatients'), orderBy('createdAt', 'desc'), limit(400)), (snapshot) => {
         const queueList: any[] = [];
         const allList: any[] = [];
         snapshot.forEach((snap) => {
@@ -249,12 +269,26 @@ class ReceptionDataStore {
       console.warn('Allpatients store listener setup error:', e);
     }
 
-    // 4. Lightweight background sample of historical patients collection (avoid heavy full 11,000+ doc download on startup)
+    // 4. Background sample of historical patients collection scoped to branch
     try {
-      getDocs(query(collection(db, 'patients'), limit(150))).then((snapshot) => {
+      const branchQueries = getBranchQueryNames(branchName);
+      const qList = branchQueries.length > 0
+        ? [
+            query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(500)),
+            query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(500))
+          ]
+        : [query(collection(db, 'patients'), limit(300))];
+
+      Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] })))).then((snaps) => {
         const list: any[] = [];
-        snapshot.forEach((snap) => {
-          list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
+        const seen = new Set<string>();
+        snaps.forEach((snapshot: any) => {
+          snapshot.docs?.forEach((snap: any) => {
+            if (!seen.has(snap.id)) {
+              seen.add(snap.id);
+              list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
+            }
+          });
         });
         this.patientsFromPatientsCol = list;
         this.scheduleMergeAndSet();

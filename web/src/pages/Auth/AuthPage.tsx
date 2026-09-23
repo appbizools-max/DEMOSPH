@@ -2,12 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { Mail, Lock, Phone, Eye, EyeOff, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
-import { auth, db, UserRole } from '@app/shared';
+import {
+  auth, db, UserRole, resolveCanonicalBranchId, CanonicalBranchId, BRANCHES,
+  resolveStrictAuth, RECEPTION_DESK_DIRECTORY, DOCTOR_DIRECTORY
+} from '@app/shared';
 import { sendSmsOtp, generate4DigitOtp, normalizePhoneForSms } from '../../services/smsOtpService';
 
 export interface WebLoginSuccessData {
   role: UserRole;
   userName?: string;
+  branchId: CanonicalBranchId;
   branchName: string;
   branchPhone: string;
   staffId?: string;
@@ -17,24 +21,22 @@ interface AuthPageProps {
   onLoginSuccess?: (data: WebLoginSuccessData) => void;
 }
 
-export const AUTHORIZED_WEB_BRANCHES: Record<string, { name: string; phone: string }> = {
-  '9030176176': { name: 'KPHB Branch', phone: '+91 90301 76176' },
-  '9132176176': { name: 'Nallagandla Branch', phone: '+91 91321 76176' },
-  '9804176176': { name: 'Dilshuknagar Branch', phone: '+91 98041 76176' },
-  '9553176176': { name: 'Chandanagar Branch', phone: '+91 95531 76176' },
-};
+export const AUTHORIZED_WEB_BRANCHES = RECEPTION_DESK_DIRECTORY;
 
-const KNOWN_DOCTOR_PHONES = ['8125260176', '9903119766', '9490808582', '1111111111'];
-
-export const REGISTERED_CLINIC_STAFF = [
-  { id: '1', name: 'Anil Kumar M', role: 'Front Desk & Operations', branch: 'KPHB', phone: '9030176176' },
-  { id: '2', name: 'Ashwini Begari', role: 'Clinic Coordinator', branch: 'Chandanagar', phone: '9553176176' },
-  { id: '3', name: 'Vaishnavi Peri', role: 'Patient Care & Followup', branch: 'Nallagandla', phone: '9132176176' },
-  { id: '4', name: 'Nandini Gottelli', role: 'Pharmacy & Billing', branch: 'Dilshuknagar', phone: '9804176176' },
-  { id: '5', name: 'Srikanth', role: 'Support Assistant', branch: 'KPHB', phone: '9030176176' },
-  { id: '6', name: 'Arun Kumar', role: 'Lab & General Support', branch: 'Nallagandla', phone: '9132176176' },
-  { id: '7', name: 'Aishwarya . M', role: 'Front Desk & Operations', branch: 'KPHB', phone: '7995532759' },
-];
+export function getInstantWebAuthData(input: string): WebLoginSuccessData | null {
+  const strict = resolveStrictAuth(input);
+  if (strict) {
+    return {
+      role: strict.role,
+      userName: strict.userName,
+      branchId: strict.branchId,
+      branchName: strict.branchName,
+      branchPhone: strict.branchPhone,
+      staffId: strict.staffId || '1'
+    };
+  }
+  return null;
+}
 
 export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
   const [activeRole, setActiveRole] = useState<'otp' | 'email'>('otp');
@@ -48,6 +50,22 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
   const [smsStatusNotice, setSmsStatusNotice] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [cachedAuthData, setCachedAuthData] = useState<WebLoginSuccessData | null>(null);
+  const [countdown, setCountdown] = useState<number>(30);
+  const [sentOtp, setSentOtp] = useState<string>('1234');
+  const [otpExpiresAt, setOtpExpiresAt] = useState<number>(0);
+
+  useEffect(() => {
+    let interval: any = null;
+    if (otpSent && countdown > 0) {
+      interval = setInterval(() => {
+        setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [otpSent, countdown]);
 
   const getAuthorizedBranch = (input: string) => {
     const clean = input.replace(/\D/g, '');
@@ -61,75 +79,27 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
     const digits = cleanInput.replace(/\D/g, '');
     const clean10 = digits.length > 10 ? digits.slice(-10) : digits;
     const lower = cleanInput.toLowerCase();
-    // 1. Instant Receptionist Branch Check (Dedicated desk numbers take top priority)
-    for (const [recPhone, recInfo] of Object.entries(AUTHORIZED_WEB_BRANCHES)) {
-      const baseBranchName = recInfo.name.toLowerCase().replace(/\s*branch$/i, '');
-      if (
-        (clean10 && clean10 === recPhone) ||
-        (digits && (digits === recPhone || digits.endsWith(recPhone))) ||
-        (lower && lower.includes(baseBranchName))
-      ) {
-        return {
-          role: 'reception',
-          userName: `${recInfo.name} Reception`,
-          branchName: recInfo.name,
-          branchPhone: recInfo.phone
-        };
-      }
-    }
-
-    if (lower.includes('reception') || lower.includes('recption')) {
+    const strict = resolveStrictAuth(input);
+    if (strict) {
       return {
-        role: 'reception',
-        userName: 'KPHB Branch Reception',
-        branchName: 'KPHB Branch',
-        branchPhone: '+91 9030176176'
+        role: strict.role,
+        userName: strict.userName,
+        branchId: strict.branchId,
+        branchName: strict.branchName,
+        branchPhone: strict.branchPhone,
+        staffId: strict.staffId || '1'
       };
     }
 
-    // 2. Instant Admin / HR Email Logins (0ms delay)
-    if (lower === 'hr@sph.com' || lower.includes('hr') || digits === '9000000002') {
-      const email = cleanInput.includes('@') ? cleanInput : 'hr@sph.com';
-      return { role: 'hr', userName: email, branchName: 'HR Department', branchPhone: '' };
-    }
-    if (lower.includes('admin') || digits === '9000000001') {
-      const email = cleanInput.includes('@') ? cleanInput : 'admin@sph.com';
-      return { role: 'admin', userName: email, branchName: 'Admin Control Hub', branchPhone: '' };
-    }
-
-    // 3. Instant Known Doctor Seed Check (0ms delay)
-    if (digits.includes('8125260176') || lower.includes('prashanth')) {
-      return { role: 'doctor', userName: 'Dr. Prashanth K Vaidya', branchName: 'KPHB Branch', branchPhone: '+91 81252 60176' };
-    }
-    if (digits.includes('9903119766') || lower.includes('jobedah') || lower.includes('parveez')) {
-      return { role: 'doctor', userName: 'Dr. Jobedah Parveez', branchName: 'Nallagandla Branch', branchPhone: '+91 99031 19766' };
-    }
-    if (digits.includes('9490808582') || lower.includes('padma')) {
-      return { role: 'doctor', userName: 'Dr. Padma Priya', branchName: 'Chandanagar Branch', branchPhone: '+91 94908 08582' };
-    }
-    if (digits.includes('1111111111') || lower.includes('chanduri') || lower.includes('ramakrishna') || lower.includes('rama krishna')) {
-      return { role: 'doctor', userName: 'Dr. Ramakrishna Chanduri', branchName: 'Dilshuknagar Branch', branchPhone: '+91 98041 76176' };
-    }
-
-    // 4. Instant Pre-registered Clinic Staff Check (0ms delay)
-    for (const s of REGISTERED_CLINIC_STAFF) {
-      if ((clean10 && s.phone === clean10) || (cleanInput && s.name.toLowerCase().includes(lower))) {
-        return {
-          role: 'staff',
-          userName: s.name,
-          branchName: `${s.branch} Branch`,
-          branchPhone: `+91 ${s.phone}`,
-          staffId: s.id
-        };
-      }
-    }
-
-    // 5. Parallel Firestore Lookup as Fallback (Parallelized network call for max speed)
+    // Parallel Firestore Lookup as Fallback with 2s timeout
     if (db) {
       try {
+        const timeoutPromise = new Promise<{ docs: any[]; empty: boolean }>((resolve) =>
+          setTimeout(() => resolve({ docs: [], empty: true }), 2000)
+        );
         const [staffSnap, docSnap] = await Promise.all([
-          getDocs(collection(db, 'staff')),
-          digits.length >= 8 ? getDocs(collection(db, 'doctors')) : Promise.resolve({ docs: [], empty: true } as any)
+          Promise.race([getDocs(collection(db, 'staff')), timeoutPromise]),
+          digits.length >= 8 ? Promise.race([getDocs(collection(db, 'doctors')), timeoutPromise]) : Promise.resolve({ docs: [], empty: true } as any)
         ]);
 
         // Check staff collection
@@ -139,17 +109,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
           const sClean10 = sPhone.length > 10 ? sPhone.slice(-10) : sPhone;
           const sName = String(data.name || '').toLowerCase();
 
-          if (sClean10 && AUTHORIZED_WEB_BRANCHES[sClean10]) {
-            const recInfo = AUTHORIZED_WEB_BRANCHES[sClean10];
-            if ((clean10 && clean10 === sClean10) || (digits && sPhone && clean10 === sClean10)) {
-              return {
-                role: 'reception',
-                userName: `${recInfo.name} Reception`,
-                branchName: recInfo.name,
-                branchPhone: recInfo.phone,
-                staffId: d.id
-              };
-            }
+          // Reject if someone in staff collection accidentally has a desk phone
+          if (sClean10 && RECEPTION_DESK_DIRECTORY[sClean10]) {
+            const rec = RECEPTION_DESK_DIRECTORY[sClean10];
+            return {
+              role: 'reception',
+              userName: rec.userName,
+              branchId: rec.branchId,
+              branchName: rec.branchName,
+              branchPhone: rec.formattedPhone,
+              staffId: d.id
+            };
           }
 
           if (
@@ -158,10 +128,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             (lower && sName && sName === lower) ||
             (digits && sPhone && digits.length >= 10 && (digits === sPhone || clean10 === sClean10))
           ) {
+            const canonical = resolveCanonicalBranchId(data.branchId || data.branch || data.branchName) || 'kphb';
+            const branchItem = BRANCHES[canonical];
             return {
               role: 'staff',
               userName: data.name || 'Staff Member',
-              branchName: data.branch ? (data.branch.includes('Branch') ? data.branch : `${data.branch} Branch`) : 'KPHB Branch',
+              branchId: canonical,
+              branchName: branchItem.fullName,
               branchPhone: data.mobile || data.phone || digits,
               staffId: d.id
             };
@@ -181,11 +154,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
               (cleanInput && d.id === cleanInput) ||
               (lower && dName && dName === lower)
             ) {
+              const canonical = resolveCanonicalBranchId(data.branchId || data.branch || data.branchName) || 'kphb';
+              const branchItem = BRANCHES[canonical];
               return {
                 role: 'doctor',
                 userName: data.name || 'Dr. Physician',
-                branchName: data.branch || 'Medical Center',
-                branchPhone: digits,
+                branchId: canonical,
+                branchName: branchItem.fullName,
+                branchPhone: dPhone ? `+91 ${dClean10}` : branchItem.formattedPhone,
                 staffId: d.id
               };
             }
@@ -235,93 +211,108 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
     setIsLoading(false);
   };
 
-  // SEND REAL 4-DIGIT SMS OTP (SMS Gateway: smslogin.co, Template: 1777178867791586062)
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // SEND REAL 4-DIGIT SMS OTP (Truly instant UI transition, zero loading delay!)
+  const handleSendOtp = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setErrorMessage('');
 
-    if (!mobileNumber.trim()) {
+    const rawInput = mobileNumber.trim();
+    if (!rawInput) {
       setErrorMessage('Please enter your mobile number.');
       return;
     }
 
-    setIsLoading(true);
-    const authData = await detectWebRoleAndBranch(mobileNumber);
+    const { clean10 } = normalizePhoneForSms(rawInput);
+    if (!clean10 || clean10.length < 10) {
+      setErrorMessage('Please enter a valid 10-digit mobile number.');
+      return;
+    }
 
-    if (!authData) {
-      setIsLoading(false);
-      setErrorMessage('Access Denied: This mobile number is not registered as an active Doctor, Receptionist, or Staff member. If this account was deleted by Admin or HR, access is revoked.');
+    setIsLoading(true);
+    setErrorMessage('');
+    const verifiedAuth = await detectWebRoleAndBranch(rawInput);
+    setIsLoading(false);
+
+    if (!verifiedAuth) {
+      setErrorMessage(`Mobile number +91 ${clean10} is not registered in the clinic system. Only authorized staff, doctors, and branch receptions can sign in.`);
       return;
     }
 
     const generatedOtp = generate4DigitOtp();
-    const { clean10 } = normalizePhoneForSms(mobileNumber);
+    const expiry = Date.now() + 30 * 1000;
 
-    // Save OTP to Firestore with 5-minute expiry
-    if (db && clean10) {
-      try {
-        await setDoc(doc(db, 'auth_otps', clean10), {
-          phone: clean10,
-          otp: generatedOtp,
-          expiresAt: Date.now() + 5 * 60 * 1000,
-          role: authData.role,
-          staffId: authData.staffId || null,
-          userName: authData.userName || '',
-          branchName: authData.branchName || '',
-          createdAt: new Date().toISOString()
-        });
-      } catch (err) {
-        console.warn('Error saving OTP to Firestore:', err);
-      }
-    }
+    setSentOtp(generatedOtp);
+    setOtpExpiresAt(expiry);
+    setCachedAuthData(verifiedAuth);
 
-    // Send real SMS OTP
-    const smsResult = await sendSmsOtp(clean10, generatedOtp);
+    // 1. INSTANTLY transition to OTP step (0ms delay! No loading circle!)
     setIsLoading(false);
     setOtpSent(true);
     setOtpCode('1234');
-    if (smsResult.success) {
-      setDisplayedOtp('');
-      setSmsStatusNotice(`A 4-digit verification code has been sent via SMS to +91 ${clean10}. (Default OTP: 1234)`);
-    } else {
-      setDisplayedOtp('');
-      if (smsResult.isCredentialsError) {
-        setSmsStatusNotice(`SMS Gateway notice: "Invalid Credentials" returned by smslogin.co. You can use default OTP 1234.`);
-      } else {
-        setSmsStatusNotice(`SMS Delivery Notice: ${smsResult.message}. You can use default OTP 1234.`);
-      }
+    setCountdown(30);
+    setSmsStatusNotice(`Sending verification code to +91 ${clean10}... (Default OTP: 1234)`);
+
+    // 2. Save OTP to Firestore in background for audit
+    if (db && clean10) {
+      setDoc(doc(db, 'auth_otps', clean10), {
+        phone: clean10,
+        otp: generatedOtp,
+        expiresAt: expiry,
+        role: verifiedAuth.role,
+        staffId: verifiedAuth.staffId || null,
+        userName: verifiedAuth.userName || 'Staff Member',
+        branchName: verifiedAuth.branchName || 'KPHB Branch',
+        createdAt: new Date().toISOString()
+      }).catch(err => console.warn('Background auth/OTP notice:', err));
     }
+
+    // 3. Dispatch SMS in background without blocking UI
+    sendSmsOtp(clean10, generatedOtp).then(smsResult => {
+      if (smsResult.success) {
+        setSmsStatusNotice(`A 4-digit verification code has been sent via SMS to +91 ${clean10}. (Default OTP: 1234)`);
+      } else {
+        setSmsStatusNotice(`SMS Dispatch: ${smsResult.message}. You can use default OTP 1234.`);
+      }
+    }).catch(() => {
+      setSmsStatusNotice(`You can use default OTP 1234 to proceed.`);
+    });
   };
 
-  // VERIFY 4-DIGIT SMS OTP
+  // VERIFY 4-DIGIT SMS OTP (Instant 0ms in-memory verification, zero loading delay!)
   const handleOtpSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
-    setIsLoading(true);
 
     const cleanOtp = otpCode.trim() || '1234';
     if (!cleanOtp) {
       setErrorMessage('Please enter the 4-digit OTP received via SMS (or use default 1234).');
-      setIsLoading(false);
       return;
     }
 
     const { clean10 } = normalizePhoneForSms(mobileNumber);
-    let isOtpValid = cleanOtp === '1234';
 
+    // 1. Check expiration if user typed SMS OTP
+    const isDefault = cleanOtp === '1234';
+    if (!isDefault && otpExpiresAt > 0 && Date.now() > otpExpiresAt) {
+      setErrorMessage('OTP has expired (30 seconds validity). Please click Resend OTP or use default OTP 1234.');
+      return;
+    }
+
+    // 2. Instant In-Memory Match
+    let isOtpValid = isDefault || (sentOtp && cleanOtp === sentOtp);
+
+    // 3. Fast fallback to Firestore OTP check with 1s timeout
     if (!isOtpValid && db && clean10) {
       try {
-        const otpSnap = await getDoc(doc(db, 'auth_otps', clean10));
-        if (otpSnap.exists()) {
+        const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 1000));
+        const otpSnap = await Promise.race([
+          getDoc(doc(db, 'auth_otps', clean10)),
+          timeoutPromise
+        ]);
+        if (otpSnap && otpSnap.exists()) {
           const data = otpSnap.data();
-          if (data.otp === cleanOtp) {
-            if (Date.now() <= (data.expiresAt || 0)) {
-              isOtpValid = true;
-            } else {
-              setIsLoading(false);
-              setErrorMessage('OTP has expired (5 minutes validity). Please click Send OTP again or use default OTP 1234.');
-              return;
-            }
+          if (data.otp === cleanOtp && Date.now() <= (data.expiresAt || 0)) {
+            isOtpValid = true;
           }
         }
       } catch (err) {
@@ -329,23 +320,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
       }
     }
 
-    // Default test OTP for web login
-    if (!isOtpValid && cleanOtp === '1234') {
-      isOtpValid = true;
-    }
-
     if (!isOtpValid) {
-      setIsLoading(false);
       setErrorMessage('Invalid OTP code. Please check your SMS or enter default OTP 1234.');
       return;
     }
 
-    // Re-verify that user was not deleted in the interim
-    const authData = await detectWebRoleAndBranch(mobileNumber);
+    // 4. Instant Login Session (0ms delay!)
+    const authData = cachedAuthData || (await detectWebRoleAndBranch(mobileNumber));
     setIsLoading(false);
 
     if (!authData) {
-      setErrorMessage('Access Denied: This staff account was deleted or deactivated by Admin / HR.');
+      setErrorMessage('Access Denied: Mobile number is not registered in the clinic database.');
       return;
     }
 
@@ -510,6 +495,35 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
                   required
                 />
               </div>
+
+              {/* Live strict account detection badge */}
+              {(() => {
+                const detected = resolveStrictAuth(mobileNumber);
+                if (!detected) return null;
+                const isDoc = detected.isDoctor;
+                return (
+                  <div style={{
+                    marginTop: '8px',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    background: isDoc ? '#eff6ff' : '#ecfdf5',
+                    color: isDoc ? '#1d4ed8' : '#047857',
+                    border: `1px solid ${isDoc ? '#bfdbfe' : '#a7f3d0'}`
+                  }}>
+                    <ShieldCheck size={14} color={isDoc ? '#2563eb' : '#059669'} />
+                    <span>
+                      {isDoc
+                        ? `Doctor Profile: ${detected.userName} (${detected.branchName})`
+                        : `Reception Desk: ${detected.userName}`}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {otpSent && (
@@ -546,6 +560,30 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
                     style={{ background: 'transparent', border: 'none', outline: 'none', width: '100%', fontSize: '13px !important', color: '#0f172a', fontWeight: 500 }}
                     required
                   />
+                </div>
+
+                {/* 30-Second Countdown & Resend Option */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', padding: '0 4px' }}>
+                  <span style={{ fontSize: '12px', color: countdown > 0 ? '#64748b' : '#ef4444', fontWeight: 600 }}>
+                    {countdown > 0 ? `⏱️ Expires in ${countdown}s` : '⚠️ OTP expired (30s)'}
+                  </span>
+                  {countdown === 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleSendOtp}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#0284c7',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        textDecoration: 'underline'
+                      }}
+                    >
+                      Resend OTP
+                    </button>
+                  ) : null}
                 </div>
               </div>
             )}

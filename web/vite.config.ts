@@ -9,7 +9,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@app/shared': path.resolve(__dirname, '../../packages/shared/src')
+      '@app/shared': path.resolve(__dirname, '../packages/shared/src')
     }
   },
   build: {

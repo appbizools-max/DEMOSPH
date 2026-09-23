@@ -4,7 +4,7 @@ import {
   ArrowRightLeft, UserX, Activity, CheckCircle2, Play, AlertCircle, Trash2,
   ArrowUp, ArrowDown, Phone, CalendarClock, X, Save, MoreVertical, MessageCircle, FileText, RotateCcw
 } from 'lucide-react';
-import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification, sendInvoiceWhatsAppNotification } from '@app/shared';
+import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification, sendInvoiceWhatsAppNotification, CanonicalBranchId, sanitizeDoctorName } from '@app/shared';
 import { collection, onSnapshot, updateDoc, deleteDoc, doc, query, where, getDocs } from 'firebase/firestore';
 import { TargetProgressWebUI } from '../../../components/TargetProgressWebUI';
 import { PatientFileUI } from '../../../components/PatientFileUI';
@@ -14,12 +14,14 @@ import { receptionDataStore } from '../../../utils/receptionDataStore';
 import { calculateRealBranchRevenue, syncBranchTargetToFirestore } from '../../../utils/branchRevenueCalculator';
 interface ReceptionDashboardPageProps {
   currentBranch?: string;
+  branchId?: CanonicalBranchId;
   onNavigate?: (tab: string, data?: any) => void;
   initialPatientForCheckout?: any;
   onClearInitialCheckout?: () => void;
 }
 export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
   currentBranch,
+  branchId,
   onNavigate,
   initialPatientForCheckout,
   onClearInitialCheckout
@@ -301,7 +303,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
             phone: appObj.phoneNumber || appObj.phone || '',
             date: appObj.appointmentDate || appObj.date || '',
             time: appObj.appointmentTime || appObj.time || '10:00 AM',
-            doctorName: appObj.doctorName || appObj.doctor,
+            doctorName: sanitizeDoctorName(appObj.doctorName || appObj.doctor, appObj.branch || currentBranch),
             branch: appObj.branch || currentBranch
           }).catch(err => console.error('Cancellation WhatsApp notification error:', err));
         }
@@ -332,7 +334,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
         phone: rescheduleModalApp.phoneNumber || rescheduleModalApp.phone || '',
         date: newRescheduleDate,
         time: newRescheduleTime || rescheduleModalApp.appointmentTime || '10:00 AM',
-        doctorName: rescheduleModalApp.doctorName || rescheduleModalApp.doctor,
+        doctorName: sanitizeDoctorName(rescheduleModalApp.doctorName || rescheduleModalApp.doctor, rescheduleModalApp.branch || currentBranch),
         branch: rescheduleModalApp.branch || currentBranch
       }).catch(err => console.error('WhatsApp reschedule notification error:', err));
 
@@ -370,7 +372,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
           totalPaid,
           paymentMode: targetApp.paymentMode || 'UPI',
           branch: targetApp.branch || targetApp.branchName || currentBranch || 'KPHB',
-          doctorName: targetApp.doctorName || targetApp.doctor || 'Dr. Prashanth K Vaidya'
+          doctorName: sanitizeDoctorName(targetApp.doctorName || targetApp.doctor, targetApp.branch || targetApp.branchName || currentBranch)
         }).catch(err => console.error('WhatsApp invoice flow error:', err));
       }
     } catch (err) {
@@ -409,7 +411,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
             totalPaid,
             paymentMode: targetApp.paymentMode || 'UPI',
             branch: targetApp.branch || targetApp.branchName || currentBranch || 'KPHB',
-            doctorName: targetApp.doctorName || targetApp.doctor || 'Dr. Prashanth K Vaidya'
+            doctorName: sanitizeDoctorName(targetApp.doctorName || targetApp.doctor, targetApp.branch || targetApp.branchName || currentBranch)
           }).catch(err => console.error('WhatsApp invoice error on mark as paid:', err));
         }
       }
@@ -455,7 +457,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
           phone: pPhone,
           date: deleteConfirmApp.appointmentDate || deleteConfirmApp.date || '',
           time: deleteConfirmApp.appointmentTime || deleteConfirmApp.time || '10:00 AM',
-          doctorName: deleteConfirmApp.doctorName || deleteConfirmApp.doctor || 'Doctor',
+          doctorName: sanitizeDoctorName(deleteConfirmApp.doctorName || deleteConfirmApp.doctor, targetBranch),
           branch: targetBranch
         }).catch(err => console.error('Cancellation WhatsApp error:', err));
       }
@@ -662,7 +664,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
     const term = searchTerm.toLowerCase();
     const pName = (app.patientName || app.name || '').toLowerCase();
     const pPhone = (app.phoneNumber || app.phone || '').toLowerCase();
-    const docName = (app.doctorName || app.doctor || '').toLowerCase();
+    const docName = sanitizeDoctorName(app.doctorName || app.doctor, app.branch || currentBranch).toLowerCase();
     const dis = (app.diseases || '').toLowerCase();
     return pName.includes(term) || pPhone.includes(term) || docName.includes(term) || dis.includes(term);
   });
@@ -718,7 +720,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
         <TargetProgressWebUI
           branchName={realBranchResult.branchName}
           monthlyTarget={realBranchResult.monthlyTarget}
-          targetReached={realBranchResult.targetReached}
+          targetReached={Math.max(realBranchResult.targetReached, branchTarget.targetReached || 0)}
         />
       </div>
 
@@ -1176,7 +1178,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
                       </div>
                     </td>
                     <td style={{ padding: '12px 8px' }}>
-                      <div style={{ fontWeight: 700, color: '#1e293b' }}>{app.doctorName || app.doctor || 'Unassigned'}</div>
+                      <div style={{ fontWeight: 700, color: '#1e293b' }}>{sanitizeDoctorName(app.doctorName || app.doctor, app.branch || currentBranch)}</div>
                       <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <span>{app.branch || 'Main Branch'}</span>
                         <span>•</span>
@@ -1631,7 +1633,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
                 {rescheduleModalApp.patientName || rescheduleModalApp.name}
               </div>
               <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: '2px' }}>
-                Doctor: {rescheduleModalApp.doctorName || rescheduleModalApp.doctor || 'Unassigned'} • Phone: +91 {rescheduleModalApp.phone || rescheduleModalApp.phoneNumber || 'N/A'}
+                Doctor: {sanitizeDoctorName(rescheduleModalApp.doctorName || rescheduleModalApp.doctor, rescheduleModalApp.branch || currentBranch)} • Phone: +91 {rescheduleModalApp.phone || rescheduleModalApp.phoneNumber || 'N/A'}
               </div>
             </div>
 
@@ -1737,6 +1739,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
       {patientFileApp && (
         <PatientFileUI
           patient={patientFileApp}
+          doctorName={sanitizeDoctorName(patientFileApp.doctorName || patientFileApp.doctor, patientFileApp.branch || currentBranch)}
           onClose={() => setPatientFileApp(null)}
           onSubmitConsultation={async () => {
             const nextApp = { ...patientFileApp };
@@ -1905,7 +1908,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
                       const pName = app.patientName || app.name || 'Patient';
                       const pPhone = app.phone || app.phoneNumber || 'N/A';
                       const pRegId = app.regId || 'N/A';
-                      const pDoc = app.doctor || app.doctorName || 'Doctor';
+                      const pDoc = sanitizeDoctorName(app.doctor || app.doctorName, app.branch || currentBranch);
                       const pBranch = app.branch || 'Branch';
                       const pTime = app.timeSlot || app.time || 'Scheduled';
                       const pStatus = app.status || 'waiting';
@@ -2172,7 +2175,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>Doctor:</span>
-                  <span style={{ fontWeight: 700, color: '#0f172a' }}>{deleteConfirmApp.doctorName || deleteConfirmApp.doctor || 'Assigned Doctor'}</span>
+                  <span style={{ fontWeight: 700, color: '#0f172a' }}>{sanitizeDoctorName(deleteConfirmApp.doctorName || deleteConfirmApp.doctor, deleteConfirmApp.branch || currentBranch)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>Date & Time:</span>
@@ -2423,7 +2426,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
                           </div>
 
                           <div style={{ fontSize: '12px', color: '#334155', marginTop: '2px' }}>
-                            👨‍⚕️ {delApp.doctorName || delApp.doctor || 'Doctor'} • 📅 {delApp.appointmentDate || delApp.date || 'N/A'} at {delApp.appointmentTime || delApp.time || '10:00 AM'}
+                            👨‍⚕️ {sanitizeDoctorName(delApp.doctorName || delApp.doctor, delApp.branch || currentBranch)} • 📅 {delApp.appointmentDate || delApp.date || 'N/A'} at {delApp.appointmentTime || delApp.time || '10:00 AM'}
                           </div>
 
                           {/* Deletion & Retention badges */}

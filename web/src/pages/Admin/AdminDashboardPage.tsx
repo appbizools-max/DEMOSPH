@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, setDoc, doc, deleteDoc, updateDoc, addDoc } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { db, resolveCanonicalBranchId, BRANCHES } from '@app/shared';
 import {
   Building2, Users, DollarSign, Clock, TrendingUp, AlertCircle, ShieldAlert,
   UserCheck, Package, Pill, Search, Plus, Edit, Trash2, CheckCircle2, Target, Calendar,
@@ -892,23 +892,12 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
   };
 
   const isMatchingBranch = (app: any, branchId: string) => {
-    const bStr = String(app.branch || app.branchName || app.targetBranch || app.clinicBranch || '').toLowerCase();
-    const bId = String(app.branchId || '');
-    const regStr = String(app.regId || app.registrationId || '').toLowerCase();
-
-    if (branchId === 'kphb') {
-      return bStr.includes('kphb') || bStr.includes('kphp') || regStr.includes('kphb') || bId === 'XRrXPAWzn4fKiwT387PKBLQZg323';
-    }
-    if (branchId === 'nallagandla') {
-      return bStr.includes('nallagandla') || regStr.includes('nlg') || bId === '1qj75oZZlWgN8P02OAeRNjCVMhM2' || bId === 'pV2j0doYaX0Mmb3yUfNp';
-    }
-    if (branchId === 'dilshuknagar') {
-      return bStr.includes('dilshuk') || bStr.includes('dilsukh') || bStr.includes('dsnr') || regStr.includes('dsnr') || bId === 't7BiooFMRDU7DcgKFGnAPnJY0Qq2';
-    }
-    if (branchId === 'chandanagar') {
-      return bStr.includes('chanda') || bStr.includes('chandnagar') || regStr.includes('cngr') || bId === 'xS0281lEdPc0hUFrrNRPBMeQZsD3';
-    }
-    return false;
+    const canonicalTarget = resolveCanonicalBranchId(branchId);
+    if (!canonicalTarget) return false;
+    const appBranch = resolveCanonicalBranchId(
+      app.branchId || app.branch || app.branchName || app.targetBranch || app.clinicBranch || app.regId || app.registrationId
+    );
+    return appBranch === canonicalTarget;
   };
 
   const branchDailyStats = FOUR_BRANCHES.map(b => {
@@ -943,22 +932,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
   // Leave Requests State (Connected to Firestore)
   const [leaveRequests, setLeaveRequests] = useState<any[]>([]);
 
-  const BRANCH_NAME_MAP: Record<string, string> = {
-    'XRrXPAWzn4fKiwT387PKBLQZg323': 'KPHB',
-    't7BiooFMRDU7DcgKFGnAPnJY0Qq2': 'Dilshuknagar',
-    'xS0281lEdPc0hUFrrNRPBMeQZsD3': 'Chandanagar',
-    '1qj75oZZlWgN8P02OAeRNjCVMhM2': 'Nallagandla',
-    'pV2j0doYaX0Mmb3yUfNp': 'Nallagandla',
-    'kphb': 'KPHB',
-    'dilshuknagar': 'Dilshuknagar',
-    'chandanagar': 'Chandanagar',
-    'nallagandla': 'Nallagandla',
-  };
-
   const resolveBranchName = (l: any) => {
+    const canonical = resolveCanonicalBranchId(l.branchId || l.branch || l.branchName);
+    if (canonical && BRANCHES[canonical]) return BRANCHES[canonical].name;
     if (l.branch && typeof l.branch === 'string' && l.branch.trim()) return l.branch;
     if (l.branchName && typeof l.branchName === 'string' && l.branchName.trim()) return l.branchName;
-    if (l.branchId && BRANCH_NAME_MAP[l.branchId]) return BRANCH_NAME_MAP[l.branchId];
     return 'Main Branch';
   };
 

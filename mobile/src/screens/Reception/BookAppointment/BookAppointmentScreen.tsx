@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from '
 import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, Modal, Alert, BackHandler, Keyboard, InteractionManager, ActivityIndicator } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createDocument, sendBookingWhatsAppNotification } from '@app/shared';
+import { createDocument, sendBookingWhatsAppNotification, sanitizeDoctorName } from '@app/shared';
 import {
   getSafeDb, collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs
 } from '../../../utils/firebaseSafe';
@@ -681,8 +681,20 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const [marketingSource, setMarketingSource] = useState('Select Source');
   const [consultationMode, setConsultationMode] = useState<'In-Clinic' | 'Online'>('In-Clinic');
 
-  // START STATE FOR PROFILE LOOKUP
-  const [patientData, setPatientData] = useState({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
+  const [patientData, setPatientData] = useState<{
+    phone: string;
+    fullName: string;
+    patientName: string;
+    patientId: string;
+    regID: string;
+    registrationId?: string;
+    source: string;
+    patientType?: string;
+    isNewPatient?: boolean;
+    isExistingProfile?: boolean;
+    homeBranch?: string;
+    branchName?: string;
+  }>({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', registrationId: '', source: '', homeBranch: '', branchName: '' });
   const [existingProfilesList, setExistingProfilesList] = useState<any[]>([]);
   const [checkedPhone, setCheckedPhone] = useState('');
   const [bypassPhoneCheck, setBypassPhoneCheck] = useState(false);
@@ -709,9 +721,10 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || '';
       const cleanDocPhone = String(docPhone).replace(/\D/g, '').slice(-10);
       if (pName && cleanDocPhone === clean) {
-        const rawReg = data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid;
+        const rawReg = data.regNo || data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid || data.customId;
+        const originalBranch = data.branchName || data.branch || data.targetBranch || '';
         let regId = '';
-        const isValidReg = rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 18 && !/^[a-zA-Z0-9]{19,32}$/.test(rawReg.trim());
+        const isValidReg = rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 25 && !/^[a-zA-Z0-9]{20,32}$/.test(rawReg.trim()) && !rawReg.trim().toLowerCase().startsWith('temp_') && !rawReg.trim().toLowerCase().startsWith('app_');
         if (isValidReg) {
           regId = rawReg.trim().toUpperCase();
         }
@@ -719,23 +732,34 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         const personKey = `${pName.trim().toLowerCase()}_${cleanDocPhone}`;
         if (!profilesMap.has(personKey)) {
           if (!regId) {
-            const shortcut = getBranchShortcut(data.branchName || data.branch || selectedBranch);
+            const shortcut = getBranchShortcut(originalBranch || selectedBranch);
             regId = `SPH-${shortcut}-${String(profilesMap.size + 1).padStart(4, '0')}`;
           }
           profilesMap.set(personKey, {
             id: docId,
             fullName: pName,
             registrationId: regId,
+            regNo: data.regNo || regId,
             phone: docPhone || clean,
             gender: data.gender || '',
             age: data.age || '',
-            source: data.source || 'Old Patient',
-            branchName: data.branchName || data.branch || selectedBranch
+            source: 'Old Patient',
+            patientType: 'revisit',
+            isNewPatient: false,
+            isExistingProfile: true,
+            collectionName: 'patients',
+            branchName: originalBranch || '',
+            homeBranch: originalBranch || ''
           });
         } else {
           const existing = profilesMap.get(personKey);
           if (isValidReg && (!existing.registrationId || existing.registrationId.startsWith('SPH-'))) {
             existing.registrationId = regId;
+            existing.regNo = data.regNo || regId;
+          }
+          if (!existing.branchName && originalBranch) {
+            existing.branchName = originalBranch;
+            existing.homeBranch = originalBranch;
           }
           if (!existing.gender && data.gender) existing.gender = data.gender;
           if (!existing.age && data.age) existing.age = data.age;
@@ -842,8 +866,14 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       patientId: prof.id,
       fullName: prof.fullName,
       patientName: prof.fullName,
-      regID: prof.registrationId || prev.regID,
-      source: 'Old Patient'
+      regID: prof.registrationId || prof.regNo || prev.regID,
+      registrationId: prof.registrationId || prof.regNo || prev.registrationId,
+      source: 'Old Patient',
+      patientType: 'revisit',
+      isNewPatient: false,
+      isExistingProfile: true,
+      homeBranch: prof.branchName || prev.homeBranch,
+      branchName: prof.branchName || prev.branchName
     }));
     setBypassPhoneCheck(true);
     setExistingProfilesModalVisible(false);
@@ -880,6 +910,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
             const data = snap.data();
             const normDataName = (data.name || data.doctorName || '').toLowerCase().replace(/dr\.?\s*/i, '').trim();
             const digits = (data.mobile || data.phone || '').replace(/\D/g, '');
+            // Strictly exclude any reception desk or staff accounts
+            if (normDataName.includes('reception') || normDataName.includes('desk') || normDataName.includes('staff')) return;
+            if (digits && (digits === '9030176176' || digits === '9553176176' || digits === '9804176176' || digits === '9132176176')) return;
             const seedFallback = DEFAULT_DOCTORS_SEED.find(s => s.id === snap.id)
               || (digits && digits.length >= 7 ? DEFAULT_DOCTORS_SEED.find(s => {
                 const sDigits = (s.phone || '').replace(/\D/g, '');
@@ -1783,8 +1816,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         return;
       }
 
-      let generatedRegId = patientData.regID || patientData.patientId;
-      if (!generatedRegId || typeof generatedRegId !== 'string' || generatedRegId.trim().length === 0 || /^[a-zA-Z0-9]{19,32}$/.test(generatedRegId.trim())) {
+      let generatedRegId = patientData.regID || patientData.registrationId || patientData.patientId;
+      const isAutoDocId = typeof generatedRegId === 'string' && /^[a-zA-Z0-9]{20,32}$/.test(generatedRegId.trim());
+      if (!generatedRegId || typeof generatedRegId !== 'string' || generatedRegId.trim().length === 0 || isAutoDocId) {
         generatedRegId = await generateRegistrationId(selectedBranch);
       }
 
@@ -1814,8 +1848,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         branch: effectiveBranch,
         branchName: effectiveBranch,
         targetBranch: effectiveBranch,
-        doctorName: selectedDoctor,
-        doctor: selectedDoctor,
+        doctorName: sanitizeDoctorName(selectedDoctor, effectiveBranch),
+        doctor: sanitizeDoctorName(selectedDoctor, effectiveBranch),
         appointmentDate,
         date: appointmentDate,
         appointmentTime: selectedTimeSlot || '10:00 AM',
@@ -2679,7 +2713,18 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
                     <View style={{ flex: 1 }}>
                       {(() => {
                         const vState = getPatientVisitState(
-                          { ...prof, patientName: prof.fullName, phone: prof.phone || checkedPhone, patientDocId: prof.id, regId: prof.registrationId },
+                          {
+                            ...prof,
+                            patientName: prof.fullName,
+                            phone: prof.phone || checkedPhone,
+                            patientDocId: prof.id,
+                            regId: prof.registrationId || prof.regNo,
+                            source: 'Old Patient',
+                            patientType: 'revisit',
+                            isNewPatient: false,
+                            isExistingProfile: true,
+                            collectionName: prof.collectionName || 'patients'
+                          },
                           receptionDataStore.getAllCollectionsPool(),
                           receptionDataStore.getPackageMembers()
                         );
@@ -2693,11 +2738,18 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
                                 {vState.badgeText}
                               </Text>
                             </View>
+                            {!!prof.branchName && (
+                              <View style={{ backgroundColor: '#e0f2fe', borderWidth: 1, borderColor: '#bae6fd', paddingHorizontal: 5, paddingVertical: 1.5, borderRadius: 4 }}>
+                                <Text style={{ fontSize: 9.5, fontWeight: '700', color: '#0369a1' }}>
+                                  📍 {prof.branchName.replace(/\s*branch\s*/i, '')} Branch
+                                </Text>
+                              </View>
+                            )}
                           </View>
                         );
                       })()}
                       <Text style={{ fontSize: 12, color: '#0284c7', marginTop: 2 }}>
-                        Reg ID: {prof.registrationId}
+                        Reg ID: {prof.registrationId || prof.regNo}
                       </Text>
                       {!!prof.gender || !!prof.age ? (
                         <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>

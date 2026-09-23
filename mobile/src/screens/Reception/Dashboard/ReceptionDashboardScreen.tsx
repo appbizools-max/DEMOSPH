@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Linking, Alert, TextInput, ActivityIndicator } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { getSafeDb, collection, onSnapshot, doc, updateDoc, deleteDoc, getDocs } from '../../../utils/firebaseSafe';
-import { sendCancellationWhatsAppNotification } from '@app/shared';
+import { sendCancellationWhatsAppNotification, sanitizeDoctorName } from '@app/shared';
 import { PatientAppointmentRecord } from '../../../components/AppointmentsQueueUI';
 import { getBranchShortcut } from '../../../utils/idGenerator';
 import { DEFAULT_DOCTORS_SEED } from '../BookAppointment/BookAppointmentScreen';
@@ -229,7 +229,7 @@ const mapRecord = (
     name: app.patientName || app.name || 'Patient',
     phone: app.phoneNumber || app.phone || app.mobile || '',
     regId: getCleanRegId(app, index),
-    doctor: app.doctorName || app.doctor || 'Dr. Prashanth K Vaidya',
+    doctor: sanitizeDoctorName(app.doctorName || app.doctor, app.branch),
     time: app.appointmentTime || app.time || '10:00 AM',
     date: app.appointmentDate || selectedDate,
     status: status,
@@ -593,7 +593,7 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
 
           const getShortcut = (str: string) => {
             if (str.includes('kphb') || str.includes('kukatpally')) return 'kphb';
-            if (str.includes('nalla') || str.includes('nallagandla')) return 'nalla';
+            if (str.includes('nalla') || str.includes('nallagandla')) return 'nallagandla';
             if (str.includes('chanda') || str.includes('chnr') || str.includes('chandanagar')) return 'chandanagar';
             if (str.includes('dilshuk') || str.includes('dilsukh') || str.includes('dsnr') || str.includes('dshnr')) return 'dilshuknagar';
             return str;
@@ -633,7 +633,7 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
     } catch (err) {
       console.error('Error listening to branch target:', err);
     }
-  }, [currentBranch]);
+  }, [currentBranch, selectedDashboardBranch]);
 
   // Dynamic Real-time Branch Target Calculation from live collections this month
   const realBranchResult = useMemo(() => {
@@ -665,6 +665,8 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
         if (!snapshot.empty) {
           snapshot.forEach((docSnap) => {
             const data = docSnap.data();
+            const normName = (data.name || data.doctorName || '').toLowerCase();
+            if (normName.includes('reception') || normName.includes('desk') || normName.includes('staff')) return;
             const seedFallback = DEFAULT_DOCTORS_SEED.find(s => s.id === docSnap.id || s.name === data.name || s.name === data.doctorName);
             list.push({
               id: docSnap.id,
@@ -1132,7 +1134,7 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
         <TargetProgressUI
           branchName={realBranchResult.branchName}
           monthlyTarget={realBranchResult.monthlyTarget}
-          targetReached={realBranchResult.targetReached}
+          targetReached={Math.max(realBranchResult.targetReached, branchTarget.targetReached || 0)}
         />
       </View>
 

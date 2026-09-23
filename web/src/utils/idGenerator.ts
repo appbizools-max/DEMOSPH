@@ -1,15 +1,9 @@
-import { db } from '@app/shared';
+import { db, getRegistrationCode } from '@app/shared';
 import { doc, runTransaction, collection, getDocs } from 'firebase/firestore';
 
-// 1. Get 3-Letter Branch Code
+// 1. Get 3-Letter Branch Registration Code (KPB, CHN, DIL, NGL)
 export const getBranchShortcut = (branchNameOrId?: string): string => {
-  const normalized = (branchNameOrId || 'UNKNOWN').toUpperCase();
-  if (normalized.includes('KPHB') || normalized === 'KPB') return 'KPB';
-  if (normalized.includes('CHANDANAGAR') || normalized === 'CHN') return 'CHN';
-  if (normalized.includes('NALLAGANDLA') || normalized === 'NGL') return 'NGL';
-  if (normalized.includes('DILSHUKNAGAR') || normalized === 'DIL') return 'DIL';
-  
-  return normalized.replace(/[^A-Z]/g, '').substring(0, 3) || 'GEN';
+  return getRegistrationCode(branchNameOrId);
 };
 
 // Find highest existing registration counter number across ALL Firestore collections (allpatients, patients, appointments, patient_profiles)

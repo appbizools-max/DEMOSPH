@@ -115,7 +115,11 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
   console.log('======================================================================\n');
 
   try {
-    const res = await fetch(requestUrl, { method: 'GET' });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+
+    const res = await fetch(requestUrl, { method: 'GET', signal: controller.signal });
+    clearTimeout(timer);
     const responseText = await res.text();
     const isError = responseText.toLowerCase().includes('error') || responseText.toLowerCase().includes('invalid');
     const isCredentialsError = responseText.toLowerCase().includes('invalid credentials');
@@ -142,10 +146,13 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
   } catch (err: any) {
     console.warn(`[SMS_OTP] Primary proxy send notice:`, err?.message || err);
 
-    // Fallback: direct browser fetch with mode no-cors
+    // Fallback: direct browser fetch with mode no-cors with 2s timeout
     try {
+      const fbController = new AbortController();
+      const fbTimer = setTimeout(() => fbController.abort(), 2000);
       const directUrl = `${SMS_CONFIG.baseUrl}?${queryParams.toString()}`;
-      await fetch(directUrl, { method: 'GET', mode: 'no-cors' });
+      await fetch(directUrl, { method: 'GET', mode: 'no-cors', signal: fbController.signal });
+      clearTimeout(fbTimer);
       return {
         success: true,
         message: `OTP dispatched to +91 ${clean10}`,
@@ -158,7 +165,7 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
 
     return {
       success: false,
-      message: `Failed to reach SMS gateway.`,
+      message: `Failed to reach SMS gateway in timely manner.`,
       otp
     };
   }

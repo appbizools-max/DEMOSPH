@@ -140,19 +140,14 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-
-      {/* Header Bar */}
+    <View style={styles.container}>
+      {/* Sub-toolbar: count + mark all as read */}
       <View style={styles.topHeaderBar}>
         <View style={styles.titleInfo}>
-          <Text style={styles.headerTitle}>Latest Notifications</Text>
-          <View style={styles.countBadge}>
-            <Text style={styles.countBadgeText}>{latest10.length}/10</Text>
-          </View>
+          <Text style={styles.subBarLabel}>Showing latest {latest10.length}</Text>
           {unreadCount > 0 && (
             <View style={styles.unreadBadge}>
-              <Text style={styles.unreadBadgeText}>{unreadCount} unread</Text>
+              <Text style={styles.unreadBadgeText}>{unreadCount} new</Text>
             </View>
           )}
         </View>
@@ -163,8 +158,8 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
             onPress={onMarkAllAsRead}
             activeOpacity={0.7}
           >
-            <Ionicons name="checkmark-done-circle" size={16} color="#0284c7" />
-            <Text style={styles.markAllBtnText}>Mark all as read</Text>
+            <Ionicons name="checkmark-done" size={13} color="#0284c7" />
+            <Text style={styles.markAllBtnText}>Mark all read</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -178,7 +173,7 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
         {latest10.length === 0 ? (
           <View style={styles.emptyContainer}>
             <View style={styles.emptyIconCircle}>
-              <Ionicons name="notifications-off-outline" size={42} color="#94a3b8" />
+              <Ionicons name="notifications-off-outline" size={36} color="#94a3b8" />
             </View>
             <Text style={styles.emptyTitle}>No Notifications</Text>
             <Text style={styles.emptySubtitle}>
@@ -193,19 +188,19 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
             return (
               <TouchableOpacity
                 key={item.id || index}
-                activeOpacity={0.8}
+                activeOpacity={0.75}
                 style={[styles.card, isRead ? styles.cardRead : styles.cardUnread]}
                 onPress={() => {
                   if (!isRead) onMarkAsRead(item.id);
                 }}
               >
-                {/* Header Row */}
+                {/* Header Row: Icon + Title + Tag (Left) | Time + Unread Dot (Right) */}
                 <View style={styles.cardHeader}>
                   <View style={styles.headerLeft}>
                     <View style={[styles.iconCircle, meta.circleStyle]}>
                       <Ionicons
                         name={meta.iconName}
-                        size={14}
+                        size={12}
                         color={meta.iconColor}
                       />
                     </View>
@@ -217,109 +212,94 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
                         <Text style={meta.tagTextStyle}>{meta.tagText}</Text>
                       </View>
                     )}
-                    {!isRead && <View style={styles.unreadDot} />}
                   </View>
 
-                  <Text style={styles.timeText}>{formatTimestamp(item.createdAt)}</Text>
+                  <View style={styles.headerRight}>
+                    <Text style={styles.timeText}>{formatTimestamp(item.createdAt)}</Text>
+                    {!isRead && <View style={styles.unreadDot} />}
+                  </View>
                 </View>
 
                 {/* Body Text */}
-                <Text style={[styles.bodyText, isRead && styles.bodyTextRead]}>
+                <Text style={[styles.bodyText, isRead && styles.bodyTextRead]} numberOfLines={2}>
                   {item.body || (item.type === 'payment'
                     ? `Payment received from ${item.patientName || 'Patient'}`
                     : `Appointment booked for ${item.patientName || 'Patient'}`)}
                 </Text>
 
                 {/* Details Tags */}
-                <View style={styles.tagsContainer}>
-                  {item.amount != null && item.amount !== '' ? (
-                    <View style={styles.tagAmount}>
-                      <Ionicons name="wallet-outline" size={12} color="#16a34a" />
-                      <Text style={styles.tagTextAmount}>₹{Number(item.amount || 0).toLocaleString('en-IN')}</Text>
-                    </View>
-                  ) : null}
+                {(item.amount != null || item.appointmentTime || item.branch || item.doctorName || item.paymentMode || item.loginTime || item.logoutTime || item.totalCalls || item.followUps) && (
+                  <View style={styles.tagsContainer}>
+                    {item.amount != null && item.amount !== '' ? (
+                      <View style={styles.tagAmount}>
+                        <Ionicons name="wallet-outline" size={10} color="#16a34a" />
+                        <Text style={styles.tagTextAmount}>₹{Number(item.amount || 0).toLocaleString('en-IN')}</Text>
+                      </View>
+                    ) : null}
 
-                  {item.paymentMode ? (
-                    <View style={styles.tag}>
-                      <Ionicons name="card-outline" size={12} color="#475569" />
-                      <Text style={styles.tagTextSecondary}>{item.paymentMode}</Text>
-                    </View>
-                  ) : null}
+                    {item.paymentMode ? (
+                      <View style={styles.tag}>
+                        <Ionicons name="card-outline" size={10} color="#475569" />
+                        <Text style={styles.tagTextSecondary}>{item.paymentMode}</Text>
+                      </View>
+                    ) : null}
 
-                  {item.loginTime ? (
-                    <View style={styles.tagPurple}>
-                      <Ionicons name="log-in-outline" size={12} color="#7c3aed" />
-                      <Text style={styles.tagTextPurple}>In: {item.loginTime}</Text>
-                    </View>
-                  ) : null}
+                    {item.loginTime ? (
+                      <View style={styles.tagPurple}>
+                        <Ionicons name="log-in-outline" size={10} color="#7c3aed" />
+                        <Text style={styles.tagTextPurple}>In: {item.loginTime}</Text>
+                      </View>
+                    ) : null}
 
-                  {item.logoutTime ? (
-                    <View style={styles.tagAmber}>
-                      <Ionicons name="log-out-outline" size={12} color="#d97706" />
-                      <Text style={styles.tagTextAmber}>Out: {item.logoutTime}</Text>
-                    </View>
-                  ) : null}
+                    {item.logoutTime ? (
+                      <View style={styles.tagAmber}>
+                        <Ionicons name="log-out-outline" size={10} color="#d97706" />
+                        <Text style={styles.tagTextAmber}>Out: {item.logoutTime}</Text>
+                      </View>
+                    ) : null}
 
-                  {item.totalCalls != null && item.totalCalls !== '' && Number(item.totalCalls) > 0 ? (
-                    <View style={styles.tagIndigo}>
-                      <Ionicons name="call-outline" size={12} color="#4f46e5" />
-                      <Text style={styles.tagTextIndigo}>{item.totalCalls} Calls</Text>
-                    </View>
-                  ) : null}
+                    {item.totalCalls != null && item.totalCalls !== '' && Number(item.totalCalls) > 0 ? (
+                      <View style={styles.tagIndigo}>
+                        <Ionicons name="call-outline" size={10} color="#4f46e5" />
+                        <Text style={styles.tagTextIndigo}>{item.totalCalls} Calls</Text>
+                      </View>
+                    ) : null}
 
-                  {item.followUps != null && item.followUps !== '' && Number(item.followUps) > 0 ? (
-                    <View style={styles.tagGreen}>
-                      <Ionicons name="people-outline" size={12} color="#059669" />
-                      <Text style={styles.tagTextGreen}>{item.followUps} Follow-ups</Text>
-                    </View>
-                  ) : null}
+                    {item.followUps != null && item.followUps !== '' && Number(item.followUps) > 0 ? (
+                      <View style={styles.tagGreen}>
+                        <Ionicons name="people-outline" size={10} color="#059669" />
+                        <Text style={styles.tagTextGreen}>{item.followUps} Follow-ups</Text>
+                      </View>
+                    ) : null}
 
-                  {item.appointmentTime ? (
-                    <View style={styles.tag}>
-                      <Ionicons name="time-outline" size={12} color="#0284c7" />
-                      <Text style={styles.tagTextPrimary}>{item.appointmentTime}</Text>
-                    </View>
-                  ) : null}
+                    {item.appointmentTime ? (
+                      <View style={styles.tag}>
+                        <Ionicons name="time-outline" size={10} color="#0284c7" />
+                        <Text style={styles.tagTextPrimary}>{item.appointmentTime}</Text>
+                      </View>
+                    ) : null}
 
-                  {item.branch ? (
-                    <View style={styles.tag}>
-                      <Ionicons name="location-outline" size={12} color="#64748b" />
-                      <Text style={styles.tagTextSecondary}>{item.branch}</Text>
-                    </View>
-                  ) : null}
+                    {item.branch ? (
+                      <View style={styles.tag}>
+                        <Ionicons name="location-outline" size={10} color="#64748b" />
+                        <Text style={styles.tagTextSecondary}>{item.branch}</Text>
+                      </View>
+                    ) : null}
 
-                  {item.doctorName ? (
-                    <View style={styles.tag}>
-                      <Ionicons name="medkit-outline" size={12} color="#0284c7" />
-                      <Text style={styles.tagTextDoctor}>{item.doctorName}</Text>
-                    </View>
-                  ) : null}
-                </View>
-
-                {/* Card Action Row */}
-                <View style={styles.cardFooter}>
-                  {!isRead ? (
-                    <TouchableOpacity
-                      style={styles.markAsReadBtn}
-                      onPress={() => onMarkAsRead(item.id)}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="checkmark-circle-outline" size={14} color="#0284c7" />
-                      <Text style={styles.markAsReadBtnText}>Mark as read</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <View style={styles.readTag}>
-                      <Ionicons name="checkmark-done" size={13} color="#94a3b8" />
-                      <Text style={styles.readTagText}>Read</Text>
-                    </View>
-                  )}
-                </View>
+                    {item.doctorName ? (
+                      <View style={styles.tag}>
+                        <Ionicons name="medkit-outline" size={10} color="#0284c7" />
+                        <Text style={styles.tagTextDoctor}>{item.doctorName}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
               </TouchableOpacity>
             );
           })
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 };
 
@@ -332,8 +312,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     backgroundColor: '#ffffff',
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
@@ -341,48 +321,38 @@ const styles = StyleSheet.create({
   titleInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+    flexShrink: 1,
   },
-  headerTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#0f172a',
-  },
-  countBadge: {
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  countBadgeText: {
-    fontSize: 11,
+  subBarLabel: {
+    fontSize: 12,
     fontWeight: '700',
-    color: '#475569',
+    color: '#64748b',
   },
   unreadBadge: {
     backgroundColor: '#fee2e2',
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
   },
   unreadBadgeText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     color: '#dc2626',
   },
   markAllBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    gap: 3,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
     backgroundColor: '#f0f9ff',
     borderWidth: 1,
     borderColor: '#e0f2fe',
   },
   markAllBtnText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: '#0284c7',
   },
@@ -390,25 +360,27 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     paddingBottom: 40,
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    marginBottom: 7,
     borderWidth: 1,
   },
   cardUnread: {
     borderColor: '#bae6fd',
-    borderLeftWidth: 4,
+    borderLeftWidth: 3.5,
     borderLeftColor: '#0284c7',
     shadowColor: '#0284c7',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 5,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 1,
   },
   cardRead: {
     borderColor: '#e2e8f0',
@@ -418,18 +390,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
-    gap: 8,
+    marginRight: 8,
+    gap: 6,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
   },
   iconCircle: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -453,87 +431,81 @@ const styles = StyleSheet.create({
   },
   bookingTypeTag: {
     backgroundColor: '#e0f2fe',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
   },
   bookingTypeTagText: {
-    fontSize: 9.5,
+    fontSize: 8.5,
     fontWeight: '800',
     color: '#0284c7',
   },
   paymentTypeTag: {
     backgroundColor: '#dcfce7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
   },
   paymentTypeTagText: {
-    fontSize: 9.5,
+    fontSize: 8.5,
     fontWeight: '800',
     color: '#15803d',
   },
   loginTypeTag: {
     backgroundColor: '#ede9fe',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
   },
   loginTypeTagText: {
-    fontSize: 9.5,
+    fontSize: 8.5,
     fontWeight: '800',
     color: '#7c3aed',
   },
   logoutTypeTag: {
     backgroundColor: '#fef3c7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
   },
   logoutTypeTagText: {
-    fontSize: 9.5,
+    fontSize: 8.5,
     fontWeight: '800',
     color: '#d97706',
   },
   reportTypeTag: {
     backgroundColor: '#e0e7ff',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
   },
   reportTypeTagText: {
-    fontSize: 9.5,
+    fontSize: 8.5,
     fontWeight: '800',
     color: '#4f46e5',
   },
   patientName: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
     color: '#0f172a',
     flexShrink: 1,
   },
   unreadDot: {
-    width: 7,
-    height: 7,
+    width: 6.5,
+    height: 6.5,
     borderRadius: 3.5,
     backgroundColor: '#0284c7',
   },
   timeText: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '600',
     color: '#94a3b8',
-    marginLeft: 6,
   },
   bodyText: {
-    fontSize: 12.5,
-    color: '#334155',
-    lineHeight: 18,
-    marginBottom: 10,
+    fontSize: 11.5,
+    color: '#475569',
+    lineHeight: 16,
+    marginBottom: 5,
   },
   bodyTextRead: {
     color: '#64748b',
@@ -544,172 +516,139 @@ const styles = StyleSheet.create({
   tagsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 8,
+    gap: 4,
   },
   tag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: '#f8fafc',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: '#f1f5f9',
   },
   tagAmount: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: '#f0fdf4',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: '#bbf7d0',
   },
   tagTextAmount: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     color: '#15803d',
   },
   tagPurple: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: '#f5f3ff',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: '#ddd6fe',
   },
   tagTextPurple: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#7c3aed',
   },
   tagAmber: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: '#fffbeb',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: '#fde68a',
   },
   tagTextAmber: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#d97706',
   },
   tagIndigo: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: '#eef2ff',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: '#c7d2fe',
   },
   tagTextIndigo: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#4f46e5',
   },
   tagGreen: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: '#f0fdf4',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: '#bbf7d0',
   },
   tagTextGreen: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#059669',
   },
   tagTextPrimary: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: '#0284c7',
   },
   tagTextSecondary: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
     color: '#64748b',
   },
   tagTextDoctor: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
     color: '#0369a1',
-  },
-  cardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f8fafc',
-  },
-  markAsReadBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    backgroundColor: '#f0f9ff',
-  },
-  markAsReadBtnText: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: '#0284c7',
-  },
-  readTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-  },
-  readTagText: {
-    fontSize: 11,
-    color: '#94a3b8',
-    fontWeight: '600',
   },
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 60,
-    paddingHorizontal: 24,
+    paddingVertical: 48,
+    paddingHorizontal: 20,
   },
   emptyIconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: '#f1f5f9',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 14,
+    marginBottom: 12,
   },
   emptyTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
     color: '#334155',
-    marginBottom: 6,
+    marginBottom: 4,
   },
   emptySubtitle: {
-    fontSize: 12.5,
+    fontSize: 12,
     color: '#94a3b8',
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 16,
   },
 });

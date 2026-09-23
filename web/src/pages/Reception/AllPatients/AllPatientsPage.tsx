@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Users, Search, Calendar, MapPin, Phone, MessageSquare,
-  FileText, Clock, X, RefreshCw, ChevronRight, UserCheck
+  FileText, Clock, X, RefreshCw, ChevronRight, ChevronLeft,
+  ChevronsLeft, ChevronsRight, UserCheck
 } from 'lucide-react';
-import { db } from '@app/shared';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { db, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
+import { collection, onSnapshot, query, where, getDocs, limit } from 'firebase/firestore';
 import { receptionDataStore } from '../../../utils/receptionDataStore';
 import { getPatientVisitState } from '../../../utils/patientVisitState';
 
@@ -20,6 +21,7 @@ export interface PatientRecord {
   doctorName?: string;
   status: 'active' | 'completed' | 'follow_up' | 'awaiting_payment' | string;
   regId?: string;
+  collectionName?: string;
   raw?: any;
 }
 
@@ -91,25 +93,48 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
   const [dateFilterMode, setDateFilterMode] = useState<'today' | 'yesterday' | 'all'>('today');
   const [patients, setPatients] = useState<PatientRecord[]>(INITIAL_PATIENTS);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSearchingLive, setIsSearchingLive] = useState(false);
+
+  // --- Page-wise Pagination State (No Lag) ---
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  // --- Live Store Pool for Visit Badges ---
+  const [storePool, setStorePool] = useState<any[]>(() => receptionDataStore.getAllCollectionsPool());
+  const [storePkgs, setStorePkgs] = useState<any[]>(() => receptionDataStore.getPackageMembers());
 
   const todayStr = getFormattedDateStr(new Date());
   const yesterdayStr = getFormattedDateStr(new Date(Date.now() - 86400000));
 
-  // --- Real-time Firestore Sync ---
+  // --- Real-time Firestore Sync Across allpatients, appointments & patients collections ---
   useEffect(() => {
     let unsubAll: (() => void) | null = null;
     let unsubApp: (() => void) | null = null;
     let isMounted = true;
     setIsLoading(true);
 
+    // Auto-start reception data store listeners so visit states are immediately populated
+    try {
+      receptionDataStore.startListeners(currentBranch);
+      const unsubStore = receptionDataStore.subscribe((state) => {
+        if (!isMounted) return;
+        setStorePool(state.allCollectionsPool);
+        setStorePkgs(state.packageMembersList);
+      });
+      unsubAll = unsubStore;
+    } catch (e) {
+      console.warn('Store start notice:', e);
+    }
+
     let allList: PatientRecord[] = [];
     let appList: PatientRecord[] = [];
+    let patColList: PatientRecord[] = [];
 
-    const mapDocToPatient = (id: string, data: any): PatientRecord => {
+    const mapDocToPatient = (id: string, data: any, colName: string = 'allpatients'): PatientRecord => {
       const bName = data.branch || data.branchName || currentBranch || 'KPHB Branch';
-      const cleanPhone = String(data.phoneNumber || data.phone || '').trim();
+      const cleanPhone = String(data.phoneNumber || data.phone || data.mobile || data.contactNumber || '').trim();
       const pName = data.patientName || data.name || data.fullName || 'Patient';
-      const regId = data.registrationId || data.regId || data.patientId || id;
+      const regId = data.registrationId || data.regId || data.regNo || data.patientId || id;
       const rawDate = data.appointmentDate || data.date || data.createdAt || todayStr;
 
       let status = 'active';
@@ -132,10 +157,11 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
         branchName: bName,
         appointmentDate: normalizeDateToISO(String(rawDate)),
         appointmentTime: data.appointmentTime || data.time || '10:00 AM',
-        doctorName: data.doctorName || data.doctor,
+        doctorName: sanitizeDoctorName(data.doctorName || data.doctor, bName),
         status,
         regId,
-        raw: data
+        collectionName: colName,
+        raw: { ...data, collectionName: colName, id }
       };
     };
 
@@ -143,10 +169,22 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
       if (!isMounted) return;
       const combinedMap = new Map<string, PatientRecord>();
 
-      allList.forEach(p => {
-        if (!combinedMap.has(p.id)) combinedMap.set(p.id, p);
+      // 1. Master Historical Patients
+      patColList.forEach(p => {
+        combinedMap.set(p.id, p);
       });
 
+      // 2. All Patients (reception walk-in & registry)
+      allList.forEach(p => {
+        if (!combinedMap.has(p.id)) {
+          combinedMap.set(p.id, p);
+        } else {
+          const existing = combinedMap.get(p.id)!;
+          combinedMap.set(p.id, { ...existing, ...p, raw: { ...existing.raw, ...p.raw } });
+        }
+      });
+
+      // 3. Appointments (today's active queue & status)
       appList.forEach(p => {
         if (!combinedMap.has(p.id)) {
           combinedMap.set(p.id, p);
@@ -156,24 +194,32 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
         }
       });
 
-      // Include seed fallback matching current branch
-      INITIAL_PATIENTS.forEach(seed => {
-        if (!combinedMap.has(seed.id)) {
+      // 4. Include seed fallback matching current branch if empty
+      if (combinedMap.size === 0) {
+        INITIAL_PATIENTS.forEach(seed => {
           if (!currentBranch || isBranchMatching(seed.branchName, currentBranch)) {
             combinedMap.set(seed.id, seed);
           }
-        }
+        });
+      }
+
+      // Sort newest first by appointmentDate / createdAt
+      const sortedList = Array.from(combinedMap.values()).sort((a, b) => {
+        const dateA = a.appointmentDate || '';
+        const dateB = b.appointmentDate || '';
+        return dateB.localeCompare(dateA);
       });
 
-      setPatients(Array.from(combinedMap.values()));
+      setPatients(sortedList);
       setIsLoading(false);
     };
 
     try {
-      unsubAll = onSnapshot(collection(db, 'allpatients'), (snap) => {
+      // 1. Subscribe to allpatients
+      const unsubPatSnap = onSnapshot(collection(db, 'allpatients'), (snap) => {
         const list: PatientRecord[] = [];
         snap.forEach(docSnap => {
-          const item = mapDocToPatient(docSnap.id, docSnap.data());
+          const item = mapDocToPatient(docSnap.id, docSnap.data(), 'allpatients');
           if (!currentBranch || isBranchMatching(item.branchName, currentBranch)) {
             list.push(item);
           }
@@ -185,10 +231,11 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
         mergeAndSet();
       });
 
+      // 2. Subscribe to appointments
       unsubApp = onSnapshot(collection(db, 'appointments'), (snap) => {
         const list: PatientRecord[] = [];
         snap.forEach(docSnap => {
-          const item = mapDocToPatient(docSnap.id, docSnap.data());
+          const item = mapDocToPatient(docSnap.id, docSnap.data(), 'appointments');
           if (!currentBranch || isBranchMatching(item.branchName, currentBranch)) {
             list.push(item);
           }
@@ -199,18 +246,124 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
         console.warn('appointments snapshot notice:', err);
         mergeAndSet();
       });
+
+      // 3. Load historical patients for this branch (page-wise chunked to ensure zero lag)
+      const branchQueries = getBranchQueryNames(currentBranch);
+      const fetchBranchPatients = async () => {
+        try {
+          const qList = branchQueries.length > 0
+            ? [
+                query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(1000)),
+                query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(1000))
+              ]
+            : [query(collection(db, 'patients'), limit(500))];
+
+          const snaps = await Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] }))));
+          const list: PatientRecord[] = [];
+          const seen = new Set<string>();
+
+          snaps.forEach((snap: any) => {
+            if (!snap || !snap.docs) return;
+            snap.docs.forEach((docSnap: any) => {
+              if (seen.has(docSnap.id)) return;
+              seen.add(docSnap.id);
+              list.push(mapDocToPatient(docSnap.id, docSnap.data(), 'patients'));
+            });
+          });
+
+          patColList = list;
+          mergeAndSet();
+        } catch (err) {
+          console.warn('Branch patients load notice:', err);
+        }
+      };
+
+      fetchBranchPatients();
+
+      return () => {
+        isMounted = false;
+        if (unsubPatSnap) unsubPatSnap();
+        if (unsubApp) unsubApp();
+        if (unsubAll) unsubAll();
+      };
     } catch (e) {
       console.warn('Subscription error:', e);
       setPatients(INITIAL_PATIENTS.filter(p => !currentBranch || isBranchMatching(p.branchName, currentBranch)));
       setIsLoading(false);
     }
-
-    return () => {
-      isMounted = false;
-      if (unsubAll) unsubAll();
-      if (unsubApp) unsubApp();
-    };
   }, [currentBranch]);
+
+  // --- Live Firestore Search Fallback for older Historical Records ---
+  useEffect(() => {
+    const trimmed = searchTerm.trim();
+    if (!trimmed || trimmed.length < 3) return;
+
+    const timer = setTimeout(async () => {
+      const cleanDigits = trimmed.replace(/\D/g, '');
+      const isPhoneSearch = cleanDigits.length >= 7;
+
+      setIsSearchingLive(true);
+      try {
+        const queriesToRun: any[] = [];
+        if (isPhoneSearch) {
+          const tenDigit = cleanDigits.slice(-10);
+          queriesToRun.push(
+            getDocs(query(collection(db, 'patients'), where('phone', '==', tenDigit), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(db, 'allpatients'), where('phone', '==', tenDigit), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(db, 'appointments'), where('phone', '==', tenDigit), limit(20))).catch(() => ({ docs: [] }))
+          );
+        } else {
+          queriesToRun.push(
+            getDocs(query(collection(db, 'patients'), where('registrationId', '==', trimmed), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(db, 'allpatients'), where('registrationId', '==', trimmed), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(db, 'patients'), where('regNo', '==', trimmed), limit(20))).catch(() => ({ docs: [] }))
+          );
+        }
+
+        const results = await Promise.all(queriesToRun);
+        const newRecords: PatientRecord[] = [];
+        const existingIds = new Set(patients.map(p => p.id));
+
+        results.forEach((snap: any) => {
+          if (!snap || !snap.docs) return;
+          snap.docs.forEach((docSnap: any) => {
+            if (!existingIds.has(docSnap.id)) {
+              const d = docSnap.data();
+              const bName = d.branch || d.branchName || currentBranch || 'KPHB Branch';
+              if (!currentBranch || isBranchMatching(bName, currentBranch)) {
+                existingIds.add(docSnap.id);
+                newRecords.push({
+                  id: docSnap.id,
+                  name: d.patientName || d.name || d.fullName || 'Patient',
+                  phone: String(d.phoneNumber || d.phone || d.mobile || '').trim(),
+                  age: d.age || d.patientAge,
+                  gender: d.gender || 'Male',
+                  branchName: bName,
+                  appointmentDate: normalizeDateToISO(String(d.appointmentDate || d.date || d.createdAt || todayStr)),
+                  appointmentTime: d.appointmentTime || d.time || '10:00 AM',
+                  doctorName: sanitizeDoctorName(d.doctorName || d.doctor, bName),
+                  status: 'active',
+                  regId: d.registrationId || d.regId || d.regNo || d.patientId || docSnap.id,
+                  collectionName: 'patients',
+                  raw: { ...d, id: docSnap.id, collectionName: 'patients' }
+                });
+              }
+            }
+          });
+        });
+
+        if (newRecords.length > 0) {
+          setPatients(prev => [...newRecords, ...prev]);
+        }
+      } catch (err) {
+        console.warn('Live Firestore search notice:', err);
+      } finally {
+        setIsSearchingLive(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm, currentBranch]);
 
   // --- Session Counts ---
   const counts = useMemo(() => {
@@ -229,8 +382,12 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
     return { today, yesterday, total };
   }, [patients, currentBranch, todayStr, yesterdayStr]);
 
-  // --- Filtering Engine ---
+  // --- Filtering Engine: Fix Search to scan across ALL dates when search is active ---
   const filteredPatients = useMemo(() => {
+    const isSearching = searchTerm.trim() !== '';
+    const queryStr = searchTerm.toLowerCase().trim();
+    const queryDigits = searchTerm.replace(/\D/g, '');
+
     return patients.filter((patient) => {
       // 1. Strictly locked to this branch
       if (currentBranch && !isBranchMatching(patient.branchName, currentBranch)) {
@@ -239,25 +396,39 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
 
       const patientDate = normalizeDateToISO(patient.appointmentDate);
 
-      // 2. Date Session filter (Today, Yesterday, All)
-      if (dateFilterMode === 'today') {
-        if (patientDate !== todayStr) return false;
-      } else if (dateFilterMode === 'yesterday') {
-        if (patientDate !== yesterdayStr) return false;
+      // 2. If NOT searching, apply Session Date Filter (Today, Yesterday, All)
+      if (!isSearching) {
+        if (dateFilterMode === 'today') {
+          if (patientDate !== todayStr) return false;
+        } else if (dateFilterMode === 'yesterday') {
+          if (patientDate !== yesterdayStr) return false;
+        }
       }
 
       // 3. Search query filter (Name, Phone, ID)
-      if (searchTerm.trim() !== '') {
-        const queryStr = searchTerm.toLowerCase().trim();
-        const matchesName = patient.name.toLowerCase().includes(queryStr);
-        const matchesPhone = patient.phone.includes(queryStr);
-        const matchesId = (patient.regId || patient.id).toLowerCase().includes(queryStr);
+      if (isSearching) {
+        const matchesName = (patient.name || '').toLowerCase().includes(queryStr);
+        const pPhone = (patient.phone || '').replace(/\D/g, '');
+        const matchesPhone = queryDigits.length > 0 && pPhone.includes(queryDigits);
+        const matchesId = (patient.regId || patient.id || '').toLowerCase().includes(queryStr);
         if (!matchesName && !matchesPhone && !matchesId) return false;
       }
 
       return true;
     });
   }, [patients, dateFilterMode, currentBranch, searchTerm, todayStr, yesterdayStr]);
+
+  // Reset to page 1 whenever search, date filter, or branch changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, dateFilterMode, currentBranch, pageSize]);
+
+  // --- Pagination Slice for 0ms Lag-Free Table Rendering ---
+  const totalPages = Math.max(1, Math.ceil(filteredPatients.length / pageSize));
+  const paginatedPatients = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    return filteredPatients.slice(startIndex, startIndex + pageSize);
+  }, [filteredPatients, currentPage, pageSize]);
 
   // --- Handlers ---
   const handleOpenPatientFile = (patient: PatientRecord) => {
@@ -344,13 +515,30 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
               </span>
             </div>
             <p style={{ color: '#64748b', fontSize: '13px', margin: '4px 0 0 0' }}>
-              Patient directory and appointment sessions for your branch
+              Complete clinic patient directory ({patients.length} loaded records across patients & allpatients)
             </p>
           </div>
         </div>
 
-        {/* Real-time Indicator */}
+        {/* Real-time Indicator & Live Search Status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {isSearchingLive && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: '#eff6ff',
+              color: '#1d4ed8',
+              border: '1px solid #bfdbfe',
+              padding: '5px 12px',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: 700
+            }}>
+              <RefreshCw size={12} className="animate-spin" />
+              Searching Archive...
+            </span>
+          )}
           <span style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -387,7 +575,7 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <button
             type="button"
-            onClick={() => setDateFilterMode('today')}
+            onClick={() => { setDateFilterMode('today'); setSearchTerm(''); }}
             style={{
               padding: '9px 16px',
               borderRadius: '10px',
@@ -398,17 +586,17 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
               alignItems: 'center',
               gap: '8px',
               transition: 'all 0.2s ease',
-              border: dateFilterMode === 'today' ? '1px solid #258ec8' : '1px solid #e2e8f0',
-              background: dateFilterMode === 'today' ? '#258ec8' : '#ffffff',
-              color: dateFilterMode === 'today' ? '#ffffff' : '#475569',
-              boxShadow: dateFilterMode === 'today' ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
+              border: dateFilterMode === 'today' && !searchTerm ? '1px solid #258ec8' : '1px solid #e2e8f0',
+              background: dateFilterMode === 'today' && !searchTerm ? '#258ec8' : '#ffffff',
+              color: dateFilterMode === 'today' && !searchTerm ? '#ffffff' : '#475569',
+              boxShadow: dateFilterMode === 'today' && !searchTerm ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
             }}
           >
-            <Calendar size={14} color={dateFilterMode === 'today' ? '#ffffff' : '#64748b'} />
+            <Calendar size={14} color={dateFilterMode === 'today' && !searchTerm ? '#ffffff' : '#64748b'} />
             Today
             <span style={{
-              background: dateFilterMode === 'today' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
-              color: dateFilterMode === 'today' ? '#ffffff' : '#0f172a',
+              background: dateFilterMode === 'today' && !searchTerm ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
+              color: dateFilterMode === 'today' && !searchTerm ? '#ffffff' : '#0f172a',
               padding: '2px 8px',
               borderRadius: '12px',
               fontSize: '11px',
@@ -420,7 +608,7 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
 
           <button
             type="button"
-            onClick={() => setDateFilterMode('yesterday')}
+            onClick={() => { setDateFilterMode('yesterday'); setSearchTerm(''); }}
             style={{
               padding: '9px 16px',
               borderRadius: '10px',
@@ -431,17 +619,17 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
               alignItems: 'center',
               gap: '8px',
               transition: 'all 0.2s ease',
-              border: dateFilterMode === 'yesterday' ? '1px solid #258ec8' : '1px solid #e2e8f0',
-              background: dateFilterMode === 'yesterday' ? '#258ec8' : '#ffffff',
-              color: dateFilterMode === 'yesterday' ? '#ffffff' : '#475569',
-              boxShadow: dateFilterMode === 'yesterday' ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
+              border: dateFilterMode === 'yesterday' && !searchTerm ? '1px solid #258ec8' : '1px solid #e2e8f0',
+              background: dateFilterMode === 'yesterday' && !searchTerm ? '#258ec8' : '#ffffff',
+              color: dateFilterMode === 'yesterday' && !searchTerm ? '#ffffff' : '#475569',
+              boxShadow: dateFilterMode === 'yesterday' && !searchTerm ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
             }}
           >
-            <Clock size={14} color={dateFilterMode === 'yesterday' ? '#ffffff' : '#64748b'} />
+            <Clock size={14} color={dateFilterMode === 'yesterday' && !searchTerm ? '#ffffff' : '#64748b'} />
             Yesterday
             <span style={{
-              background: dateFilterMode === 'yesterday' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
-              color: dateFilterMode === 'yesterday' ? '#ffffff' : '#0f172a',
+              background: dateFilterMode === 'yesterday' && !searchTerm ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
+              color: dateFilterMode === 'yesterday' && !searchTerm ? '#ffffff' : '#0f172a',
               padding: '2px 8px',
               borderRadius: '12px',
               fontSize: '11px',
@@ -453,7 +641,7 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
 
           <button
             type="button"
-            onClick={() => setDateFilterMode('all')}
+            onClick={() => { setDateFilterMode('all'); setSearchTerm(''); }}
             style={{
               padding: '9px 16px',
               borderRadius: '10px',
@@ -464,17 +652,17 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
               alignItems: 'center',
               gap: '8px',
               transition: 'all 0.2s ease',
-              border: dateFilterMode === 'all' ? '1px solid #258ec8' : '1px solid #e2e8f0',
-              background: dateFilterMode === 'all' ? '#258ec8' : '#ffffff',
-              color: dateFilterMode === 'all' ? '#ffffff' : '#475569',
-              boxShadow: dateFilterMode === 'all' ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
+              border: (dateFilterMode === 'all' || searchTerm) ? '1px solid #258ec8' : '1px solid #e2e8f0',
+              background: (dateFilterMode === 'all' || searchTerm) ? '#258ec8' : '#ffffff',
+              color: (dateFilterMode === 'all' || searchTerm) ? '#ffffff' : '#475569',
+              boxShadow: (dateFilterMode === 'all' || searchTerm) ? '0 4px 12px rgba(37, 142, 200, 0.25)' : 'none'
             }}
           >
-            <Users size={14} color={dateFilterMode === 'all' ? '#ffffff' : '#64748b'} />
+            <Users size={14} color={(dateFilterMode === 'all' || searchTerm) ? '#ffffff' : '#64748b'} />
             All Patients
             <span style={{
-              background: dateFilterMode === 'all' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
-              color: dateFilterMode === 'all' ? '#ffffff' : '#0f172a',
+              background: (dateFilterMode === 'all' || searchTerm) ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
+              color: (dateFilterMode === 'all' || searchTerm) ? '#ffffff' : '#0f172a',
               padding: '2px 8px',
               borderRadius: '12px',
               fontSize: '11px',
@@ -493,14 +681,14 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
           border: '1px solid #cbd5e1',
           borderRadius: '10px',
           padding: '8px 14px',
-          width: '320px',
+          width: '340px',
           maxWidth: '100%',
           transition: 'all 0.2s ease'
         }}>
           <Search size={16} color="#64748b" style={{ marginRight: '8px', flexShrink: 0 }} />
           <input
             type="text"
-            placeholder="Search patient by name, mobile, ID..."
+            placeholder="Search all patients by name, phone, ID..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             style={{
@@ -557,11 +745,11 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
                       <Users size={36} color="#cbd5e1" />
                       <div style={{ fontWeight: 700, color: '#334155', fontSize: '15px' }}>
-                        No patients found for this filter
+                        No patients found
                       </div>
                       <div style={{ color: '#64748b', fontSize: '13px', maxWidth: '380px' }}>
                         {searchTerm
-                          ? `No matches found for "${searchTerm}". Try checking your spelling or clear the search.`
+                          ? `No matches found for "${searchTerm}". Try checking phone number or ID.`
                           : `No registered patients scheduled under "${dateFilterMode.toUpperCase()}" session for ${currentBranch}.`}
                       </div>
                       {searchTerm && (
@@ -585,14 +773,12 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
                     </div>
                   </td>
                 </tr>
-              ) : (() => {
-                const pool = receptionDataStore.getAllCollectionsPool();
-                const pkgs = receptionDataStore.getPackageMembers();
-                return filteredPatients.map((patient, index) => {
+              ) : (
+                paginatedPatients.map((patient, index) => {
                   const badge = getStatusBadge(patient.status);
                   let visitState: any = null;
                   try {
-                    visitState = getPatientVisitState(patient.raw || patient, pool, pkgs);
+                    visitState = getPatientVisitState(patient.raw || patient, storePool, storePkgs);
                   } catch (e) {}
 
                   return (
@@ -608,7 +794,11 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
                       {/* Name & ID */}
                       <td style={{ padding: '14px 18px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700, color: '#0f172a', fontSize: '14px' }}>
+                          <span
+                            onClick={() => handleOpenPatientFile(patient)}
+                            style={{ fontWeight: 700, color: '#0f172a', fontSize: '14px', cursor: 'pointer' }}
+                            title="Open Patient File"
+                          >
                             {patient.name}
                           </span>
                           {visitState && (
@@ -641,6 +831,11 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
                           {patient.age ? (
                             <span style={{ fontSize: '12px', color: '#64748b' }}>
                               • {patient.age} yrs
+                            </span>
+                          ) : null}
+                          {patient.gender ? (
+                            <span style={{ fontSize: '12px', color: '#64748b' }}>
+                              • {patient.gender}
                             </span>
                           ) : null}
                         </div>
@@ -712,7 +907,7 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
                       {/* Doctor */}
                       <td style={{ padding: '14px 14px' }}>
                         <div style={{ color: '#334155', fontWeight: 600 }}>
-                          {patient.doctorName || 'Unassigned'}
+                          {sanitizeDoctorName(patient.doctorName, patient.branchName)}
                         </div>
                       </td>
 
@@ -733,13 +928,13 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
                       </td>
                     </tr>
                   );
-                });
-              })()}
+                })
+              )}
             </tbody>
           </table>
         </div>
 
-        {/* Footer summary */}
+        {/* Footer with Page-wise Pagination Controls (Zero Lag) */}
         <div style={{
           padding: '12px 20px',
           background: '#f8fafc',
@@ -747,14 +942,116 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '12px',
           fontSize: '12px',
           color: '#64748b'
         }}>
           <div>
-            Showing <strong>{filteredPatients.length}</strong> of <strong>{patients.length}</strong> patients for {currentBranch}
+            Showing <strong>{filteredPatients.length > 0 ? (currentPage - 1) * pageSize + 1 : 0}</strong> to{' '}
+            <strong>{Math.min(currentPage * pageSize, filteredPatients.length)}</strong> of{' '}
+            <strong>{filteredPatients.length}</strong> patients {currentBranch ? `for ${currentBranch}` : ''}
           </div>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <span>Session Mode: <strong style={{ color: '#258ec8', textTransform: 'capitalize' }}>{dateFilterMode}</strong></span>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            {/* Rows Per Page selector */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>Rows per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  fontSize: '12px',
+                  color: '#334155',
+                  cursor: 'pointer',
+                  outline: 'none'
+                }}
+              >
+                <option value={15}>15</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+
+            {/* Pagination Buttons */}
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button
+                  type="button"
+                  title="First Page"
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage(1)}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    background: currentPage === 1 ? '#f1f5f9' : '#ffffff',
+                    color: currentPage === 1 ? '#94a3b8' : '#258ec8',
+                    cursor: currentPage === 1 ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <ChevronsLeft size={14} />
+                </button>
+                <button
+                  type="button"
+                  title="Previous Page"
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    background: currentPage === 1 ? '#f1f5f9' : '#ffffff',
+                    color: currentPage === 1 ? '#94a3b8' : '#258ec8',
+                    cursor: currentPage === 1 ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <ChevronLeft size={14} />
+                </button>
+
+                <span style={{ padding: '0 8px', fontWeight: 700, color: '#334155' }}>
+                  Page {currentPage} of {totalPages}
+                </span>
+
+                <button
+                  type="button"
+                  title="Next Page"
+                  disabled={currentPage === totalPages}
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    background: currentPage === totalPages ? '#f1f5f9' : '#ffffff',
+                    color: currentPage === totalPages ? '#94a3b8' : '#258ec8',
+                    cursor: currentPage === totalPages ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  title="Last Page"
+                  disabled={currentPage === totalPages}
+                  onClick={() => setCurrentPage(totalPages)}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    background: currentPage === totalPages ? '#f1f5f9' : '#ffffff',
+                    color: currentPage === totalPages ? '#94a3b8' : '#258ec8',
+                    cursor: currentPage === totalPages ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <ChevronsRight size={14} />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

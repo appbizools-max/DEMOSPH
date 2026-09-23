@@ -4,7 +4,8 @@ import {
   Modal, Alert, Linking, ActivityIndicator, Platform
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { getSafeDb } from '../../../utils/firebaseSafe';
+import { getSafeDb, collection, query, where, getDocs, limit } from '../../../utils/firebaseSafe';
+import { sanitizeDoctorName } from '@app/shared';
 import { receptionDataStore } from '../../../utils/receptionDataStore';
 import { getPatientVisitState } from '../../../utils/patientVisitState';
 
@@ -102,9 +103,9 @@ const parsePoolToPatients = (pool: any[], currentBranch?: string, todayStr?: str
 
     const bName = data.branch || data.targetBranch || data.branchName || currentBranch || 'KPHB Branch';
 
-    const cleanPhone = String(data.phoneNumber || data.phone || data.mobile || '').trim();
+    const cleanPhone = String(data.phoneNumber || data.phone || data.mobile || data.contactNumber || '').trim();
     const pName = data.patientName || data.name || data.fullName || 'Patient';
-    const regId = data.registrationId || data.regId || data.patientId || idKey;
+    const regId = data.registrationId || data.regId || data.regNo || data.patientId || idKey;
     const rawDate = data.appointmentDate || data.date || data.createdAt || fallbackDate;
 
     let status = 'active';
@@ -127,7 +128,7 @@ const parsePoolToPatients = (pool: any[], currentBranch?: string, todayStr?: str
       branchName: bName,
       appointmentDate: normalizeDateToISO(String(rawDate)),
       appointmentTime: data.appointmentTime || data.time || '10:00 AM',
-      doctorName: data.doctorName || data.doctor,
+      doctorName: sanitizeDoctorName(data.doctorName || data.doctor, bName),
       status: status,
       regId: regId,
       raw: data
@@ -224,7 +225,7 @@ const PatientCardItem = memo(({
         {patient.doctorName ? (
           <View style={styles.detailItem}>
             <MaterialCommunityIcons name="stethoscope" size={14} color="#64748b" />
-            <Text style={styles.detailText} numberOfLines={1}>{patient.doctorName}</Text>
+            <Text style={styles.detailText} numberOfLines={1}>{sanitizeDoctorName(patient.doctorName, patient.branchName)}</Text>
           </View>
         ) : null}
       </View>
@@ -271,13 +272,18 @@ export const AllPatientsScreen: React.FC<AllPatientsScreenProps> = ({ onNavigate
     return parsePoolToPatients(poolToUse, currentBranch, todayStr);
   });
   const [isLoading, setIsLoading] = useState(false);
+  const [isSearchingLive, setIsSearchingLive] = useState(false);
+
+  // --- Page-wise Chunk Loading (Prevents Lag on Large Patient Datasets) ---
+  const PAGE_SIZE = 25;
+  const [displayCount, setDisplayCount] = useState<number>(PAGE_SIZE);
 
   // --- Real-Time Firestore Loading & Sync ---
   useEffect(() => {
     let isMounted = true;
 
     try {
-      receptionDataStore.startListeners();
+      receptionDataStore.startListeners(currentBranch);
       const unsub = receptionDataStore.subscribe((state) => {
         if (!isMounted) return;
         const pool = state.allCollectionsPool.length > 0 ? state.allCollectionsPool : state.appointments;
@@ -302,9 +308,87 @@ export const AllPatientsScreen: React.FC<AllPatientsScreenProps> = ({ onNavigate
     }
   }, [currentBranch, todayStr]);
 
-  // --- Filtering Core Engine ---
+  // --- Live Firestore Search for Older Historical Records in patients / allpatients ---
+  useEffect(() => {
+    const trimmed = searchTerm.trim();
+    if (!trimmed || trimmed.length < 3) return;
+
+    const timer = setTimeout(async () => {
+      const activeDb = getSafeDb();
+      if (!activeDb) return;
+
+      const cleanDigits = trimmed.replace(/\D/g, '');
+      const isPhoneSearch = cleanDigits.length >= 7;
+
+      setIsSearchingLive(true);
+      try {
+        const queriesToRun: any[] = [];
+        if (isPhoneSearch) {
+          const tenDigit = cleanDigits.slice(-10);
+          queriesToRun.push(
+            getDocs(query(collection(activeDb, 'patients'), where('phone', '==', tenDigit), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(activeDb, 'allpatients'), where('phone', '==', tenDigit), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(activeDb, 'appointments'), where('phone', '==', tenDigit), limit(20))).catch(() => ({ docs: [] }))
+          );
+        } else {
+          queriesToRun.push(
+            getDocs(query(collection(activeDb, 'patients'), where('registrationId', '==', trimmed), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(activeDb, 'allpatients'), where('registrationId', '==', trimmed), limit(20))).catch(() => ({ docs: [] })),
+            getDocs(query(collection(activeDb, 'patients'), where('regNo', '==', trimmed), limit(20))).catch(() => ({ docs: [] }))
+          );
+        }
+
+        const results = await Promise.all(queriesToRun);
+        const newRecords: Patient[] = [];
+        const existingIds = new Set(patients.map(p => p.id));
+        const isHQRole = !currentBranch || currentBranch.toLowerCase().includes('admin') || currentBranch.toLowerCase().includes('hr') || currentBranch === 'All Branches';
+
+        results.forEach((snap: any) => {
+          if (!snap || !snap.docs) return;
+          snap.docs.forEach((docSnap: any) => {
+            if (!existingIds.has(docSnap.id)) {
+              const d = docSnap.data();
+              const bName = d.branch || d.targetBranch || d.branchName || currentBranch || 'KPHB Branch';
+              if (isHQRole || !currentBranch || isBranchMatching(bName, currentBranch)) {
+                existingIds.add(docSnap.id);
+                newRecords.push({
+                  id: docSnap.id,
+                  name: d.patientName || d.name || d.fullName || 'Patient',
+                  phone: String(d.phoneNumber || d.phone || d.mobile || d.contactNumber || '').trim(),
+                  age: d.age || d.patientAge,
+                  gender: d.gender || 'Male',
+                  branchName: bName,
+                  appointmentDate: normalizeDateToISO(String(d.appointmentDate || d.date || d.createdAt || todayStr)),
+                  appointmentTime: d.appointmentTime || d.time || '10:00 AM',
+                  doctorName: sanitizeDoctorName(d.doctorName || d.doctor, bName),
+                  status: 'active',
+                  regId: d.registrationId || d.regId || d.regNo || d.patientId || docSnap.id,
+                  raw: { ...d, id: docSnap.id, collectionName: 'patients' }
+                });
+              }
+            }
+          });
+        });
+
+        if (newRecords.length > 0) {
+          setPatients(prev => [...newRecords, ...prev]);
+        }
+      } catch (err) {
+        console.warn('Live mobile search notice:', err);
+      } finally {
+        setIsSearchingLive(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm, currentBranch]);
+
+  // --- Filtering Core Engine: When searching, scan across ALL dates ---
   const filteredPatients = useMemo(() => {
     const isHQRole = !currentBranch || currentBranch.toLowerCase().includes('admin') || currentBranch.toLowerCase().includes('hr') || currentBranch === 'All Branches';
+    const isSearching = searchTerm.trim() !== '';
+    const queryStr = searchTerm.toLowerCase().trim();
+    const queryDigits = searchTerm.replace(/\D/g, '');
 
     return patients.filter((patient) => {
       // 1. Strict Branch Check (Only this branch!)
@@ -314,25 +398,37 @@ export const AllPatientsScreen: React.FC<AllPatientsScreenProps> = ({ onNavigate
 
       const patientDate = normalizeDateToISO(patient.appointmentDate);
 
-      // 2. Date Session Filtering (Today session, Yesterday session, All)
-      if (dateFilterMode === 'today') {
-        if (patientDate !== todayStr) return false;
-      } else if (dateFilterMode === 'yesterday') {
-        if (patientDate !== yesterdayStr) return false;
+      // 2. Date Session Filtering (Only apply when NOT searching so search can find patients across all dates)
+      if (!isSearching) {
+        if (dateFilterMode === 'today') {
+          if (patientDate !== todayStr) return false;
+        } else if (dateFilterMode === 'yesterday') {
+          if (patientDate !== yesterdayStr) return false;
+        }
       }
 
       // 3. Search Query Filtering (Name, Phone, ID)
-      if (searchTerm.trim() !== '') {
-        const queryStr = searchTerm.toLowerCase().trim();
-        const matchesName = patient.name.toLowerCase().includes(queryStr);
-        const matchesPhone = patient.phone.includes(queryStr);
-        const matchesId = (patient.regId || patient.id).toLowerCase().includes(queryStr);
+      if (isSearching) {
+        const matchesName = (patient.name || '').toLowerCase().includes(queryStr);
+        const pPhone = (patient.phone || '').replace(/\D/g, '');
+        const matchesPhone = queryDigits.length > 0 && pPhone.includes(queryDigits);
+        const matchesId = (patient.regId || patient.id || '').toLowerCase().includes(queryStr);
         if (!matchesName && !matchesPhone && !matchesId) return false;
       }
 
       return true;
     });
   }, [patients, dateFilterMode, currentBranch, searchTerm, todayStr, yesterdayStr]);
+
+  // Reset page display count to 25 whenever filters change
+  useEffect(() => {
+    setDisplayCount(PAGE_SIZE);
+  }, [searchTerm, dateFilterMode, currentBranch]);
+
+  // Paginated/Chunked Patients for 60fps smooth FlatList rendering
+  const displayedPatients = useMemo(() => {
+    return filteredPatients.slice(0, displayCount);
+  }, [filteredPatients, displayCount]);
 
   // --- Handlers ---
   const handleOpenPatientFile = useCallback((patient: Patient) => {
@@ -370,102 +466,110 @@ export const AllPatientsScreen: React.FC<AllPatientsScreenProps> = ({ onNavigate
 
   return (
     <View style={styles.container}>
-      {/* Top Header - Clean Title & Branch */}
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <View style={styles.headerIconCircle}>
-              <Ionicons name="people" size={18} color="#0284c7" />
+      <FlatList
+        data={displayedPatients}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={{ paddingBottom: 140 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        initialNumToRender={15}
+        maxToRenderPerBatch={15}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS === 'android'}
+        onEndReached={() => {
+          if (displayCount < filteredPatients.length) {
+            setDisplayCount(prev => prev + PAGE_SIZE);
+          }
+        }}
+        onEndReachedThreshold={0.5}
+        ListHeaderComponent={
+          <View style={styles.listHeaderWrapper}>
+            {/* Filter Control Box: Search + Date Sessions */}
+            <View style={styles.filterToolbar}>
+              {/* 1. Search Bar */}
+              <View style={styles.searchBar}>
+                <Feather name="search" size={17} color="#64748b" style={{ marginRight: 8 }} />
+                <TextInput
+                  style={styles.searchInputText}
+                  placeholder="Search by Patient Name, Phone (+91), or ID..."
+                  placeholderTextColor="#94a3b8"
+                  value={searchTerm}
+                  onChangeText={setSearchTerm}
+                />
+                {isSearchingLive && (
+                  <ActivityIndicator size="small" color="#0284c7" style={{ marginRight: 6 }} />
+                )}
+                {searchTerm.length > 0 && (
+                  <TouchableOpacity onPress={() => setSearchTerm('')}>
+                    <Feather name="x" size={16} color="#94a3b8" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* 2. Date Session Filter Buttons (Today, Yesterday, All, Custom) */}
+              <View style={styles.dateFilterRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 6 }}>
+                  <Feather name="calendar" size={14} color="#64748b" />
+                  <Text style={styles.filterSectionLabel}>Session:</Text>
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+                  {(['today', 'yesterday', 'all'] as const).map((mode) => {
+                    const isActive = (dateFilterMode === mode) && !searchTerm;
+                    const label = mode === 'today' ? 'Today' : mode === 'yesterday' ? 'Yesterday' : 'All Patients';
+                    return (
+                      <TouchableOpacity
+                        key={mode}
+                        onPress={() => { setDateFilterMode(mode); setSearchTerm(''); }}
+                        style={[styles.dateFilterBtn, isActive && styles.dateFilterBtnActive]}
+                      >
+                        <Text style={[styles.dateFilterBtnText, isActive && styles.dateFilterBtnTextActive]}>
+                          {label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
             </View>
-            <View>
-              <Text style={styles.title}>Patient List</Text>
-              <Text style={styles.subtitle}>
-                {currentBranch || 'Branch'} • {filteredPatients.length} Patient(s)
+          </View>
+        }
+        renderItem={({ item }) => (
+          <PatientCardItem
+            patient={item}
+            onCall={handleCall}
+            onWhatsApp={handleWhatsApp}
+          />
+        )}
+        ListFooterComponent={
+          displayCount < filteredPatients.length ? (
+            <View style={{ paddingVertical: 14, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color="#0284c7" />
+              <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                Loading more patients...
               </Text>
             </View>
-          </View>
-        </View>
-      </View>
-
-      {/* Filter Control Box: Search + Date Sessions */}
-      <View style={styles.filterToolbar}>
-        {/* 1. Search Bar */}
-        <View style={styles.searchBar}>
-          <Feather name="search" size={17} color="#64748b" style={{ marginRight: 8 }} />
-          <TextInput
-            style={styles.searchInputText}
-            placeholder="Search by Patient Name, Phone (+91), or ID..."
-            placeholderTextColor="#94a3b8"
-            value={searchTerm}
-            onChangeText={setSearchTerm}
-          />
-          {searchTerm.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchTerm('')}>
-              <Feather name="x" size={16} color="#94a3b8" />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* 2. Date Session Filter Buttons (Today, Yesterday, All, Custom) */}
-        <View style={styles.dateFilterRow}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 6 }}>
-            <Feather name="calendar" size={14} color="#64748b" />
-            <Text style={styles.filterSectionLabel}>Session:</Text>
-          </View>
-
-          <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', flex: 1 }}>
-            {(['today', 'yesterday', 'all'] as const).map((mode) => {
-              const isActive = dateFilterMode === mode;
-              const label = mode === 'today' ? 'Today' : mode === 'yesterday' ? 'Yesterday' : 'All Patients';
-              return (
-                <TouchableOpacity
-                  key={mode}
-                  onPress={() => setDateFilterMode(mode)}
-                  style={[styles.dateFilterBtn, isActive && styles.dateFilterBtnActive]}
-                >
-                  <Text style={[styles.dateFilterBtnText, isActive && styles.dateFilterBtnTextActive]}>
-                    {label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      </View>
-
-      {/* Patient List */}
-      {isLoading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0284c7" />
-          <Text style={styles.loadingText}>Loading Patients...</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={filteredPatients}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ paddingBottom: 140 }}
-          showsVerticalScrollIndicator={false}
-          maxToRenderPerBatch={15}
-          windowSize={7}
-          removeClippedSubviews={Platform.OS === 'android'}
-          renderItem={({ item }) => (
-            <PatientCardItem
-              patient={item}
-              onCall={handleCall}
-              onWhatsApp={handleWhatsApp}
-            />
-          )}
-          ListEmptyComponent={
+          ) : null
+        }
+        ListEmptyComponent={
+          isLoading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0284c7" />
+              <Text style={styles.loadingText}>Loading Patients...</Text>
+            </View>
+          ) : (
             <View style={styles.emptyCard}>
               <Ionicons name="people-outline" size={32} color="#94a3b8" style={{ marginBottom: 6 }} />
               <Text style={styles.emptyTitle}>No patients found</Text>
               <Text style={styles.emptySub}>
-                {currentBranch ? `No records found for ${currentBranch} in this session.` : 'Try adjusting your date or search filter.'}
+                {searchTerm
+                  ? `No matches for "${searchTerm}". Try checking phone number or ID.`
+                  : currentBranch ? `No records found for ${currentBranch} in this session.` : 'Try adjusting your date or search filter.'}
               </Text>
             </View>
-          }
-        />
-      )}
+          )
+        }
+      />
     </View>
   );
 };
@@ -476,6 +580,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     paddingHorizontal: 16,
     paddingTop: 8,
+  },
+  listHeaderWrapper: {
+    paddingBottom: 4,
   },
   header: {
     flexDirection: 'row',

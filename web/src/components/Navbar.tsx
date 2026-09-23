@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { LogOut, Phone, Building2, Clock, Calendar, User, Pill, Mail } from 'lucide-react';
 import { signOutUser } from '@app/shared';
 
+import { resolveStrictDoctorName } from '@app/shared';
+
 interface NavbarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
@@ -10,18 +12,6 @@ interface NavbarProps {
   branchPhone?: string;
   role?: string;
 }
-
-const resolveDoctorName = (phone: string, storedName?: string): string => {
-  if (storedName && storedName.trim() && storedName !== 'Dr. Homeopathy Physician' && storedName !== 'Dr. Physician') {
-    return storedName;
-  }
-  const digits = (phone || '').replace(/\D/g, '');
-  if (digits.includes('8125260176')) return 'Dr. Prashanth K Vaidya';
-  if (digits.includes('9903119766')) return 'Dr. Jobedah Parveez';
-  if (digits.includes('9490808582')) return 'Dr. Padma Priya';
-  if (digits.includes('1111111111') || digits.includes('9804176176')) return 'Dr. Ramakrishna Chanduri';
-  return storedName || 'Homeopathy Physician';
-};
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
@@ -95,7 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 Spiritual Homeo
               </h2>
               <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 600 }}>
-                {role === 'admin' ? 'Admin Control Hub' : role === 'hr' ? 'HR Portal' : role === 'doctor' ? 'Doctor Portal' : 'Staff Portal'}
+                {role === 'admin' ? 'Admin Control Hub' : role === 'hr' ? 'HR Portal' : role === 'doctor' ? 'Doctor Portal' : role === 'reception' ? 'Reception Portal' : 'Staff Portal'}
               </span>
             </div>
           </div>
@@ -188,7 +178,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 {role === 'doctor' || role === 'staff' ? <User size={14} color="#258ec8" /> : <Building2 size={14} color="#258ec8" />}
                 <span style={{ fontWeight: 800, color: '#0f172a', fontSize: '12px !important' }}>
-                  {role === 'doctor' ? resolveDoctorName(branchPhone, userName) : role === 'staff' ? `${userName || 'Staff Member'} (${branchName})` : branchName}
+                  {role === 'doctor' ? resolveStrictDoctorName(userName || branchPhone, userName) : role === 'staff' ? `${userName || 'Staff Member'} (${branchName})` : `${branchName} Reception`}
                 </span>
               </div>
 

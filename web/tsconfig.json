@@ -11,7 +11,12 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@app/shared": ["../packages/shared/src/index.ts"],
+      "@app/shared/*": ["../packages/shared/src/*"]
+    }
   },
   "include": ["src"]
 }

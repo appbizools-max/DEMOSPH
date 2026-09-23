@@ -28,7 +28,7 @@ import { StaffScreen } from './src/screens/Staff/StaffScreen';
 import { PatientFileMobileScreen } from './src/screens/PatientFile/PatientFileMobileScreen';
 import { NotificationsScreen } from './src/screens/Notifications/NotificationsScreen';
 
-import { UserRole, signOutUser } from '@app/shared';
+import { UserRole, signOutUser, CanonicalBranchId, resolveCanonicalBranchId, BRANCHES, resolveStrictDoctorName, sanitizeDoctorName } from '@app/shared';
 import { getSafeDb, collection, query, where, onSnapshot, doc, orderBy, limit } from './src/utils/firebaseSafe';
 import {
   registerFCMForStaff, setupFCMForegroundListeners, cleanupOldNotifications, requestAppPermissions,
@@ -42,16 +42,20 @@ import {
 const MOBILE_AUTH_KEY = '@sph_auth_session';
 const READ_NOTIS_KEY = '@sph_read_noti_ids';
 
-const resolveDoctorName = (phone: string, storedName?: string): string => {
-  if (storedName && storedName.trim() && storedName !== 'Dr. Homeopathy Physician' && storedName !== 'Dr. Physician') {
-    return storedName;
-  }
-  const digits = (phone || '').replace(/\D/g, '');
-  if (digits.includes('8125260176')) return 'Dr. Prashanth K Vaidya';
-  if (digits.includes('9903119766')) return 'Dr. Jobedah Parveez';
-  if (digits.includes('9490808582')) return 'Dr. Padma Priya';
-  if (digits.includes('1111111111') || digits.includes('9804176176')) return 'Dr. Ramakrishna Chanduri';
-  return storedName || 'Homeopathy Physician';
+const safeResolveCanonicalBranchId = (input?: string | null): CanonicalBranchId => {
+  try {
+    if (typeof resolveCanonicalBranchId === 'function') {
+      const res = resolveCanonicalBranchId(input);
+      if (res) return res;
+    }
+  } catch (_) {}
+  if (!input || typeof input !== 'string') return 'kphb';
+  const lower = input.toLowerCase();
+  if (lower.includes('kphb') || lower.includes('kpb')) return 'kphb';
+  if (lower.includes('chanda') || lower.includes('chn')) return 'chandanagar';
+  if (lower.includes('dilshuk') || lower.includes('dsn')) return 'dilshuknagar';
+  if (lower.includes('nalla') || lower.includes('ngl')) return 'nallagandla';
+  return 'kphb';
 };
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
@@ -103,12 +107,23 @@ function MainApp() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>('reception');
 
-  // Authenticated User Branch State (Branch-Locked)
+  // Authenticated User Branch State (Canonical Branch-Locked)
   const [userName, setUserName] = useState('');
-  const [branchName, setBranchName] = useState('Nallagandla');
-  const [branchPhone, setBranchPhone] = useState('9553176176');
+  const [branchId, setBranchId] = useState<CanonicalBranchId>('kphb');
+  const [branchName, setBranchName] = useState('KPHB Branch');
+  const [branchPhone, setBranchPhone] = useState('+91 90301 76176');
   const [staffId, setStaffId] = useState('1');
   const [isLoadingSession, setIsLoadingSession] = useState(true);
+
+  // Normalized currentUser Context available to all features
+  const currentUser = useMemo(() => ({
+    role: userRole,
+    userName,
+    branchId,
+    branchName,
+    branchPhone,
+    staffId
+  }), [userRole, userName, branchId, branchName, branchPhone, staffId]);
 
   const [selectedPatient, setSelectedPatient] = useState<any>(null);
   const [checkoutPatient, setCheckoutPatient] = useState<any>(null);
@@ -263,10 +278,14 @@ function MainApp() {
           const parsed = JSON.parse(saved);
           if (parsed && parsed.role) {
             setUserRole(parsed.role);
-            const resolvedName = parsed.role === 'doctor' ? resolveDoctorName(parsed.branchPhone || '', parsed.userName) : (parsed.userName || 'Branch User');
+            const resolvedName = parsed.role === 'doctor'
+              ? resolveStrictDoctorName(parsed.userName || parsed.branchPhone, parsed.userName)
+              : (parsed.userName || (parsed.role === 'reception' ? `${parsed.branchName || 'Branch'} Reception` : 'Staff Member'));
             setUserName(resolvedName);
-            setBranchName(parsed.branchName || 'Nallagandla');
-            setBranchPhone(parsed.branchPhone || '9553176176');
+            const canonical = safeResolveCanonicalBranchId(parsed.branchId || parsed.branchName);
+            setBranchId(canonical);
+            setBranchName(parsed.branchName || (BRANCHES && BRANCHES[canonical]?.fullName) || 'KPHB Branch');
+            setBranchPhone(parsed.branchPhone || (BRANCHES && BRANCHES[canonical]?.formattedPhone) || '+91 90301 76176');
             if (parsed.staffId) setStaffId(parsed.staffId);
             if (parsed.role === 'admin' || parsed.role === 'hr') {
               setActiveTab('admin');
@@ -458,11 +477,16 @@ function MainApp() {
   }, [userRole, branchName, userName, activeTab]);
 
   const handleLoginSuccess = async (data: LoginSuccessData) => {
-    const resolvedName = data.role === 'doctor' ? resolveDoctorName(data.branchPhone, data.userName) : (data.userName || 'Branch User');
+    const resolvedName = data.role === 'doctor'
+      ? resolveStrictDoctorName(data.userName || data.branchPhone, data.userName)
+      : (data.userName || (data.role === 'reception' ? `${data.branchName} Reception` : 'Staff Member'));
+    const canonical = data.branchId || safeResolveCanonicalBranchId(data.branchName);
+
     try {
       await AsyncStorage.setItem(MOBILE_AUTH_KEY, JSON.stringify({
         role: data.role,
         userName: resolvedName,
+        branchId: canonical,
         branchName: data.branchName,
         branchPhone: data.branchPhone,
         staffId: data.staffId || '',
@@ -471,6 +495,7 @@ function MainApp() {
 
     setUserRole(data.role);
     setUserName(resolvedName);
+    setBranchId(canonical);
     setBranchName(data.branchName);
     setBranchPhone(data.branchPhone);
     if (data.staffId) setStaffId(data.staffId);
@@ -557,7 +582,9 @@ function MainApp() {
         <PatientFileMobileScreen
           patient={selectedPatient}
           currentBranch={branchName}
-          doctorName={resolveDoctorName(branchPhone, userName)}
+          doctorName={userRole === 'doctor'
+            ? resolveStrictDoctorName(branchPhone, userName)
+            : sanitizeDoctorName(selectedPatient?.doctorName || selectedPatient?.doctor, branchName)}
           isDoctor={userRole === 'doctor'}
           onBack={handleGoBack}
           onSaveConsultation={(payload) => {
@@ -587,7 +614,7 @@ function MainApp() {
     }
 
     if (userRole === 'doctor') {
-      const resolvedDocName = resolveDoctorName(branchPhone, userName);
+      const resolvedDocName = resolveStrictDoctorName(userName || branchPhone, userName);
       const isEmployee = resolvedDocName.toLowerCase().includes('padma');
       return (
         <DoctorScreen
@@ -625,7 +652,7 @@ function MainApp() {
       case 'reception_patients':
         return <AllPatientsScreen onNavigate={navigateToTab} currentBranch={branchName} />;
       case 'reception_followups':
-        return <FollowUpsScreen onNavigate={navigateToTab} currentBranch={branchName} />;
+        return <FollowUpsScreen onNavigate={navigateToTab} currentBranch={branchName} branchId={currentUser.branchId} />;
       case 'reception_billing':
         return <ProductBillingScreen />;
       case 'reception_medicines':
@@ -829,7 +856,7 @@ function MainApp() {
               </View>
             ) : (userRole as string) === 'doctor' ? (
               <View>
-                <Text style={styles.branchTitle}>{resolveDoctorName(branchPhone, userName)}</Text>
+                <Text style={styles.branchTitle}>{resolveStrictDoctorName(branchPhone, userName)}</Text>
                 <Text style={styles.phoneSub}>{branchPhone}</Text>
                 <View style={styles.tagRow}>
                   <View style={styles.roleBadge}>

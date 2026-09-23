@@ -1,11 +1,11 @@
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
 import { Navbar } from './components/Navbar';
 import { HomePage } from './pages/Home/HomePage';
 import { RemediesPage } from './pages/Remedies/RemediesPage';
 import { ConsultationPage } from './pages/Consultation/ConsultationPage';
 import { ProfilePage } from './pages/Profile/ProfilePage';
 import { AuthPage, WebLoginSuccessData } from './pages/Auth/AuthPage';
-import { signOutUser } from '@app/shared';
+import { signOutUser, CanonicalBranchId, resolveCanonicalBranchId, AuthUserSession } from '@app/shared';
 
 // Lazy Loaded Role Portals (Loaded on-demand to optimize initial loading)
 const AdminDashboardPage = lazy(() => import('./pages/Admin/AdminDashboardPage').then(m => ({ default: m.AdminDashboardPage })));
@@ -13,7 +13,6 @@ const HRDashboardPage = lazy(() => import('./pages/HR/HRDashboardPage').then(m =
 const DoctorLayout = lazy(() => import('./pages/Doctor/DoctorLayout').then(m => ({ default: m.DoctorLayout })));
 const StaffDashboardPage = lazy(() => import('./pages/Staff/StaffDashboardPage').then(m => ({ default: m.StaffDashboardPage })));
 const PatientFilePage = lazy(() => import('./pages/PatientFile/PatientFilePage').then(m => ({ default: m.PatientFilePage })));
-
 // Lazy Loaded Reception Sub-Pages
 const ReceptionLayout = lazy(() => import('./pages/Reception/ReceptionLayout').then(m => ({ default: m.ReceptionLayout })));
 const ReceptionDashboardPage = lazy(() => import('./pages/Reception/Dashboard/ReceptionDashboardPage').then(m => ({ default: m.ReceptionDashboardPage })));
@@ -25,7 +24,6 @@ const ProductBillingPage = lazy(() => import('./pages/Reception/ProductBilling/P
 const DoctorNoShowPage = lazy(() => import('./pages/Reception/DoctorNoShow/DoctorNoShowPage').then(m => ({ default: m.DoctorNoShowPage })));
 const MediaManagerPage = lazy(() => import('./pages/Reception/MediaManager/MediaManagerPage').then(m => ({ default: m.MediaManagerPage })));
 const CleaningPhotosPage = lazy(() => import('./pages/Reception/CleaningPhotos/CleaningPhotosPage').then(m => ({ default: m.CleaningPhotosPage })));
-
 const PortalLoadingFallback = () => (
   <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px' }}>
     <div style={{
@@ -42,19 +40,22 @@ const PortalLoadingFallback = () => (
     `}</style>
   </div>
 );
-
 const AUTH_STORAGE_KEY = 'sph_auth_session';
-
 export default function App() {
   // Read persistent auth session on initial load
-  const [authSession, setAuthSession] = useState<{ role: string; userName?: string; branchName: string; branchPhone: string; staffId?: string } | null>(() => {
+  const [authSession, setAuthSession] = useState<{ role: string; userName?: string; branchId: CanonicalBranchId; branchName: string; branchPhone: string; staffId?: string } | null>(() => {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          branchId: resolveCanonicalBranchId(parsed?.branchId || parsed?.branchName) || 'kphb'
+        };
+      }
     } catch (e) { }
     return null;
   });
-
   const [activeTab, setActiveTab] = useState<string>(() => {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
@@ -71,14 +72,27 @@ export default function App() {
   });
 
   const [userName, setUserName] = useState(authSession?.userName || '');
+  const [branchId, setBranchId] = useState<CanonicalBranchId>(authSession?.branchId || 'kphb');
   const [branchName, setBranchName] = useState(authSession?.branchName || 'KPHB Branch');
   const [branchPhone, setBranchPhone] = useState(authSession?.branchPhone || '+91 90301 76176');
   const [staffId, setStaffId] = useState(authSession?.staffId || '1');
 
+  // Normalized currentUser Context available to all features
+  const currentUser = useMemo(() => ({
+    role: (authSession?.role || 'reception') as any,
+    userName,
+    branchId,
+    branchName,
+    branchPhone,
+    staffId
+  }), [authSession?.role, userName, branchId, branchName, branchPhone, staffId]);
+
   const handleLoginSuccess = (data: WebLoginSuccessData) => {
+    const resolvedBranchId = data.branchId || resolveCanonicalBranchId(data.branchName) || 'kphb';
     const sessionData = {
       role: data.role,
       userName: data.userName || '',
+      branchId: resolvedBranchId,
       branchName: data.branchName,
       branchPhone: data.branchPhone,
       staffId: data.staffId || '1',
@@ -89,6 +103,7 @@ export default function App() {
 
     setAuthSession(sessionData);
     setUserName(data.userName || '');
+    setBranchId(resolvedBranchId);
     setBranchName(data.branchName);
     setBranchPhone(data.branchPhone);
     setStaffId(data.staffId || '1');
@@ -182,7 +197,7 @@ export default function App() {
               <AllPatientsPage currentBranch={branchName} onNavigate={handleNavigateWithData} />
             )}
             {activeTab === 'reception_followups' && (
-              <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} />
+              <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} branchId={branchId} />
             )}
             {activeTab === 'reception_medicines' && (
               <MedicineRequestsPage currentBranch={branchName} onNavigate={setActiveTab} />

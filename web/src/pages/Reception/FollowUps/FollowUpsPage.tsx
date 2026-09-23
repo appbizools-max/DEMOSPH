@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { RefreshCw, Phone, Calendar, Clock, MessageSquare, X, Check, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
-import { db, sendBookingWhatsAppNotification } from '@app/shared';
+import { RefreshCw, Phone, Calendar, Clock, MessageSquare, X, Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { db, sendBookingWhatsAppNotification, CanonicalBranchId, resolveCanonicalBranchId, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
 import { collection, onSnapshot, query, limit, updateDoc, doc, addDoc, orderBy, getDocs, where } from 'firebase/firestore';
 import { createBookingNotificationInFirestore } from '../../../utils/fcmWebTrigger';
 import { receptionDataStore } from '../../../utils/receptionDataStore';
@@ -23,6 +23,7 @@ export interface FollowUpItem {
 
 interface FollowUpsPageProps {
   currentBranch?: string;
+  branchId?: CanonicalBranchId;
   onNavigate?: (tab: string, data?: any) => void;
 }
 
@@ -332,24 +333,7 @@ const normalizeDocName = (name: string): string => {
     .replace(/[^a-z0-9]/g, '');
 };
 const getCanonicalDoctorName = (rawName: string): string => {
-  if (!rawName) return SPH_DOCTORS[0];
-  let clean = String(rawName).trim();
-  // Strip all repeated "Dr." or "Dr" or "Dr.Dr." prefixes
-  clean = clean.replace(/^(dr\.?\s*)+/i, '').trim();
-  const lower = clean.toLowerCase();
-  if (lower.includes('ramakrishna') || lower.includes('rama krishna') || lower.includes('chanduri')) {
-    return 'Dr. Ramakrishna Chanduri';
-  }
-  if (lower.includes('prashanth') || lower.includes('vaidya')) {
-    return 'Dr. Prashanth K Vaidya';
-  }
-  if (lower.includes('padma') || lower.includes('priya')) {
-    return 'Dr. Padma Priya';
-  }
-  if (lower.includes('jobedah') || lower.includes('jobeadh') || lower.includes('parveez') || lower.includes('parveej')) {
-    return 'Dr. Jobedah Parveez';
-  }
-  return `Dr. ${clean}`;
+  return sanitizeDoctorName(rawName);
 };
 const isSameDoctor = (name1: string, name2: string): boolean => {
   const c1 = getCanonicalDoctorName(name1);
@@ -383,9 +367,22 @@ const getAvailableDoctors = (dateStr: string, branchName?: string, doctorsList: 
     return sched.status === 'Available' && sched.slots && sched.slots.length > 0;
   });
 };
+const getLocalDateISO = (date: Date = new Date()): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getYesterdayDateISO = (): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return getLocalDateISO(d);
+};
+
 const now = new Date();
-const todayISO = now.toISOString().split('T')[0];
-const yesterdayISO = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+const todayISO = getLocalDateISO(now);
+const yesterdayISO = getYesterdayDateISO();
 const getMonthYearStr = (dateObj: Date): string => {
   const yyyy = dateObj.getFullYear();
   const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -487,6 +484,7 @@ const MOCK_FOLLOWUPS: FollowUpItem[] = [
 
 export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
   currentBranch = 'KPHB Branch',
+  branchId,
   onNavigate
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('today');
@@ -496,9 +494,8 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
   const [selectedFilterYear, setSelectedFilterYear] = useState<number>(() => new Date().getFullYear());
   const selectedMonthISO = `${selectedFilterYear}-${String(selectedFilterMonth + 1).padStart(2, '0')}`;
 
-  const [rawPrescriptions, setRawPrescriptions] = useState<any[]>([]);
-  const [rawAppointments, setRawAppointments] = useState<any[]>([]);
-  const [rawAllPatients, setRawAllPatients] = useState<any[]>([]);
+  const [rawAppointments, setRawAppointments] = useState<any[]>(() => receptionDataStore.getAppointments());
+  const [rawAllPatients, setRawAllPatients] = useState<any[]>(() => receptionDataStore.getAllCollectionsPool());
   const [rawFollowups, setRawFollowups] = useState<any[]>([]);
   const [bookedFollowUpIds, setBookedFollowUpIds] = useState<Set<string>>(new Set());
 
@@ -630,33 +627,36 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
   // Success Feedback Banner State
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
-  // Subscribe to live Firestore collections
+  // Subscribe to live Firestore collections (lightweight, zero heavy image blobs)
   useEffect(() => {
     if (!db) return;
-    const unsubPresc = onSnapshot(collection(db, 'prescriptions'), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setRawPrescriptions(list);
-    }, (err) => console.warn('Prescriptions note:', err));
 
-    const unsubAppts = onSnapshot(collection(db, 'appointments'), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setRawAppointments(list);
-    }, (err) => console.warn('Appointments note:', err));
+    // Ensure reception data store listeners are started
+    receptionDataStore.startListeners();
 
-    const unsubAllPat = onSnapshot(collection(db, 'allpatients'), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setRawAllPatients(list);
-    }, (err) => console.warn('AllPatients note:', err));
+    // 1. Instant sync from receptionDataStore (zero network cost, already running in background)
+    const unsubStore = receptionDataStore.subscribe((state) => {
+      if (state.appointments && state.appointments.length > 0) {
+        setRawAppointments(state.appointments);
+      }
+      if (state.allCollectionsPool && state.allCollectionsPool.length > 0) {
+        setRawAllPatients(state.allCollectionsPool);
+      }
+    });
 
-    const unsubFollowups = onSnapshot(collection(db, 'followups'), (snap) => {
+    // 2. Real-time followups collection (branch-scoped server query for 4x faster loading)
+    const branchQueryNames = getBranchQueryNames(branchId || currentBranch);
+    const followupsQuery = branchQueryNames.length > 0
+      ? query(collection(db, 'followups'), where('branchName', 'in', branchQueryNames))
+      : collection(db, 'followups');
+
+    const unsubFollowups = onSnapshot(followupsQuery, (snap) => {
       const list: any[] = [];
       snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
       setRawFollowups(list);
     }, (err) => console.warn('Followups note:', err));
 
+    // 3. Doctors list
     const unsubDoctors = onSnapshot(collection(db, 'doctors'), (snap) => {
       if (!snap.empty) {
         const fetched: Doctor[] = [];
@@ -682,6 +682,7 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
       }
     }, (err) => console.warn('Doctors listener note:', err));
 
+    // 4. Temporary Doctor Slots
     const unsubTemp = onSnapshot(collection(db, 'doctor_temp_slots'), (snap) => {
       const list: any[] = [];
       snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
@@ -689,9 +690,7 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
     }, (err) => console.warn('Temp slots note:', err));
 
     return () => {
-      unsubPresc();
-      unsubAppts();
-      unsubAllPat();
+      unsubStore();
       unsubFollowups();
       unsubDoctors();
       unsubTemp();
@@ -748,12 +747,40 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
     return activeMap;
   }, [rawAppointments]);
 
-  // Process and Deduplicate Live Follow-Up Items
+  // Process and Deduplicate Live Follow-Up Items (Option 2: Each visit/prescription shown separately)
   const followUpItems = useMemo(() => {
     const map = new Map<string, FollowUpItem>();
+    const seenPatientFollowups = new Set<string>();
 
-    const processItem = (item: any) => {
+    const safeResolveBranchId = (val?: string | null): CanonicalBranchId | null => {
+      try {
+        if (typeof resolveCanonicalBranchId === 'function') {
+          return resolveCanonicalBranchId(val);
+        }
+      } catch (_) {}
+      if (!val || typeof val !== 'string') return null;
+      const l = val.toLowerCase();
+      if (l.includes('kphb') || l.includes('kpb')) return 'kphb';
+      if (l.includes('chanda') || l.includes('chn')) return 'chandanagar';
+      if (l.includes('dilshuk') || l.includes('dsn') || l.includes('dsnr')) return 'dilshuknagar';
+      if (l.includes('nalla') || l.includes('ngl')) return 'nallagandla';
+      return null;
+    };
+
+    const targetCanonicalBranch: CanonicalBranchId | null = branchId || (currentBranch ? safeResolveBranchId(currentBranch) : null);
+
+    const processItem = (item: any, isPrimaryFollowup: boolean = false) => {
       if (!item) return;
+
+      // Branch-scoped filter: only process records belonging to the active canonical branch
+      if (targetCanonicalBranch) {
+        const itemCanonical = safeResolveBranchId(
+          item.branchId || item.branch || item.branchName || item.assignedBranch || item.regId || item.registrationId
+        );
+        if (itemCanonical && itemCanonical !== targetCanonicalBranch) {
+          return;
+        }
+      }
 
       // Skip if explicitly marked as booked or completed
       if (
@@ -779,13 +806,12 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
       const branchStr = (item.branchName || item.branch || currentBranch || 'KPHB').toUpperCase();
       const shortcut = branchStr.includes('CHAND') ? 'CHN' : branchStr.includes('NALLA') ? 'NGL' : branchStr.includes('DILSHUK') ? 'DIL' : 'KPB';
       const regId = (rawReg && !isDocId ? rawReg : (cleanDigits ? `SPH-${shortcut}-${cleanDigits.slice(-4)}` : `SPH-${shortcut}-0001`)).toUpperCase();
-      const key = cleanDigits ? cleanDigits : `${pName.toLowerCase()}_${regId}`;
 
       // Skip if marked booked in local state
       if (
+        (itemId && bookedFollowUpIds.has(itemId)) ||
         (cleanDigits && bookedFollowUpIds.has(cleanDigits)) ||
-        (regId && bookedFollowUpIds.has(regId)) ||
-        bookedFollowUpIds.has(key)
+        (regId && bookedFollowUpIds.has(regId))
       ) {
         return;
       }
@@ -800,8 +826,7 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
 
       // Skip if patient already has an active booked appointment for this follow-up date or upcoming/today
       const patientApptDates = (cleanDigits ? activeAppointmentsByPatient.get(cleanDigits) : undefined) ||
-        (regId ? activeAppointmentsByPatient.get(regId) : undefined) ||
-        activeAppointmentsByPatient.get(key);
+        (regId ? activeAppointmentsByPatient.get(regId) : undefined);
       if (patientApptDates) {
         if (patientApptDates.has(formattedPrefDate)) return;
         for (const d of patientApptDates) {
@@ -825,13 +850,13 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
         status = 'next_month';
       }
 
-      const hasExplicitDate = !!prefDateRaw;
-      const curItemTimestamp = new Date(item.updatedAt || item.createdAt || item.savedAt || 0).getTime();
+      const dedupSignature = cleanDigits ? `${cleanDigits}_${formattedPrefDate}` : `${pName.toLowerCase()}_${regId}_${formattedPrefDate}`;
 
-      const existing = map.get(key);
-      if (!existing) {
+      if (isPrimaryFollowup) {
+        // Every document in followups collection is a distinct scheduled follow-up record
+        const key = itemId || dedupSignature;
         map.set(key, {
-          id: item.id || key,
+          id: itemId || key,
           patientName: pName || 'Patient',
           phone: cleanDigits ? `+91 ${cleanDigits}` : phone,
           regId,
@@ -844,37 +869,34 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
           dateMs: new Date(formattedPrefDate).getTime() || 0,
           raw: item
         });
+        seenPatientFollowups.add(dedupSignature);
       } else {
-        const existingHasExplicitDate = !!(existing.raw?.preferredFollowUpDate || existing.raw?.followUpDate || existing.raw?.nextFollowUpDate || existing.raw?.scheduledDate);
-        const existingItemTimestamp = new Date(existing.raw?.updatedAt || existing.raw?.createdAt || existing.raw?.savedAt || 0).getTime();
+        // Secondary collections (appointments, allpatients): only add if patient does not already have a follow-up scheduled for this date
+        if (seenPatientFollowups.has(dedupSignature)) return;
+        const key = itemId || dedupSignature;
+        if (map.has(key)) return;
 
-        if (
-          (hasExplicitDate && !existingHasExplicitDate) ||
-          (hasExplicitDate && curItemTimestamp > existingItemTimestamp) ||
-          (!existingHasExplicitDate && curItemTimestamp > existingItemTimestamp)
-        ) {
-          map.set(key, {
-            id: item.id || key,
-            patientName: pName || existing.patientName || 'Patient',
-            phone: cleanDigits ? `+91 ${cleanDigits}` : phone || existing.phone,
-            regId: regId || existing.regId,
-            doctorName: getCanonicalDoctorName(item.doctorName || item.doctor || existing.doctorName || SPH_DOCTORS[0]),
-            branchName: bName || existing.branchName,
-            preferredDate: formattedPrefDate,
-            followUpInterval: interval,
-            diseases: item.diseases || item.diagnosisNotes || item.subject || existing.diseases || 'General Follow-up',
-            status,
-            dateMs: new Date(formattedPrefDate).getTime() || 0,
-            raw: item
-          });
-        }
+        map.set(key, {
+          id: itemId || key,
+          patientName: pName || 'Patient',
+          phone: cleanDigits ? `+91 ${cleanDigits}` : phone,
+          regId,
+          doctorName: getCanonicalDoctorName(item.doctorName || item.doctor || SPH_DOCTORS[0]),
+          branchName: bName,
+          preferredDate: formattedPrefDate,
+          followUpInterval: interval,
+          diseases: item.diseases || item.diagnosisNotes || item.subject || 'General Follow-up',
+          status,
+          dateMs: new Date(formattedPrefDate).getTime() || 0,
+          raw: item
+        });
+        seenPatientFollowups.add(dedupSignature);
       }
     };
 
-    rawFollowups.forEach(processItem);
-    rawPrescriptions.forEach(processItem);
-    rawAppointments.forEach(processItem);
-    rawAllPatients.forEach(processItem);
+    rawFollowups.forEach(item => processItem(item, true));
+    rawAppointments.forEach(item => processItem(item, false));
+    rawAllPatients.forEach(item => processItem(item, false));
 
     // Merge mock followups as fallback ONLY if no live records exist
     if (map.size === 0) {
@@ -892,7 +914,7 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
     const list = Array.from(map.values());
     list.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
     return list;
-  }, [rawFollowups, rawPrescriptions, rawAppointments, rawAllPatients, currentBranch, bookedFollowUpIds, activeAppointmentsByPatient]);
+  }, [rawFollowups, rawAppointments, rawAllPatients, currentBranch, branchId, bookedFollowUpIds, activeAppointmentsByPatient]);
 
   // Filtered Items based on active tab and branch
   const filteredItems = useMemo(() => {
@@ -938,16 +960,32 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
     return { total: scopedList.length, today, overdue, thisMonth, nextMonth, selectedMonth, customDate };
   }, [followUpItems, selectedBranch, currentBranch, selectedMonthISO, customDateISO]);
 
-  // Progressive rendering state: renders initial 50 records instantly with zero lag
-  const [displayLimit, setDisplayLimit] = useState<number>(50);
+  // Page-wise Pagination State
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
 
+  // Reset to page 1 whenever filters or tabs change
   useEffect(() => {
-    setDisplayLimit(50);
-  }, [activeTab, selectedFilterMonth, selectedFilterYear, selectedBranch, currentBranch, customDateISO]);
+    setCurrentPage(1);
+  }, [activeTab, selectedFilterMonth, selectedFilterYear, selectedBranch, currentBranch, customDateISO, pageSize]);
 
-  const visibleItems = useMemo(() => {
-    return filteredItems.slice(0, displayLimit);
-  }, [filteredItems, displayLimit]);
+  const totalPages = useMemo(() => {
+    return Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  }, [filteredItems.length, pageSize]);
+
+  // Keep currentPage within valid bounds
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, filteredItems.length);
+
+  const pageItems = useMemo(() => {
+    return filteredItems.slice(startIndex, endIndex);
+  }, [filteredItems, startIndex, endIndex]);
 
   // Handler: Direct Complete Appointment
   const handleCompleteAppointment = async (item: FollowUpItem) => {
@@ -1428,7 +1466,7 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
             ) : (() => {
               const pool = receptionDataStore.getAllCollectionsPool();
               const pkgs = receptionDataStore.getPackageMembers();
-              return visibleItems.map((item) => {
+              return pageItems.map((item) => {
                 const badge = getBadgeDetails(item.preferredDate);
                 let visitState: any = null;
                 try {
@@ -1573,58 +1611,203 @@ export const FollowUpsPage: React.FC<FollowUpsPageProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '12px 20px',
+            padding: '14px 20px',
             background: '#f8fafc',
             borderTop: '1px solid #e2e8f0',
             flexWrap: 'wrap',
-            gap: '10px'
+            gap: '12px'
           }}>
-            <div style={{ fontSize: '12.5px', color: '#64748b', fontWeight: 600 }}>
-              Showing <strong style={{ color: '#0f172a' }}>{visibleItems.length}</strong> of <strong style={{ color: '#0f172a' }}>{filteredItems.length}</strong> follow-ups
-              {visibleItems.length < filteredItems.length && (
-                <span style={{ marginLeft: '6px', color: '#0284c7' }}>
-                  ({filteredItems.length - visibleItems.length} more remaining)
-                </span>
-              )}
-            </div>
-            {visibleItems.length < filteredItems.length && (
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setDisplayLimit(prev => Math.min(prev + 50, filteredItems.length))}
+            {/* Left side: Range info and page size selector */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+              <div style={{ fontSize: '13px', color: '#64748b', fontWeight: 600 }}>
+                Showing <strong style={{ color: '#0f172a' }}>{filteredItems.length === 0 ? 0 : startIndex + 1}–{endIndex}</strong> of <strong style={{ color: '#0f172a' }}>{filteredItems.length}</strong> follow-ups
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', color: '#64748b' }}>
+                <span>Per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
                   style={{
-                    padding: '6px 14px',
-                    fontSize: '12px',
+                    padding: '4px 8px',
+                    fontSize: '12.5px',
                     fontWeight: 700,
-                    borderRadius: '8px',
+                    borderRadius: '6px',
                     border: '1px solid #cbd5e1',
                     background: '#ffffff',
                     color: '#0f172a',
                     cursor: 'pointer',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                    outline: 'none'
                   }}
                 >
-                  Load More (+50)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDisplayLimit(filteredItems.length)}
-                  style={{
-                    padding: '6px 14px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: '#0284c7',
-                    color: '#ffffff',
-                    cursor: 'pointer',
-                    boxShadow: '0 1px 3px rgba(2,132,199,0.3)'
-                  }}
-                >
-                  Show All ({filteredItems.length})
-                </button>
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
               </div>
-            )}
+            </div>
+
+            {/* Right side: Page navigation buttons */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {/* First Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                title="First Page"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '6px 8px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: currentPage === 1 ? '#94a3b8' : '#0f172a',
+                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                  opacity: currentPage === 1 ? 0.5 : 1,
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <ChevronsLeft size={16} />
+              </button>
+
+              {/* Previous Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+                title="Previous Page"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: currentPage === 1 ? '#94a3b8' : '#0f172a',
+                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                  opacity: currentPage === 1 ? 0.5 : 1,
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <ChevronLeft size={15} />
+                <span>Prev</span>
+              </button>
+
+              {/* Page Number Chips */}
+              {(() => {
+                const pages: (number | string)[] = [];
+                const maxButtons = 5;
+                if (totalPages <= maxButtons) {
+                  for (let i = 1; i <= totalPages; i++) pages.push(i);
+                } else {
+                  let start = Math.max(1, currentPage - 1);
+                  let end = Math.min(totalPages, start + 2);
+                  if (end === totalPages) {
+                    start = Math.max(1, end - 2);
+                  }
+                  if (start > 1) {
+                    pages.push(1);
+                    if (start > 2) pages.push('...');
+                  }
+                  for (let i = start; i <= end; i++) {
+                    pages.push(i);
+                  }
+                  if (end < totalPages) {
+                    if (end < totalPages - 1) pages.push('...');
+                    pages.push(totalPages);
+                  }
+                }
+
+                return pages.map((p, idx) => {
+                  if (p === '...') {
+                    return (
+                      <span key={`ellipsis-${idx}`} style={{ padding: '0 4px', color: '#94a3b8', fontSize: '12px' }}>
+                        ...
+                      </span>
+                    );
+                  }
+                  const isCurrent = p === currentPage;
+                  return (
+                    <button
+                      key={`page-${p}`}
+                      type="button"
+                      onClick={() => setCurrentPage(Number(p))}
+                      style={{
+                        minWidth: '32px',
+                        height: '32px',
+                        padding: '0 8px',
+                        fontSize: '12.5px',
+                        fontWeight: isCurrent ? 800 : 600,
+                        borderRadius: '8px',
+                        border: isCurrent ? '1.5px solid #0284c7' : '1px solid #cbd5e1',
+                        background: isCurrent ? '#0284c7' : '#ffffff',
+                        color: isCurrent ? '#ffffff' : '#0f172a',
+                        cursor: 'pointer',
+                        boxShadow: isCurrent ? '0 1px 3px rgba(2,132,199,0.3)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {p}
+                    </button>
+                  );
+                });
+              })()}
+
+              {/* Next Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                disabled={currentPage === totalPages}
+                title="Next Page"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: currentPage === totalPages ? '#94a3b8' : '#0f172a',
+                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                  opacity: currentPage === totalPages ? 0.5 : 1,
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <span>Next</span>
+                <ChevronRight size={15} />
+              </button>
+
+              {/* Last Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                title="Last Page"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '6px 8px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: currentPage === totalPages ? '#94a3b8' : '#0f172a',
+                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                  opacity: currentPage === totalPages ? 0.5 : 1,
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <ChevronsRight size={16} />
+              </button>
+            </div>
           </div>
         )}
       </div>

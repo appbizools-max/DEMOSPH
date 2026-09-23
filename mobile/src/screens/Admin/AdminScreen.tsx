@@ -4,6 +4,7 @@ import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   getSafeDb, collection, onSnapshot, addDoc, updateDoc, doc, deleteDoc
 } from '../../utils/firebaseSafe';
+import { resolveCanonicalBranchId, BRANCHES } from '@app/shared';
 import { DoctorTimingsScreen } from './DoctorTimings/DoctorTimingsScreen';
 import { ManageBranchesScreen } from './ManageBranches/ManageBranchesScreen';
 import { AttendanceRosterScreen } from '../HR/AttendanceRoster/AttendanceRosterScreen';
@@ -474,22 +475,12 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   };
 
   const isMatchingBranch = (app: any, branchId: string) => {
-    const bStr = String(app.branch || app.branchName || app.targetBranch || app.clinicBranch || '').toLowerCase();
-    const bId = String(app.branchId || '');
-
-    if (branchId === 'kphb') {
-      return bStr.includes('kphb') || bStr.includes('kphp') || bId === 'XRrXPAWzn4fKiwT387PKBLQZg323';
-    }
-    if (branchId === 'nallagandla') {
-      return bStr.includes('nallagandla') || bId === '1qj75oZZlWgN8P02OAeRNjCVMhM2' || bId === 'pV2j0doYaX0Mmb3yUfNp';
-    }
-    if (branchId === 'dilshuknagar') {
-      return bStr.includes('dilshuk') || bStr.includes('dilsukh') || bId === 't7BiooFMRDU7DcgKFGnAPnJY0Qq2';
-    }
-    if (branchId === 'chandanagar') {
-      return bStr.includes('chanda') || bStr.includes('chandnagar') || bId === 'xS0281lEdPc0hUFrrNRPBMeQZsD3';
-    }
-    return false;
+    const canonicalTarget = resolveCanonicalBranchId(branchId);
+    if (!canonicalTarget) return false;
+    const appBranch = resolveCanonicalBranchId(
+      app.branchId || app.branch || app.branchName || app.targetBranch || app.clinicBranch || app.regId || app.registrationId
+    );
+    return appBranch === canonicalTarget;
   };
 
   const branchDailyStats = FOUR_BRANCHES.map(b => {
@@ -530,22 +521,11 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
     setMedName('');
   };
 
-  const BRANCH_NAME_MAP: Record<string, string> = {
-    'XRrXPAWzn4fKiwT387PKBLQZg323': 'KPHB',
-    't7BiooFMRDU7DcgKFGnAPnJY0Qq2': 'Dilshuknagar',
-    'xS0281lEdPc0hUFrrNRPBMeQZsD3': 'Chandanagar',
-    '1qj75oZZlWgN8P02OAeRNjCVMhM2': 'Nallagandla',
-    'pV2j0doYaX0Mmb3yUfNp': 'Nallagandla',
-    'kphb': 'KPHB',
-    'dilshuknagar': 'Dilshuknagar',
-    'chandanagar': 'Chandanagar',
-    'nallagandla': 'Nallagandla',
-  };
-
   const resolveBranchName = (l: any) => {
+    const canonical = resolveCanonicalBranchId(l.branchId || l.branch || l.branchName);
+    if (canonical && BRANCHES[canonical]) return BRANCHES[canonical].name;
     if (l.branch && typeof l.branch === 'string' && l.branch.trim()) return l.branch;
     if (l.branchName && typeof l.branchName === 'string' && l.branchName.trim()) return l.branchName;
-    if (l.branchId && BRANCH_NAME_MAP[l.branchId]) return BRANCH_NAME_MAP[l.branchId];
     return 'Main Branch';
   };
 

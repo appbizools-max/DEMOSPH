@@ -22,8 +22,7 @@ import { SPH_OFFICIAL_BRANCHES, Branch } from '../types';
 export async function ensureOfficialBranchesInFirestore() {
   if (!db) return;
   try {
-    for (const key of Object.keys(SPH_OFFICIAL_BRANCHES)) {
-      const branch = SPH_OFFICIAL_BRANCHES[key];
+    for (const branch of Object.values(SPH_OFFICIAL_BRANCHES)) {
       const docRef = doc(db, 'branches', branch.id);
       await setDoc(docRef, {
         ...branch,

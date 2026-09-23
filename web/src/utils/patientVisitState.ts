@@ -147,7 +147,7 @@ export function extractName(obj: any): string {
 
 export function extractRegId(obj: any): string {
   if (!obj) return '';
-  const raw = obj.regId || obj.registrationId || obj.patientId || obj.uhid || obj.patient_id || obj.patientUHID || obj.opNumber || obj.mrn || '';
+  const raw = obj.regNo || obj.regId || obj.registrationId || obj.patientId || obj.uhid || obj.patient_id || obj.patientUHID || obj.opNumber || obj.mrn || obj.customId || '';
   return String(raw).trim().toLowerCase();
 }
 
@@ -602,17 +602,38 @@ function calculatePatientVisitState(
     };
   }
 
-  // 4. Check explicit flags on appointment (or if appointment had an expired follow-up date/interval)
-  if (
+  // 4. Check explicit flags on appointment / patient profile (or if appointment had an expired follow-up date/interval)
+  const isOldPatientFlag =
+    appointment.isExistingProfile === true ||
     appointment.patientType === 'followup' ||
+    appointment.patientType === 'revisit' ||
     appointment.type === 'followup' ||
-    appointment.isFollowUp ||
-    appointment.isRevisit ||
+    appointment.type === 'revisit' ||
+    appointment.visitType === 'followup' ||
+    appointment.visitType === 'revisit' ||
+    appointment.isFollowUp === true ||
+    appointment.isRevisit === true ||
+    appointment.isNewPatient === false ||
+    appointment.source === 'Old Patient' ||
+    appointment.marketingSource === 'Old Patient' ||
+    appointment.collectionName === 'patients' ||
+    (appointment.raw && (
+      appointment.raw.isExistingProfile === true ||
+      appointment.raw.patientType === 'revisit' ||
+      appointment.raw.patientType === 'followup' ||
+      appointment.raw.isNewPatient === false ||
+      appointment.raw.source === 'Old Patient' ||
+      appointment.raw.marketingSource === 'Old Patient' ||
+      appointment.raw.collectionName === 'patients' ||
+      (Array.isArray(appointment.raw.prescriptionUrls) && appointment.raw.prescriptionUrls.length > 0)
+    )) ||
+    (Array.isArray(appointment.prescriptionUrls) && appointment.prescriptionUrls.length > 0) ||
     appointment.preferredFollowUpDate ||
     appointment.preferredDate ||
     appointment.followUpDate ||
-    appointment.followUpInterval
-  ) {
+    appointment.followUpInterval;
+
+  if (isOldPatientFlag) {
     return {
       type: 'REVISIT',
       label: 'Follow-up Revisit',
@@ -621,11 +642,30 @@ function calculatePatientVisitState(
       badgeColor: '#c2410c',
       badgeBorder: '#fed7aa',
       isCoveredZeroFee: false,
-      tooltip: 'Follow-up Revisit (Overdue / Expired Follow-up)'
+      tooltip: 'Follow-up Revisit (Existing Clinic Patient)'
     };
   }
 
-  // 5. If this patient does NOT match with any record across any collection -> ONLY THEN is it a NEW Patient
+  // 5. Check if patient already holds a formal clinic registration number (e.g. SPH..., /pv/, /dsnr, RK/..., 206, etc.)
+  const existingReg = extractRegId(appointment);
+  const isDocIdSameAsReg = appointment.id && existingReg === String(appointment.id).toLowerCase();
+  const isAutoDocId = /^[a-z0-9]{20,32}$/.test(existingReg);
+  const hasClinicRegPattern = existingReg && !isDocIdSameAsReg && !isAutoDocId && !existingReg.startsWith('app_') && !existingReg.startsWith('temp_');
+
+  if (hasClinicRegPattern) {
+    return {
+      type: 'REVISIT',
+      label: 'Follow-up Revisit',
+      badgeText: '↺ REVISIT',
+      badgeBg: '#fff7ed',
+      badgeColor: '#c2410c',
+      badgeBorder: '#fed7aa',
+      isCoveredZeroFee: false,
+      tooltip: `Follow-up Revisit (Registered Clinic ID: ${existingReg.toUpperCase()})`
+    };
+  }
+
+  // 6. If this patient does NOT match with any record across any collection -> ONLY THEN is it a NEW Patient
   return {
     type: 'NEW',
     label: 'New Patient',

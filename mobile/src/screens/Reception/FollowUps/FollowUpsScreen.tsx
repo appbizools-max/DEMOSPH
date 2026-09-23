@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, memo } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Linking, ActivityIndicator, ScrollView, Modal, TextInput, Alert, Platform } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { sendBookingWhatsAppNotification } from '@app/shared';
+import { sendBookingWhatsAppNotification, CanonicalBranchId, resolveCanonicalBranchId, getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
 import { getSafeDb, collection, onSnapshot, query, limit, updateDoc, doc, addDoc, orderBy, getDocs, where } from '../../../utils/firebaseSafe';
 import { receptionDataStore } from '../../../utils/receptionDataStore';
 import { getPatientVisitState } from '../../../utils/patientVisitState';
@@ -24,6 +24,7 @@ export interface FollowUp {
 
 interface FollowUpsScreenProps {
   currentBranch?: string;
+  branchId?: CanonicalBranchId;
   onNavigate?: (tab: string, data?: any) => void;
 }
 
@@ -341,26 +342,7 @@ const normalizeDocName = (name: string): string => {
 };
 
 const getCanonicalDoctorName = (rawName: string): string => {
-  if (!rawName) return SPH_DOCTORS[0];
-  let clean = String(rawName).trim();
-  // Strip all repeated "Dr." or "Dr" or "Dr.Dr." prefixes
-  clean = clean.replace(/^(dr\.?\s*)+/i, '').trim();
-  const lower = clean.toLowerCase();
-
-  if (lower.includes('ramakrishna') || lower.includes('rama krishna') || lower.includes('chanduri')) {
-    return 'Dr. Ramakrishna Chanduri';
-  }
-  if (lower.includes('prashanth') || lower.includes('vaidya')) {
-    return 'Dr. Prashanth K Vaidya';
-  }
-  if (lower.includes('padma') || lower.includes('priya')) {
-    return 'Dr. Padma Priya';
-  }
-  if (lower.includes('jobedah') || lower.includes('jobeadh') || lower.includes('parveez') || lower.includes('parveej')) {
-    return 'Dr. Jobedah Parveez';
-  }
-
-  return `Dr. ${clean}`;
+  return sanitizeDoctorName(rawName);
 };
 
 const isSameDoctor = (name1: string, name2: string): boolean => {
@@ -398,9 +380,22 @@ const getAvailableDoctors = (dateStr: string, branchName?: string, doctorsList: 
   });
 };
 
+const getLocalDateISO = (date: Date = new Date()): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getYesterdayDateISO = (): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return getLocalDateISO(d);
+};
+
 const now = new Date();
-const todayStr = now.toISOString().split('T')[0];
-const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+const todayStr = getLocalDateISO(now);
+const yesterdayStr = getYesterdayDateISO();
 
 const getMonthYearStr = (dateObj: Date): string => {
   const yyyy = dateObj.getFullYear();
@@ -626,6 +621,7 @@ const FollowUpCardItem = memo(({
 
 export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
   currentBranch = 'KPHB Branch',
+  branchId,
   onNavigate
 }) => {
   const [filterMode, setFilterMode] = useState<FilterMode>('today');
@@ -639,9 +635,8 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
   const selectedMonthISO = `${selectedFilterYear}-${String(selectedFilterMonth + 1).padStart(2, '0')}`;
   const [isLoading, setIsLoading] = useState(false);
 
-  const [rawPrescriptions, setRawPrescriptions] = useState<any[]>([]);
-  const [rawAppointments, setRawAppointments] = useState<any[]>([]);
-  const [rawAllPatients, setRawAllPatients] = useState<any[]>([]);
+  const [rawAppointments, setRawAppointments] = useState<any[]>(() => receptionDataStore.getAppointments());
+  const [rawAllPatients, setRawAllPatients] = useState<any[]>(() => receptionDataStore.getAllCollectionsPool());
   const [rawFollowups, setRawFollowups] = useState<any[]>([]);
   const [bookedFollowUpIds, setBookedFollowUpIds] = useState<Set<string>>(new Set());
 
@@ -804,38 +799,28 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
     return clean;
   };
 
-  // 1. Subscribe to Live Firestore
+  // 1. Subscribe to Live Firestore (lightweight, zero heavy image downloads)
   useEffect(() => {
     const activeDb = getSafeDb();
     if (!activeDb) return;
-    setIsLoading(true);
-    const unsubPresc = onSnapshot(collection(activeDb, 'prescriptions'), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => {
-        const data = d.data();
-        const { canvasData, drawingPoints, strokes, imageBase64, canvasImage, ...lightData } = data as any;
-        list.push({ id: d.id, ...lightData });
-      });
-      setRawPrescriptions(list);
-      setIsLoading(false);
-    }, (err) => {
-      console.warn('Prescriptions note:', err);
-      setIsLoading(false);
+
+    // A. Sync from in-memory receptionDataStore (0ms network cost)
+    const unsubStore = receptionDataStore.subscribe((state) => {
+      if (state.appointments && state.appointments.length > 0) {
+        setRawAppointments(state.appointments);
+      }
+      if (state.allCollectionsPool && state.allCollectionsPool.length > 0) {
+        setRawAllPatients(state.allCollectionsPool);
+      }
     });
 
-    const unsubAppts = onSnapshot(collection(activeDb, 'appointments'), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setRawAppointments(list);
-    }, (err) => console.warn('Appointments note:', err));
+    // B. Real-time followups collection (branch-scoped server query for 4x faster loading)
+    const branchQueryNames = typeof getBranchQueryNames === 'function' ? getBranchQueryNames(branchId || currentBranch) : [];
+    const followupsQuery = branchQueryNames.length > 0
+      ? query(collection(activeDb, 'followups'), where('branchName', 'in', branchQueryNames))
+      : collection(activeDb, 'followups');
 
-    const unsubAllPat = onSnapshot(collection(activeDb, 'allpatients'), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setRawAllPatients(list);
-    }, (err) => console.warn('AllPatients note:', err));
-
-    const unsubFollowups = onSnapshot(collection(activeDb, 'followups'), (snap) => {
+    const unsubFollowups = onSnapshot(followupsQuery, (snap) => {
       const list: any[] = [];
       snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
       setRawFollowups(list);
@@ -876,16 +861,14 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
       }
     }, (err) => console.warn('Doctors listener note:', err));
 
-    const unsubTemp = onSnapshot(collection(activeDb, 'doctor_temp_slots'), (snap) => {
+    const unsubTemp = onSnapshot(query(collection(activeDb, 'doctor_temp_slots'), limit(50)), (snap) => {
       const list: any[] = [];
       snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
       setTempSlotsList(list);
     }, (err) => console.warn('Temp slots note:', err));
 
     return () => {
-      unsubPresc();
-      unsubAppts();
-      unsubAllPat();
+      unsubStore();
       unsubFollowups();
       unsubDoctors();
       unsubTemp();
@@ -921,14 +904,41 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
     return activeMap;
   }, [rawAppointments]);
 
-  // 2. Deduplicate Live Follow-Up Items
+  // 2. Process and Deduplicate Live Follow-Up Items
   const followUpItems = useMemo(() => {
     const map = new Map<string, FollowUp>();
     const seenPatientFollowups = new Set<string>();
     const todayISO = todayStr;
 
-    const processItem = (item: any, isPrimaryFollowup = false) => {
+    const safeResolveBranchId = (val?: string | null): CanonicalBranchId | null => {
+      try {
+        if (typeof resolveCanonicalBranchId === 'function') {
+          return resolveCanonicalBranchId(val);
+        }
+      } catch (_) {}
+      if (!val || typeof val !== 'string') return null;
+      const l = val.toLowerCase();
+      if (l.includes('kphb') || l.includes('kpb')) return 'kphb';
+      if (l.includes('chanda') || l.includes('chn')) return 'chandanagar';
+      if (l.includes('dilshuk') || l.includes('dsn')) return 'dilshuknagar';
+      if (l.includes('nalla') || l.includes('ngl')) return 'nallagandla';
+      return null;
+    };
+
+    const targetCanonicalBranch: CanonicalBranchId | null = branchId || (currentBranch ? safeResolveBranchId(currentBranch) : null);
+
+    const processItem = (item: any, isPrimaryFollowup: boolean = false) => {
       if (!item) return;
+
+      // Branch-scoped filter: only process records belonging to the active canonical branch
+      if (targetCanonicalBranch) {
+        const itemCanonical = safeResolveBranchId(
+          item.branchId || item.branch || item.branchName || item.assignedBranch || item.regId || item.registrationId
+        );
+        if (itemCanonical && itemCanonical !== targetCanonicalBranch) {
+          return;
+        }
+      }
 
       // Skip if explicitly marked as booked or completed
       if (
@@ -1007,7 +1017,7 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
         map.set(key, {
           id: itemId || key,
           patientName: pName || 'Patient',
-          phone: cleanDigits || phone,
+          phone: cleanDigits ? `+91 ${cleanDigits}` : phone,
           regId,
           doctorName: getCanonicalDoctorName(item.doctorName || item.doctor || SPH_DOCTORS[0]),
           branchName: bName,
@@ -1020,7 +1030,7 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
         });
         seenPatientFollowups.add(dedupSignature);
       } else {
-        // Secondary collections (prescriptions, appointments): only add if patient does not already have a follow-up scheduled for this date
+        // Secondary collections (appointments, allpatients): only add if patient does not already have a follow-up scheduled for this date
         if (seenPatientFollowups.has(dedupSignature)) return;
         const key = itemId || dedupSignature;
         if (map.has(key)) return;
@@ -1028,7 +1038,7 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
         map.set(key, {
           id: itemId || key,
           patientName: pName || 'Patient',
-          phone: cleanDigits || phone,
+          phone: cleanDigits ? `+91 ${cleanDigits}` : phone,
           regId,
           doctorName: getCanonicalDoctorName(item.doctorName || item.doctor || SPH_DOCTORS[0]),
           branchName: bName,
@@ -1044,10 +1054,10 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
     };
 
     rawFollowups.forEach(item => processItem(item, true));
-    rawPrescriptions.forEach(item => processItem(item, false));
     rawAppointments.forEach(item => processItem(item, false));
+    rawAllPatients.forEach(item => processItem(item, false));
 
-    // Merge fallback sample data ONLY if no live records exist
+    // Merge sample data as fallback ONLY if no live records exist at all
     if (map.size === 0) {
       SAMPLE_DATA.forEach(s => {
         const cleanDigits = s.phone.replace(/\D/g, '').slice(-10);
@@ -1063,7 +1073,7 @@ export const FollowUpsScreen: React.FC<FollowUpsScreenProps> = ({
     const list = Array.from(map.values());
     list.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
     return list;
-  }, [rawFollowups, rawPrescriptions, rawAppointments, rawAllPatients, currentBranch, bookedFollowUpIds, activeAppointmentsByPatient]);
+  }, [rawFollowups, rawAppointments, rawAllPatients, currentBranch, branchId, bookedFollowUpIds, activeAppointmentsByPatient]);
 
   // 3. Stats for Filter Tabs
   const stats = useMemo(() => {

@@ -4,7 +4,7 @@ import {
   CheckCircle2, ChevronDown, Check, Home, Megaphone, ArrowRight, ShieldCheck, Info,
   ChevronLeft, ChevronRight, X, Building2, Lock, Search, Printer, UserX
 } from 'lucide-react';
-import { createDocument, db, sendBookingWhatsAppNotification } from '@app/shared';
+import { createDocument, db, sendBookingWhatsAppNotification, sanitizeDoctorName } from '@app/shared';
 import { collection, onSnapshot, addDoc, setDoc, deleteDoc, doc, query, where, limit, getDocs } from 'firebase/firestore';
 import { generateRegistrationId, getBranchShortcut } from '../../../utils/idGenerator';
 import { createBookingNotificationInFirestore } from '../../../utils/fcmWebTrigger';
@@ -519,7 +519,7 @@ const DEFAULT_DOCTORS_SEED: Doctor[] = [
   {
     id: 'doc-2',
     name: 'Dr. Ramakrishna Chanduri',
-    phone: '9804176176',
+    phone: '1111111111',
     role: 'Homeopathy Physician',
     branchSchedules: [
       {
@@ -661,8 +661,20 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeSearchQuery, setActiveSearchQuery] = useState('');
 
-  // START STATE FOR PROFILE LOOKUP
-  const [patientData, setPatientData] = useState({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
+  const [patientData, setPatientData] = useState<{
+    phone: string;
+    fullName: string;
+    patientName: string;
+    patientId: string;
+    regID: string;
+    registrationId?: string;
+    source: string;
+    patientType?: string;
+    isNewPatient?: boolean;
+    isExistingProfile?: boolean;
+    homeBranch?: string;
+    branchName?: string;
+  }>({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', registrationId: '', source: '', homeBranch: '', branchName: '' });
   const [existingProfilesList, setExistingProfilesList] = useState<any[]>([]);
   const [checkedPhone, setCheckedPhone] = useState('');
   const [bypassPhoneCheck, setBypassPhoneCheck] = useState(false);
@@ -685,27 +697,48 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
       const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || '';
       const cleanDocPhone = String(docPhone).replace(/\D/g, '').slice(-10);
       if (pName && cleanDocPhone === clean) {
-        const rawReg = data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid;
+        const rawReg = data.regNo || data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid || data.customId;
+        const originalBranch = data.branchName || data.branch || data.targetBranch || '';
         let regId = '';
-        if (rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 18 && !/^[a-zA-Z0-9]{19,32}$/.test(rawReg.trim())) {
+        const isValidReg = rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 25 && !/^[a-zA-Z0-9]{20,32}$/.test(rawReg.trim()) && !rawReg.trim().toLowerCase().startsWith('temp_') && !rawReg.trim().toLowerCase().startsWith('app_');
+        if (isValidReg) {
           regId = rawReg.trim().toUpperCase();
-        } else {
-          const shortcut = getBranchShortcut(data.branchName || data.branch || currentBranch);
-          regId = `SPH-${shortcut}-${String(profilesMap.size + 1).padStart(4, '0')}`;
         }
 
-        const key = `${pName.toLowerCase()}_${cleanDocPhone}_${regId.toLowerCase()}`;
-        if (!profilesMap.has(key)) {
-          profilesMap.set(key, {
+        const personKey = `${pName.trim().toLowerCase()}_${cleanDocPhone}`;
+        if (!profilesMap.has(personKey)) {
+          if (!regId) {
+            const shortcut = getBranchShortcut(originalBranch || currentBranch);
+            regId = `SPH-${shortcut}-${String(profilesMap.size + 1).padStart(4, '0')}`;
+          }
+          profilesMap.set(personKey, {
             id: docId,
             fullName: pName,
             registrationId: regId,
+            regNo: data.regNo || regId,
             phone: docPhone || clean,
             gender: data.gender || '',
             age: data.age || '',
-            source: data.source || 'Old Patient',
-            branchName: data.branchName || data.branch || ''
+            source: 'Old Patient',
+            patientType: 'revisit',
+            isNewPatient: false,
+            isExistingProfile: true,
+            collectionName: 'patients',
+            branchName: originalBranch || '',
+            homeBranch: originalBranch || ''
           });
+        } else {
+          const existing = profilesMap.get(personKey);
+          if (isValidReg && (!existing.registrationId || existing.registrationId.startsWith('SPH-'))) {
+            existing.registrationId = regId;
+            existing.regNo = data.regNo || regId;
+          }
+          if (!existing.branchName && originalBranch) {
+            existing.branchName = originalBranch;
+            existing.homeBranch = originalBranch;
+          }
+          if (!existing.gender && data.gender) existing.gender = data.gender;
+          if (!existing.age && data.age) existing.age = data.age;
         }
       }
     };
@@ -795,8 +828,14 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
       patientId: prof.id,
       fullName: prof.fullName,
       patientName: prof.fullName,
-      regID: prof.registrationId || prev.regID,
-      source: 'Old Patient'
+      regID: prof.registrationId || prof.regNo || prev.regID,
+      registrationId: prof.registrationId || prof.regNo || prev.registrationId,
+      source: 'Old Patient',
+      patientType: 'revisit',
+      isNewPatient: false,
+      isExistingProfile: true,
+      homeBranch: prof.branchName || prev.homeBranch,
+      branchName: prof.branchName || prev.branchName
     }));
     setBypassPhoneCheck(true);
     setExistingProfilesModalVisible(false);
@@ -831,6 +870,9 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
             const data = snap.data();
             const normDataName = (data.name || data.doctorName || '').toLowerCase().replace(/dr\.?\s*/i, '').trim();
             const digits = (data.mobile || data.phone || '').replace(/\D/g, '');
+            // Strictly exclude any reception desk or staff accounts
+            if (normDataName.includes('reception') || normDataName.includes('desk') || normDataName.includes('staff')) return;
+            if (digits && (digits === '9030176176' || digits === '9553176176' || digits === '9804176176' || digits === '9132176176')) return;
             const seedFallback = DEFAULT_DOCTORS_SEED.find(s => {
               const normSeedName = s.name.toLowerCase().replace(/dr\.?\s*/i, '').trim();
               if (normDataName && (normSeedName.includes(normDataName) || normDataName.includes(normSeedName))) return true;
@@ -1604,8 +1646,9 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
 
     setIsSubmitting(true);
     try {
-      let generatedRegId = patientData.regID || patientData.patientId;
-      if (!generatedRegId || typeof generatedRegId !== 'string' || generatedRegId.trim().length === 0 || /^[a-zA-Z0-9]{19,32}$/.test(generatedRegId.trim())) {
+      let generatedRegId = patientData.regID || patientData.registrationId || patientData.patientId;
+      const isAutoDocId = typeof generatedRegId === 'string' && /^[a-zA-Z0-9]{20,32}$/.test(generatedRegId.trim());
+      if (!generatedRegId || typeof generatedRegId !== 'string' || generatedRegId.trim().length === 0 || isAutoDocId) {
         generatedRegId = await generateRegistrationId(currentBranch);
       }
 
@@ -1635,8 +1678,8 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
         branch: effectiveBranch,
         branchName: effectiveBranch,
         targetBranch: effectiveBranch,
-        doctorName: selectedDoctor,
-        doctor: selectedDoctor,
+        doctorName: sanitizeDoctorName(selectedDoctor, effectiveBranch),
+        doctor: sanitizeDoctorName(selectedDoctor, effectiveBranch),
         appointmentDate,
         date: appointmentDate,
         appointmentTime: selectedTimeSlot || '10:00 AM',
@@ -3130,7 +3173,18 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                   <div>
                     {(() => {
                       const vState = getPatientVisitState(
-                        { ...prof, patientName: prof.fullName, phone: prof.phone || checkedPhone, patientDocId: prof.id, regId: prof.registrationId },
+                        {
+                          ...prof,
+                          patientName: prof.fullName,
+                          phone: prof.phone || checkedPhone,
+                          patientDocId: prof.id,
+                          regId: prof.registrationId || prof.regNo,
+                          source: 'Old Patient',
+                          patientType: 'revisit',
+                          isNewPatient: false,
+                          isExistingProfile: true,
+                          collectionName: prof.collectionName || 'patients'
+                        },
                         receptionDataStore.getAllCollectionsPool(),
                         receptionDataStore.getPackageMembers()
                       );
@@ -3153,11 +3207,26 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
                           }}>
                             {vState.badgeText}
                           </span>
+                          {prof.branchName && (
+                            <span style={{
+                              backgroundColor: '#e0f2fe',
+                              border: '1px solid #bae6fd',
+                              color: '#0369a1',
+                              padding: '1.5px 6px',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              display: 'inline-flex',
+                              alignItems: 'center'
+                            }}>
+                              📍 {prof.branchName.replace(/\s*branch\s*/i, '')} Branch
+                            </span>
+                          )}
                         </div>
                       );
                     })()}
                     <div style={{ fontSize: '12px', color: '#0284c7', marginTop: '2px' }}>
-                      Reg ID: {prof.registrationId}
+                      Reg ID: {prof.registrationId || prof.regNo}
                     </div>
                     {(prof.gender || prof.age) && (
                       <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>

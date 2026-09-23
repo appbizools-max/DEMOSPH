@@ -307,6 +307,7 @@ export const sendInvoiceWhatsAppNotification = async (params: {
   totalPaid: number;
   paymentMode?: string;
   branch?: string;
+  doctorName?: string;
 }) => {
   const invCode = params.invoiceId ? String(params.invoiceId).substring(0, 6).toUpperCase() : 'RECEIPT';
   const branch = params.branch || 'KPHB';

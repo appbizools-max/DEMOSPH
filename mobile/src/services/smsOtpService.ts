@@ -121,9 +121,14 @@ export async function sendSmsOtp(phone: string, otp: string): Promise<SendSmsOtp
   console.log('======================================================================\n');
 
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+
     const res = await fetch(requestUrl, {
       method: 'GET',
+      signal: controller.signal
     });
+    clearTimeout(timer);
 
     const responseText = await res.text();
     const isError = responseText.toLowerCase().includes('error') || responseText.toLowerCase().includes('invalid');

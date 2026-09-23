@@ -216,6 +216,7 @@ export const getCanonicalBranchName = (str?: string): string => {
 export const getCanonicalDoctorName = (rawName?: string): string => {
   if (!rawName) return 'Dr. Prashanth K Vaidya';
   const lower = String(rawName).toLowerCase();
+  if (lower.includes('reception') || lower.includes('desk') || lower.includes('staff')) return 'Dr. Prashanth K Vaidya';
   if (lower.includes('prashanth') || lower.includes('vaidya')) return 'Dr. Prashanth K Vaidya';
   if (lower.includes('ramakrishna') || lower.includes('rama krishna') || lower.includes('chanduri')) return 'Dr. Ramakrishna Chanduri';
   if (lower.includes('jobedah') || lower.includes('jobeadh') || lower.includes('parveez') || lower.includes('parveej')) return 'Dr. Jobedah Parveez';

@@ -5,7 +5,7 @@ import {
   Sparkles, Stethoscope, Apple, Share2, Award, FolderPlus, X, CheckCircle2,
   Printer, Eye, CreditCard, ChevronRight, Maximize2
 } from 'lucide-react';
-import { db } from '@app/shared';
+import { db, sanitizeDoctorName } from '@app/shared';
 import { collection, onSnapshot, addDoc, updateDoc, doc, arrayUnion, setDoc, getDoc, getDocs, query, where, limit } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
@@ -165,30 +165,8 @@ export const DEFICIENCY_NUTRITION_MAP: Record<string, { eat: string[]; avoid: st
   }
 };
 
-export const formatDoctorName = (name: string | null | undefined): string => {
-  if (!name || typeof name !== 'string' || !name.trim()) return 'Dr. Ramakrishna Chanduri';
-  let clean = name.trim();
-
-  // Strip all repeated "Dr." or "Dr" or "Dr.Dr." prefixes
-  clean = clean.replace(/^(dr\.?\s*)+/i, '').trim();
-
-  const lower = clean.toLowerCase();
-  if (lower.includes('ramakrishna') || lower.includes('rama krishna') || lower.includes('chanduri')) {
-    return 'Dr. Ramakrishna Chanduri';
-  }
-  if (lower.includes('prashanth') || lower.includes('vaidya')) {
-    return 'Dr. Prashanth K Vaidya';
-  }
-  if (lower.includes('padma') || lower.includes('priya')) {
-    return 'Dr. Padma Priya';
-  }
-  if (lower.includes('jobedah') || lower.includes('jobeadh') || lower.includes('parveez') || lower.includes('parveej')) {
-    return 'Dr. Jobedah Parveez';
-  }
-
-  // Capitalize words neatly
-  const titleCased = clean.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-  return `Dr. ${titleCased}`;
+export const formatDoctorName = (name: string | null | undefined, branchContext?: string | null): string => {
+  return sanitizeDoctorName(name, branchContext);
 };
 
 export const parseToYMD = (raw: any): string => {
