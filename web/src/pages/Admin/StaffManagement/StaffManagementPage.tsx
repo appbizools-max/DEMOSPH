@@ -5,13 +5,13 @@ import { db } from '@app/shared';
 
 export const StaffManagementPage: React.FC = () => {
   const DEFAULT_STAFF = [
-    { id: '1', name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', phone: '90301 76176', hours: '10.5 hrs/day', shift: '10:00 AM - 08:30 PM', salary: '₹22,000' },
-    { id: '2', name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', phone: '95531 76176', hours: '8.5 hrs/day', shift: '10:00 AM - 06:30 PM', salary: '₹17,000' },
-    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', phone: '91321 76176', hours: '9.5 hrs/day', shift: '09:30 AM - 07:00 PM', salary: '₹17,000' },
-    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', phone: '98041 76176', hours: '8 hrs/day', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', salary: '₹15,000' },
-    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', phone: '90301 76176', hours: '10 hrs/day', shift: '10:00 AM - 08:00 PM', salary: '₹18,000' },
-    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', phone: '91321 76176', hours: '8 hrs/day', shift: '10:00 AM - 06:00 PM', salary: '₹14,000' },
-    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '79955 32759', hours: '10.5 hrs/day', shift: '10:00 AM - 08:30 PM', salary: '₹14,000' },
+    { id: '1', name: 'M. Anil Kumar', role: 'Regular Staff', branch: 'KPHB', phone: '73382 60802', hours: '10.5 hrs/day', shift: '10:00 AM - 08:30 PM', salary: '₹22,000' },
+    { id: '2', name: 'Begari Ashwini', role: 'Regular Staff', branch: 'Chandanagar', phone: '63021 21265', hours: '8.5 hrs/day', shift: '10:00 AM - 06:30 PM', salary: '₹17,000' },
+    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', phone: '98745 63210', hours: '9.5 hrs/day', shift: '09:30 AM - 07:00 PM', salary: '₹17,000' },
+    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', phone: '96521 80003', hours: '8 hrs/day', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', salary: '₹15,000' },
+    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', phone: '81253 84387', hours: '10 hrs/day', shift: '10:00 AM - 08:00 PM', salary: '₹18,000' },
+    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', phone: '98765 43212', hours: '8 hrs/day', shift: '10:00 AM - 06:00 PM', salary: '₹14,000' },
+    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '78901 23456', hours: '10.5 hrs/day', shift: '10:00 AM - 08:30 PM', salary: '₹14,000' },
   ];
 
   const DEFAULT_DOCTORS = [
@@ -62,7 +62,7 @@ export const StaffManagementPage: React.FC = () => {
             name: data.name || 'Staff Member',
             role: data.role || 'Regular Staff',
             branch: data.branch || 'KPHB',
-            phone: data.mobile || data.phone || '90301 76176',
+            phone: data.mobile || data.phone || '-',
             hours: data.hours || '8 hrs/day',
             shift: data.shift || '10:00 AM - 06:00 PM',
             salary: data.salary || '₹18,000'

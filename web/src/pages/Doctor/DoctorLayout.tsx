@@ -50,7 +50,13 @@ export const DoctorLayout: React.FC<DoctorLayoutProps> = ({
           />
         );
       case 'patient_list':
-        return <DoctorPatientListPage onNavigateTab={handleNavigate} />;
+        return (
+          <DoctorPatientListPage
+            doctorName={doctorName}
+            doctorCategory={isHeadDoctor ? 'Head Doctor' : 'Employee Doctor'}
+            onNavigateTab={handleNavigate}
+          />
+        );
       case 'packages':
         return isHeadDoctor ? <DoctorPackagesPage /> : <DoctorDashboardPage doctorCategory="Employee Doctor" doctorName={doctorName} />;
       case 'total_revenue':

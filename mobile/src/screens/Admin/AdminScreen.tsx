@@ -48,13 +48,13 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   const [staffCategory, setStaffCategory] = useState<'staff' | 'reception' | 'doctors' | 'hr'>('staff');
 
   const DEFAULT_STAFF = [
-    { name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹22,000' },
-    { name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', hours: '8.5 hrs/day', salary: '₹17,000' },
-    { name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', hours: '9.5 hrs/day', salary: '₹17,000' },
-    { name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', hours: '8 hrs/day', salary: '₹15,000' },
-    { name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', hours: '10 hrs/day', salary: '₹18,000' },
-    { name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', hours: '8 hrs/day', salary: '₹14,000' },
-    { name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '7995532759', hours: '10.5 hrs/day', salary: '₹14,000' },
+    { name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', phone: '7338260802', mobile: '7338260802', hours: '10.5 hrs/day', salary: '₹22,000' },
+    { name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', phone: '6302121265', mobile: '6302121265', hours: '8.5 hrs/day', salary: '₹17,000' },
+    { name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', phone: '9874563210', mobile: '9874563210', hours: '9.5 hrs/day', salary: '₹17,000' },
+    { name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', phone: '9652180003', mobile: '9652180003', hours: '8 hrs/day', salary: '₹15,000' },
+    { name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', phone: '8125384387', mobile: '8125384387', hours: '10 hrs/day', salary: '₹18,000' },
+    { name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', phone: '9876543212', mobile: '9876543212', hours: '8 hrs/day', salary: '₹14,000' },
+    { name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '7890123456', mobile: '7890123456', hours: '10.5 hrs/day', salary: '₹14,000' },
   ];
 
   const [liveStaffMembers, setLiveStaffMembers] = useState(DEFAULT_STAFF);

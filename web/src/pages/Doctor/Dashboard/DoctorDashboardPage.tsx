@@ -126,67 +126,62 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
     return s === 'waiting' || s === 'booked' || s === 'scheduled' || s === 'active' || s === 'in_consultation' || s === 'in-consultation' || s === 'in consult';
   };
 
+  // Ultra-fast zero-delay sync using cached receptionDataStore
   useEffect(() => {
-    let unsubApp: (() => void) | null = null;
-    let unsubAllPat: (() => void) | null = null;
+    receptionDataStore.startListeners();
 
-    let appList: any[] = [];
-    let allPatList: any[] = [];
+    const filterTodayDoctorApps = (list: any[]) => {
+      const activeDocClean = (doctorName || '').toLowerCase().replace(/^dr\.\s*/i, '').replace(/^dr\s*/i, '').replace(/[^a-z0-9]/g, '').trim();
+      const uniqueMap = new Map<string, any>();
 
-    const mergeAndFilter = () => {
-      const combined = [...appList, ...allPatList];
-
-      const filtered = combined.filter((item) => {
+      for (const item of list) {
+        if (!item) continue;
         const statusStr = (item.status || '').toLowerCase();
-        if (statusStr === 'cancelled' || statusStr === 'rejected') return false;
-        if (!isActualAppointment(item, item.collectionName)) return false;
+        if (statusStr === 'cancelled' || statusStr === 'rejected') continue;
+        if (!isActualAppointment(item, item.collectionName || 'appointments')) continue;
         // Strictly filter to TODAY'S consultations only
-        if (!isTodayDate(item)) return false;
+        if (!isTodayDate(item)) continue;
 
-        const docName = (item.doctorName || item.doctor || '').toLowerCase();
-        const curDocName = (doctorName || '').toLowerCase();
-
+        const docName = String(item.doctorName || item.doctor || '').toLowerCase().replace(/^dr\.\s*/i, '').replace(/^dr\s*/i, '').replace(/[^a-z0-9]/g, '').trim();
         const docMatch =
           !docName ||
-          docName.includes(curDocName) ||
-          curDocName.includes(docName) ||
+          docName === 'unassigned' ||
+          docName.includes(activeDocClean) ||
+          activeDocClean.includes(docName) ||
           docName.includes('spiritual') ||
-          docName.includes('head');
+          docName.includes('head') ||
+          (docName.length >= 4 && activeDocClean.includes(docName.substring(0, 5)));
 
-        return docMatch;
-      });
+        if (docMatch) {
+          const cleanPhone = String(item.phone || item.phoneNumber || '').replace(/\D/g, '').slice(-10);
+          const cleanDate = String(item.appointmentDate || item.date || item.slotDate || item.dateString || '').trim();
+          const cleanTime = String(item.appointmentTime || item.time || item.timeSlot || '').trim().toLowerCase();
+          const cleanName = String(item.patientName || item.name || '').trim().toLowerCase();
+          const cleanReg = String(item.registrationId || item.regId || '').trim().toLowerCase();
 
-      const uniqueMap = new Map<string, any>();
-      filtered.forEach((item) => {
-        const cleanPhone = String(item.phone || item.phoneNumber || '').replace(/\D/g, '').slice(-10);
-        const cleanDate = String(item.appointmentDate || item.date || item.slotDate || item.dateString || '').trim();
-        const cleanTime = String(item.appointmentTime || item.time || item.timeSlot || '').trim().toLowerCase();
-        const cleanName = String(item.patientName || item.name || '').trim().toLowerCase();
-        const cleanReg = String(item.registrationId || item.regId || '').trim().toLowerCase();
+          const dedupKey = (cleanPhone && cleanDate && cleanTime)
+            ? `${cleanPhone}_${cleanDate}_${cleanTime}`
+            : (cleanReg && cleanDate)
+              ? `${cleanReg}_${cleanDate}`
+              : (cleanPhone && cleanName)
+                ? `${cleanPhone}_${cleanName}`
+                : (item.id || `${cleanPhone}_${cleanName}`);
 
-        const dedupKey = (cleanPhone && cleanDate && cleanTime)
-          ? `${cleanPhone}_${cleanDate}_${cleanTime}`
-          : (cleanReg && cleanDate)
-            ? `${cleanReg}_${cleanDate}`
-            : (cleanPhone && cleanName)
-              ? `${cleanPhone}_${cleanName}`
-              : (item.id || `${cleanPhone}_${cleanName}`);
-
-        if (!uniqueMap.has(dedupKey)) {
-          uniqueMap.set(dedupKey, item);
-        } else {
-          const existing = uniqueMap.get(dedupKey);
-          uniqueMap.set(dedupKey, {
-            ...item,
-            ...existing,
-            displayStatus: (existing.displayStatus && existing.displayStatus !== 'waiting') ? existing.displayStatus : (item.displayStatus || 'waiting')
-          });
+          if (!uniqueMap.has(dedupKey)) {
+            uniqueMap.set(dedupKey, item);
+          } else {
+            const existing = uniqueMap.get(dedupKey);
+            uniqueMap.set(dedupKey, {
+              ...item,
+              ...existing,
+              displayStatus: (existing.displayStatus && existing.displayStatus !== 'waiting') ? existing.displayStatus : (item.displayStatus || 'waiting')
+            });
+          }
         }
-      });
+      }
 
-      const list = Array.from(uniqueMap.values());
-
-      list.sort((a, b) => {
+      const resList = Array.from(uniqueMap.values());
+      resList.sort((a, b) => {
         const timeA = a.appointmentTime || a.time || '00:00';
         const timeB = b.appointmentTime || b.time || '00:00';
         const strA = String(timeA).toLowerCase();
@@ -194,41 +189,21 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
         return strB.localeCompare(strA);
       });
 
-      setAppointments(list);
+      setAppointments(resList);
       setLoading(false);
     };
 
-    try {
-      unsubApp = onSnapshot(query(collection(db, 'appointments'), orderBy('createdAt', 'desc'), limit(300)), (snapshot) => {
-        appList = snapshot.docs.map((d) => ({
-          ...d.data(),
-          id: d.id,
-          docId: d.id,
-          collectionName: 'appointments',
-          displayStatus: (d.data().status || 'waiting').toLowerCase(),
-        }));
-        mergeAndFilter();
-      });
-
-      unsubAllPat = onSnapshot(query(collection(db, 'allpatients'), orderBy('createdAt', 'desc'), limit(300)), (snapshot) => {
-        allPatList = snapshot.docs.map((d) => ({
-          ...d.data(),
-          id: d.id,
-          docId: d.id,
-          collectionName: 'allpatients',
-          displayStatus: (d.data().status || 'waiting').toLowerCase(),
-        }));
-        mergeAndFilter();
-      });
-    } catch (e) {
-      console.warn('Error subscribing to web doctor appointments:', e);
-      setLoading(false);
+    // Instant zero-delay load from cached store
+    const initialPool = receptionDataStore.getAppointments();
+    if (initialPool && initialPool.length > 0) {
+      filterTodayDoctorApps(initialPool);
     }
 
-    return () => {
-      if (unsubApp) unsubApp();
-      if (unsubAllPat) unsubAllPat();
-    };
+    const unsub = receptionDataStore.subscribe((state) => {
+      filterTodayDoctorApps(state.appointments);
+    });
+
+    return () => unsub();
   }, [doctorName, todayStr]);
 
   // Set auto follow-up date based on interval picker
@@ -248,17 +223,19 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
 
   const handleUpdateStatus = async (appId: string, collectionName: string | undefined, newStatus: string) => {
     try {
-      console.log(`[DoctorDashboard] Updating status for doc ID "${appId}" to "${newStatus}" in collection "${collectionName || 'appointments'}"`);
       setAppointments((prev) =>
         prev.map((a) => (a.id === appId || a.docId === appId ? { ...a, displayStatus: newStatus.toLowerCase() } : a))
       );
+      receptionDataStore.updateLocalAppointment(appId, { status: newStatus, displayStatus: newStatus.toLowerCase() });
 
       const payload = { status: newStatus, updatedAt: new Date().toISOString() };
       const targetCol = collectionName || 'appointments';
-      await updateDoc(doc(db, targetCol, appId), payload).catch((e) => console.warn(`Update notice for ${targetCol}/${appId}:`, e));
-      await updateDoc(doc(db, 'appointments', appId), payload).catch((e) => console.warn(`Update notice for appointments/${appId}:`, e));
-      await updateDoc(doc(db, 'allpatients', appId), payload).catch((e) => console.warn(`Update notice for allpatients/${appId}:`, e));
-      await updateDoc(doc(db, 'patients', appId), payload).catch((e) => console.warn(`Update notice for patients/${appId}:`, e));
+      await Promise.allSettled([
+        updateDoc(doc(db, targetCol, appId), payload),
+        updateDoc(doc(db, 'appointments', appId), payload),
+        updateDoc(doc(db, 'allpatients', appId), payload),
+        updateDoc(doc(db, 'patients', appId), payload)
+      ]);
     } catch (err) {
       console.error('Error updating status on web:', err);
     }

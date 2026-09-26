@@ -56,13 +56,23 @@ export const PatientFilePage: React.FC<PatientFilePageProps> = ({ onBack, initia
     }
   }, [initialPatient]);
 
-  const filteredPatients = patients.filter(p => {
+  const filteredPatients = (() => {
     const term = searchQuery.toLowerCase();
-    const name = (p.patientName || p.name || '').toLowerCase();
-    const reg = (p.registrationId || p.regId || '').toLowerCase();
-    const phone = (p.phone || p.phoneNumber || '').toLowerCase();
-    return name.includes(term) || reg.includes(term) || phone.includes(term);
-  });
+    const seen = new Set<string>();
+    const result: any[] = [];
+    for (const p of patients) {
+      const id = p.id || p.docId || '';
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const name = (p.patientName || p.name || '').toLowerCase();
+      const reg = (p.registrationId || p.regId || '').toLowerCase();
+      const phone = (p.phone || p.phoneNumber || '').toLowerCase();
+      if (name.includes(term) || reg.includes(term) || phone.includes(term)) {
+        result.push(p);
+      }
+    }
+    return result;
+  })();
 
   const activePatient = patients.find(p => p.id === selectedPatientId) || (initialPatient || patients[0]);
 

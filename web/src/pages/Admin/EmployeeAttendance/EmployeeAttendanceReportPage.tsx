@@ -9,13 +9,13 @@ import { collection, query, onSnapshot, orderBy, doc, setDoc } from 'firebase/fi
 import { db, StaffAttendanceRecord, StaffLeaveRequest } from '@app/shared';
 
 const DEFAULT_STAFF = [
-  { id: '1', name: 'Anil Kumar M', branch: 'KPHB', role: 'Regular Staff', phone: '9030176176', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹22,000' },
-  { id: '2', name: 'Ashwini Begari', branch: 'Chandanagar', role: 'Regular Staff', phone: '9553176176', shift: '10:00 AM - 06:30 PM', hours: '8.5 hrs/day', salary: '₹17,000' },
-  { id: '3', name: 'Vaishnavi Peri', branch: 'Nallagandla', role: 'Regular Staff', phone: '9132176176', shift: '09:30 AM - 07:00 PM', hours: '9.5 hrs/day', salary: '₹17,000' },
-  { id: '4', name: 'Nandini Gottelli', branch: 'Dilshuknagar', role: 'Regular Staff', phone: '9804176176', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', hours: '8 hrs/day', salary: '₹15,000' },
-  { id: '5', name: 'Srikanth', branch: 'KPHB', role: 'Regular Staff', phone: '9030176176', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹18,000' },
-  { id: '6', name: 'Arun Kumar', branch: 'Nallagandla', role: 'Regular Staff', phone: '9132176176', shift: '10:00 AM - 06:00 PM', hours: '8 hrs/day', salary: '₹14,000' },
-  { id: '7', name: 'Aishwarya . M', branch: 'KPHB', role: 'Regular Staff', phone: '7995532759', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
+  { id: '1', name: 'Anil Kumar M', branch: 'KPHB', role: 'Regular Staff', phone: '7338260802', mobile: '7338260802', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹22,000' },
+  { id: '2', name: 'Ashwini Begari', branch: 'Chandanagar', role: 'Regular Staff', phone: '6302121265', mobile: '6302121265', shift: '10:00 AM - 06:30 PM', hours: '8.5 hrs/day', salary: '₹17,000' },
+  { id: '3', name: 'Vaishnavi Peri', branch: 'Nallagandla', role: 'Regular Staff', phone: '9874563210', mobile: '9874563210', shift: '09:30 AM - 07:00 PM', hours: '9.5 hrs/day', salary: '₹17,000' },
+  { id: '4', name: 'Nandini Gottelli', branch: 'Dilshuknagar', role: 'Regular Staff', phone: '9652180003', mobile: '9652180003', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', hours: '8 hrs/day', salary: '₹15,000' },
+  { id: '5', name: 'Srikanth', branch: 'KPHB', role: 'Regular Staff', phone: '8125384387', mobile: '8125384387', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹18,000' },
+  { id: '6', name: 'Arun Kumar', branch: 'Nallagandla', role: 'Regular Staff', phone: '9876543212', mobile: '9876543212', shift: '10:00 AM - 06:00 PM', hours: '8 hrs/day', salary: '₹14,000' },
+  { id: '7', name: 'Aishwarya . M', branch: 'KPHB', role: 'Regular Staff', phone: '7890123456', mobile: '7890123456', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
 ];
 
 const normalizeDate = (d?: string) => {
@@ -1795,7 +1795,7 @@ export const EmployeeAttendanceReportPage: React.FC = () => {
                     </span>
                   </div>
                   <div style={{ fontSize: '11.5px !important', color: '#64748b', marginTop: '2px' }}>
-                    Role: <strong>{selectedStaffObj.role || 'Regular Staff'}</strong> • ID #{selectedStaffObj.id} • Phone: {selectedStaffObj.phone || selectedStaffObj.mobile || '90301 76176'}
+                    Role: <strong>{selectedStaffObj.role || 'Regular Staff'}</strong> • ID #{selectedStaffObj.id} • Phone: {selectedStaffObj.phone || selectedStaffObj.mobile || '-'}
                   </div>
                   <div style={{ fontSize: '11px !important', color: '#0284c7', marginTop: '1px', fontWeight: 600 }}>
                     Shift: {selectedStaffObj.shift || '10:00 AM - 08:30 PM'} {selectedStaffObj.salary ? `• Salary: ${selectedStaffObj.salary}` : ''}

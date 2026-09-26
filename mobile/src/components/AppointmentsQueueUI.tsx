@@ -595,8 +595,8 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
                       patient.status === 'active' && { color: '#0284c7' },
                       patient.status === 'completed' && { color: '#166534' },
                     ]}>
-                      {patient.status === 'active' && '⚡ IN CONSULTATION (View File)'}
-                      {patient.status === 'completed' && 'COMPLETED (View File) ✓'}
+                      {patient.status === 'active' && '⚡ IN CONSULTATION'}
+                      {patient.status === 'completed' && 'COMPLETED ✓'}
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -999,7 +999,7 @@ export const CompleteAppointmentsQueueScreen = () => {
     setLoading(true);
     try {
       const activeDb = getSafeDb();
-      const colRef = query(collection(activeDb, 'allpatients'), limit(300));
+      const colRef = query(collection(activeDb, 'allpatients'), limit(50));
       const unsubscribe = onSnapshot(
         colRef,
         (snapshot) => {

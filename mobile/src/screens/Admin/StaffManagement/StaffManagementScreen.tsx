@@ -32,13 +32,13 @@ export const StaffManagementScreen: React.FC = () => {
 
   // Seed Data for Staff
   const DEFAULT_STAFF = [
-    { id: '1', name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹22,000', phone: '9030176176' },
-    { id: '2', name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', hours: '8.5 hrs/day', salary: '₹17,000', phone: '9553176176' },
-    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', hours: '9.5 hrs/day', salary: '₹17,000', phone: '9132176176' },
-    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', hours: '8 hrs/day', salary: '₹15,000', phone: '9804176176' },
-    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', hours: '10 hrs/day', salary: '₹18,000', phone: '9030176176' },
-    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', hours: '8 hrs/day', salary: '₹14,000', phone: '9132176176' },
-    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹14,000', phone: '7995532759' },
+    { id: '1', name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹22,000', phone: '7338260802', mobile: '7338260802' },
+    { id: '2', name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', hours: '8.5 hrs/day', salary: '₹17,000', phone: '6302121265', mobile: '6302121265' },
+    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', hours: '9.5 hrs/day', salary: '₹17,000', phone: '9874563210', mobile: '9874563210' },
+    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', hours: '8 hrs/day', salary: '₹15,000', phone: '9652180003', mobile: '9652180003' },
+    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', hours: '10 hrs/day', salary: '₹18,000', phone: '8125384387', mobile: '8125384387' },
+    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', hours: '8 hrs/day', salary: '₹14,000', phone: '9876543212', mobile: '9876543212' },
+    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹14,000', phone: '7890123456', mobile: '7890123456' },
   ];
 
   // Seed Data for Doctors

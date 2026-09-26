@@ -27,7 +27,6 @@ const DOSAGE_TIMING_OPTIONS = [
 export interface MedicineItem {
   name: string;
   timing: string;
-  amount: number;
 }
 
 const BRANCH_OPTIONS = [
@@ -36,18 +35,6 @@ const BRANCH_OPTIONS = [
   'Dilshuknagar Branch',
   'Chandanagar Branch',
 ];
-
-const computeSplitLabel = (timing: string, perMedAmount: number): string => {
-  if (!timing || perMedAmount <= 0) return '';
-  const t = timing.toLowerCase().replace(/\s/g, '');
-  let parts = 0;
-  if (t === 'm-a-n' || t === '1-1-1') parts = 3;
-  else if (t === 'm--e' || t === 'm--n' || t === 'm-a-' || t === '-a-n' || t === '1-0-1') parts = 2;
-  else if (t === 'm---' || t === '-a-' || t === '--e' || t === '--n' || t === '1-0-0' || t === '0-0-1' || t === 'sos') parts = 1;
-  if (parts <= 1) return `₹${perMedAmount}`;
-  const perDose = Math.round(perMedAmount / parts);
-  return `₹${perMedAmount} → ₹${perDose} × ${parts}`;
-};
 
 export interface MobileMedicineRequestsScreenProps {
   branchName?: string;
@@ -66,20 +53,19 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   const [patientAge, setPatientAge] = useState('');
   const [gender, setGender] = useState('Mr.');
   const [phone, setPhone] = useState('');
-  const [condition, setCondition] = useState('');
+  const [totalAmount, setTotalAmount] = useState<number>(0);
   const [duration, setDuration] = useState('');
 
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '', amount: 0 }
+    { name: '', timing: '' }
   ]);
-  const [totalAmount, setTotalAmount] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showTimingPicker, setShowTimingPicker] = useState(false);
   const [activeTimingIndex, setActiveTimingIndex] = useState(-1);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
 
   const addMedicine = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '', amount: 0 }]);
+    setMedicines(prev => [...prev, { name: '', timing: '' }]);
   };
 
   const removeMedicine = (index: number) => {
@@ -87,7 +73,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     setMedicines(prev => prev.filter((_, i) => i !== index));
   };
 
-  const updateMedicine = (index: number, field: keyof MedicineItem, value: string | number) => {
+  const updateMedicine = (index: number, field: keyof MedicineItem, value: string) => {
     setMedicines(prev => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [field]: value };
@@ -101,11 +87,10 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     setGender('Mr.');
     setPhone('');
     setSelectedBranch(initialBranch);
-    setCondition('');
+    setTotalAmount(0);
     setDuration('');
 
-    setMedicines([{ name: '', timing: '', amount: 0 }]);
-    setTotalAmount(0);
+    setMedicines([{ name: '', timing: '' }]);
   };
 
   // --- PDF HTML Generator matching Official Clinic Letterhead ---
@@ -137,7 +122,6 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     const title = resolveTitle(gender);
     const pronoun = resolvePronoun(gender);
     const patNameUpper = (patientName || 'PATIENT').toUpperCase();
-    const conditionUpper = (condition || 'GENERAL HEALTH CONSULTATION').toUpperCase();
     const durationClean = (duration || '').replace(/months?/gi, '').trim();
     const formattedDate = new Date().toLocaleDateString('en-GB');
     const displayBranch = (selectedBranch || initialBranch).toUpperCase();
@@ -145,17 +129,13 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     const validMedicines = medicines.filter(m => m.name && m.name.trim().length > 0);
     const displayMedicines = validMedicines.length > 0 ? validMedicines : medicines;
 
-    const rowsHtml = displayMedicines.map((m, idx) => {
-      const splitLabel = computeSplitLabel(m.timing, m.amount || 0);
-      return `
+    const rowsHtml = displayMedicines.map((m, idx) => `
       <tr>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
-        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; width: 42%; font-size: 13.5px;">${m.name || '-'}</td>
-        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 30%;">${m.timing || '-'}</td>
-        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #0284c7; font-weight: 600; width: 20%;">${splitLabel || (m.amount > 0 ? '₹' + m.amount : '-')}</td>
+        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; width: 52%; font-size: 13.5px;">${m.name || '-'}</td>
+        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%; font-size: 13px;">${m.timing || '-'}</td>
       </tr>
-    `;
-    }).join('');
+    `).join('');
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -374,7 +354,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </div>
 
           <div class="cert-para">
-            THIS IS TO CERTIFY THAT <strong>${title} ${patNameUpper}</strong>${patientAge ? ` AGED ABOUT <strong>${patientAge} YEARS</strong>,` : ''} HAS BEEN UNDER OUR TREATMENT AT SPIRITUAL HOMEOPATHY FOR THE MANAGEMENT OF <strong>${conditionUpper}</strong>.
+            THIS IS TO CERTIFY THAT <strong>${title} ${patNameUpper}</strong>${patientAge ? ` AGED ABOUT <strong>${patientAge} YEARS</strong>,` : ''} HAS BEEN UNDER OUR TREATMENT AT SPIRITUAL HOMEOPATHY.
           </div>
 
           <div class="cert-para">
@@ -387,9 +367,8 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
             <thead>
               <tr>
                 <th style="width: 8%; text-align: center;">#</th>
-                <th style="width: 42%;">Remedy / Medicine Name</th>
-                <th style="width: 30%;">Dosage & Timing</th>
-                <th style="width: 20%;">Amount / Split</th>
+                <th style="width: 52%;">Remedy / Medicine Name</th>
+                <th style="width: 40%;">Dosage & Timing</th>
               </tr>
             </thead>
             <tbody>
@@ -558,18 +537,19 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </View>
         </View>
 
-        {/* Condition & Duration */}
+        {/* Total Amount & Duration */}
         <View style={styles.twoColRow}>
-          <View style={[styles.inputGroup, { flex: 1.6, marginRight: 8 }]}>
-            <Text style={styles.inputLabel}>Condition / Diagnosis</Text>
+          <View style={[styles.inputGroup, { flex: 1.4, marginRight: 8 }]}>
+            <Text style={styles.inputLabel}>Total Amount (₹)</Text>
             <View style={styles.inputWrapper}>
-              <Feather name="activity" size={16} color="#94a3b8" style={styles.inputIcon} />
+              <Text style={{ fontSize: 15, fontWeight: '700', color: '#16a34a', marginLeft: 12, marginRight: 4 }}>₹</Text>
               <TextInput
-                style={styles.textInput}
-                placeholder="e.g. Asthma & Allergy"
+                style={[styles.textInput, { paddingLeft: 0 }]}
+                placeholder="Total Amount"
                 placeholderTextColor="#94a3b8"
-                value={condition}
-                onChangeText={setCondition}
+                value={totalAmount === 0 ? '' : String(totalAmount)}
+                onChangeText={(t) => setTotalAmount(t === '' ? 0 : Number(t.replace(/\D/g, '')) || 0)}
+                keyboardType="numeric"
               />
             </View>
           </View>
@@ -611,40 +591,6 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </TouchableOpacity>
         </View>
 
-        {/* Total Amount & Per-Medicine Split */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0', borderRadius: 10, padding: 12, marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
-          <Text style={{ fontSize: 12.5, fontWeight: '800', color: '#166534' }}>Total Amount</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderWidth: 1.5, borderColor: '#16a34a', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5, width: 110 }}>
-            <Text style={{ fontSize: 14, fontWeight: '700', color: '#16a34a', marginRight: 3 }}>₹</Text>
-            <TextInput
-              style={{ flex: 1, fontSize: 14, fontWeight: '800', color: '#0f172a', textAlign: 'right', padding: 0 }}
-              placeholder="0"
-              placeholderTextColor="#94a3b8"
-              value={totalAmount === 0 ? '' : String(totalAmount)}
-              onChangeText={(text) => {
-                const newTotal = text === '' ? 0 : Number(text) || 0;
-                setTotalAmount(newTotal);
-                const filled = medicines.filter(x => x.name.trim());
-                if (filled.length > 0 && newTotal > 0) {
-                  const perMed = Math.round(newTotal / filled.length);
-                  setMedicines(prev => prev.map(m => m.name.trim() ? { ...m, amount: perMed } : m));
-                }
-              }}
-              keyboardType="numeric"
-            />
-          </View>
-          {totalAmount > 0 && (() => {
-            const usedAmt = medicines.reduce((s, m) => s + (m.amount || 0), 0);
-            const remaining = totalAmount - usedAmt;
-            return (
-              <Text style={{ fontSize: 10.5, fontWeight: '700', color: remaining === 0 ? '#16a34a' : remaining > 0 ? '#d97706' : '#ef4444', flex: 1 }}>
-                Allocated: ₹{usedAmt} / ₹{totalAmount}
-                {remaining > 0 ? ` (₹${remaining} remaining)` : remaining < 0 ? ` (₹${Math.abs(remaining)} over)` : ' ✔'}
-              </Text>
-            );
-          })()}
-        </View>
-
         {medicines.map((m, idx) => (
           <View key={idx} style={styles.remedyBox}>
             <View style={styles.remedyTopRow}>
@@ -675,40 +621,18 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
               />
             </View>
 
-            <View style={styles.twoColRow}>
-              <View style={[styles.inputGroup, { flex: 1.3, marginRight: 8 }]}>
-                <Text style={styles.subInputLabel}>Dosage & Timing</Text>
-                <TouchableOpacity
-                  style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 9 }]}
-                  onPress={() => { setActiveTimingIndex(idx); setShowTimingPicker(true); }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={{ fontSize: 12.5, color: m.timing ? '#0f172a' : '#94a3b8' }}>
-                    {m.timing || 'Select Pill Timing'}
-                  </Text>
-                  <Feather name="chevron-down" size={14} color="#94a3b8" />
-                </TouchableOpacity>
-              </View>
-
-              <View style={[styles.inputGroup, { flex: 0.9 }]}>
-                <Text style={styles.subInputLabel}>Amount (₹)</Text>
-                <View style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center' }]}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#258ec8', marginRight: 3 }}>₹</Text>
-                  <TextInput
-                    style={{ flex: 1, fontSize: 12.5, color: '#0f172a', fontWeight: '700', textAlign: 'right', padding: 0 }}
-                    placeholder="0"
-                    placeholderTextColor="#94a3b8"
-                    value={m.amount === 0 ? '' : String(m.amount)}
-                    onChangeText={(text) => updateMedicine(idx, 'amount', text === '' ? 0 : Number(text) || 0)}
-                    keyboardType="numeric"
-                  />
-                </View>
-                {m.timing && m.amount > 0 && (
-                  <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#16a34a', marginTop: 3 }}>
-                    {computeSplitLabel(m.timing, m.amount)}
-                  </Text>
-                )}
-              </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.subInputLabel}>Dosage & Timing</Text>
+              <TouchableOpacity
+                style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 }]}
+                onPress={() => { setActiveTimingIndex(idx); setShowTimingPicker(true); }}
+                activeOpacity={0.7}
+              >
+                <Text style={{ fontSize: 13, color: m.timing ? '#0f172a' : '#94a3b8' }}>
+                  {m.timing || 'Select Pill Timing'}
+                </Text>
+                <Feather name="chevron-down" size={14} color="#94a3b8" />
+              </TouchableOpacity>
             </View>
           </View>
         ))}

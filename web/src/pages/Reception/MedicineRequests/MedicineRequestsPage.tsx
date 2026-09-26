@@ -25,7 +25,6 @@ const DOSAGE_TIMING_OPTIONS = [
 export interface MedicineItem {
   name: string;
   timing: string;
-  amount: number;
 }
 
 const BRANCH_OPTIONS = [
@@ -35,18 +34,6 @@ const BRANCH_OPTIONS = [
   'Chandanagar Branch',
 ];
 
-const computeSplitLabel = (timing: string, perMedAmount: number): string => {
-  if (!timing || perMedAmount <= 0) return '';
-  const t = timing.toLowerCase().replace(/\s/g, '');
-  let parts = 0;
-  if (t === 'm-a-n' || t === '1-1-1') parts = 3;
-  else if (t === 'm--e' || t === 'm--n' || t === 'm-a-' || t === '-a-n' || t === '1-0-1') parts = 2;
-  else if (t === 'm---' || t === '-a-' || t === '--e' || t === '--n' || t === '1-0-0' || t === '0-0-1' || t === 'sos') parts = 1;
-  if (parts <= 1) return `₹${perMedAmount}`;
-  const perDose = Math.round(perMedAmount / parts);
-  return `₹${perMedAmount} → ₹${perDose} × ${parts}`;
-};
-
 export interface MedicineRequest {
   id?: string;
   patientName: string;
@@ -54,9 +41,9 @@ export interface MedicineRequest {
   age: string;
   gender: string;
   branchName: string;
-  condition: string;
-  duration?: string;
+  condition?: string;
   totalAmount?: number;
+  duration?: string;
   medicines: MedicineItem[];
   deliveryAddress?: string;
   status?: 'pending' | 'completed' | 'dispatched';
@@ -74,18 +61,17 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('Mr.');
   const [branch, setBranch] = useState(currentBranch);
-  const [condition, setCondition] = useState('');
+  const [totalAmount, setTotalAmount] = useState<number>(0);
   const [duration, setDuration] = useState('');
 
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '', amount: 0 }
+    { name: '', timing: '' }
   ]);
-  const [totalAmount, setTotalAmount] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const handleAddMedicineRow = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '', amount: 0 }]);
+    setMedicines(prev => [...prev, { name: '', timing: '' }]);
   };
 
   const handleRemoveMedicineRow = (idx: number) => {
@@ -93,7 +79,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setMedicines(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleUpdateMedicineRow = (idx: number, field: keyof MedicineItem, val: string | number) => {
+  const handleUpdateMedicineRow = (idx: number, field: keyof MedicineItem, val: string) => {
     setMedicines(prev => {
       const updated = [...prev];
       updated[idx] = { ...updated[idx], [field]: val };
@@ -107,10 +93,9 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setAge('');
     setGender('Mr.');
     setBranch(currentBranch);
-    setCondition('');
-    setDuration('');
-    setMedicines([{ name: '', timing: '', amount: 0 }]);
     setTotalAmount(0);
+    setDuration('');
+    setMedicines([{ name: '', timing: '' }]);
     setSaveSuccess(false);
   };
 
@@ -155,17 +140,13 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
       : [];
     const displayMedicines = validMedicines.length > 0 ? validMedicines : (req.medicines || []);
 
-    const rowsHtml = displayMedicines.map((m, idx) => {
-      const splitLabel = computeSplitLabel(m.timing, m.amount || 0);
-      return `
+    const rowsHtml = displayMedicines.map((m, idx) => `
       <tr>
         <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; font-size: 13.5px;">${m.name || '-'}</td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #475569;">${m.timing || '-'}</td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #0284c7; font-weight: 600;">${splitLabel || (m.amount > 0 ? '₹' + m.amount : '-')}</td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; font-size: 13.5px; width: 52%;">${m.name || '-'}</td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%; font-size: 13px;">${m.timing || '-'}</td>
       </tr>
-    `;
-    }).join('');
+    `).join('');
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -397,7 +378,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
           </div>
 
           <div class="cert-para">
-            THIS IS TO CERTIFY THAT <strong>${title} ${patUpper}</strong>${ageVal ? ` AGED ABOUT <strong>${ageVal} YEARS</strong>,` : ''} HAS BEEN UNDER OUR TREATMENT AT SPIRITUAL HOMEOPATHY FOR THE MANAGEMENT OF <strong>${conditionVal}</strong>.
+            THIS IS TO CERTIFY THAT <strong>${title} ${patUpper}</strong>${ageVal ? ` AGED ABOUT <strong>${ageVal} YEARS</strong>,` : ''} HAS BEEN UNDER OUR TREATMENT AT SPIRITUAL HOMEOPATHY.
           </div>
 
           <div class="cert-para">
@@ -410,9 +391,8 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             <thead>
               <tr>
                 <th style="width: 8%; text-align: center;">#</th>
-                <th style="width: 42%;">Remedy / Medicine Name</th>
-                <th style="width: 30%;">Dosage & Timing</th>
-                <th style="width: 20%;">Amount / Split</th>
+                <th style="width: 52%;">Remedy / Medicine Name</th>
+                <th style="width: 40%;">Dosage & Timing</th>
               </tr>
             </thead>
             <tbody>
@@ -482,12 +462,11 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
       age: age.trim(),
       gender: gender,
       branchName: (branch || currentBranch).trim(),
-      condition: condition.trim() || 'General Consultation Follow-up',
+      totalAmount: totalAmount,
       duration: cleanDuration,
       status: 'pending',
 
       requestedAt: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
-      totalAmount: totalAmount,
       medicines: medicines.filter(m => m.name.trim().length > 0)
     };
   };
@@ -673,7 +652,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.4fr 110px', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 110px', gap: '12px', marginBottom: '14px' }}>
             <div>
               <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Branch Name</label>
               <select
@@ -688,14 +667,18 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             </div>
 
             <div>
-              <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Condition / Diagnosis / Subject</label>
-              <input
-                type="text"
-                placeholder="e.g. Chronic Allergy & Asthma"
-                value={condition}
-                onChange={(e) => setCondition(e.target.value)}
-                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
-              />
+              <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Total Amount (₹)</label>
+              <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '0 10px' }}>
+                <span style={{ fontSize: '14px', fontWeight: 700, color: '#16a34a', marginRight: '4px' }}>₹</span>
+                <input
+                  type="number"
+                  placeholder="Total Amount"
+                  value={totalAmount === 0 ? '' : totalAmount}
+                  onChange={(e) => setTotalAmount(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  style={{ width: '100%', padding: '9px 0', border: 'none', outline: 'none', fontSize: '13px', fontWeight: 700, color: '#0f172a' }}
+                />
+              </div>
             </div>
 
             <div>
@@ -739,44 +722,6 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             </button>
           </div>
 
-          {/* Total Amount & Per-Medicine Split */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '14px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '12px 16px', flexWrap: 'wrap' }}>
-            <div style={{ fontSize: '13px', fontWeight: 800, color: '#166534' }}>Total Medicine Amount</div>
-            <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#ffffff', border: '1.5px solid #16a34a', borderRadius: '8px', padding: '6px 10px', width: '120px' }}>
-              <span style={{ fontSize: '14px', fontWeight: 700, color: '#16a34a', marginRight: '3px' }}>₹</span>
-              <input
-                type="number"
-                placeholder="0"
-                value={totalAmount === 0 ? '' : totalAmount}
-                onChange={(e) => {
-                  const newTotal = e.target.value === '' ? 0 : Number(e.target.value) || 0;
-                  setTotalAmount(newTotal);
-                  // Auto-distribute equally across filled medicines
-                  const filled = medicines.filter(x => x.name.trim());
-                  if (filled.length > 0 && newTotal > 0) {
-                    const perMed = Math.round(newTotal / filled.length);
-                    setMedicines(prev => prev.map(m => m.name.trim() ? { ...m, amount: perMed } : m));
-                  }
-                }}
-                onWheel={(e) => e.currentTarget.blur()}
-                style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 800, color: '#0f172a' }}
-              />
-            </div>
-            {(() => {
-              const usedAmt = medicines.reduce((s, m) => s + (m.amount || 0), 0);
-              const remaining = totalAmount - usedAmt;
-              if (totalAmount <= 0) return null;
-              return (
-                <span style={{ fontSize: '12px', fontWeight: 700, color: remaining === 0 ? '#16a34a' : remaining > 0 ? '#d97706' : '#ef4444' }}>
-                  Allocated: ₹{usedAmt} / ₹{totalAmount}
-                  {remaining > 0 && ` (₹${remaining} remaining)`}
-                  {remaining < 0 && ` (₹${Math.abs(remaining)} over)`}
-                  {remaining === 0 && ' ✔'}
-                </span>
-              );
-            })()}
-          </div>
-
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {medicines.map((m, idx) => (
               <div key={idx} style={{ display: 'flex', gap: '10px', alignItems: 'center', background: '#f8fafc', padding: '10px 14px', borderRadius: '10px', border: '1px solid #f1f5f9' }}>
@@ -788,33 +733,17 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                   placeholder="Remedy / Medicine Name (e.g. Arnica 200C)"
                   value={m.name}
                   onChange={(e) => handleUpdateMedicineRow(idx, 'name', e.target.value)}
-                  style={{ flex: 1.5, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
+                  style={{ flex: 2, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
                 />
                 <select
                   value={m.timing}
                   onChange={(e) => handleUpdateMedicineRow(idx, 'timing', e.target.value)}
-                  style={{ flex: 1.2, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none', cursor: 'pointer' }}
+                  style={{ flex: 1.5, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none', cursor: 'pointer' }}
                 >
                   {DOSAGE_TIMING_OPTIONS.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
-                <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 8px', width: '100px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
-                  <input
-                    type="number"
-                    placeholder="0"
-                    value={m.amount === 0 ? '' : m.amount}
-                    onChange={(e) => handleUpdateMedicineRow(idx, 'amount', e.target.value === '' ? 0 : Number(e.target.value) || 0)}
-                    onWheel={(e) => e.currentTarget.blur()}
-                    style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '13px', fontWeight: 700, color: '#0f172a' }}
-                  />
-                </div>
-                {m.timing && m.amount > 0 && (
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#16a34a', whiteSpace: 'nowrap', minWidth: '90px' }}>
-                    {computeSplitLabel(m.timing, m.amount)}
-                  </span>
-                )}
                 {medicines.length > 1 && (
                   <button
                     type="button"

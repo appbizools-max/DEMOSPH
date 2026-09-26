@@ -545,13 +545,24 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
   };
 
   // Tab 1: Clinical Form State
-  const [diagnosisNotes, setDiagnosisNotes] = useState('');
+  const [diagnosisNotes, setDiagnosisNotes] = useState(() => {
+    return patient?.diagnosisNotes || patient?.chiefComplaint || patient?.subject || patient?.complaint || '';
+  });
   const [drawPrescription, setDrawPrescription] = useState<'on' | 'off'>('off');
   const [followUpInterval, setFollowUpInterval] = useState('No Follow-up');
   const [preferredFollowUpDate, setPreferredFollowUpDate] = useState(() => {
     const raw = patient?.preferredFollowUpDate || patient?.followUpDate || '';
     return formatDDMMYYYY(raw);
   });
+
+  useEffect(() => {
+    if (patient) {
+      const initialNotes = patient.diagnosisNotes || patient.chiefComplaint || patient.subject || patient.complaint || '';
+      if (initialNotes && !diagnosisNotes) {
+        setDiagnosisNotes(initialNotes);
+      }
+    }
+  }, [patient]);
   const [followUpCalendarOpen, setFollowUpCalendarOpen] = useState(false);
   const [followUpCalMonth, setFollowUpCalMonth] = useState<number>(() => {
     const raw = patient?.preferredFollowUpDate || patient?.followUpDate;
@@ -1430,6 +1441,43 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
     add(patient?.fileUrl);
     return Array.from(new Set(list.filter(Boolean)));
   });
+
+  useEffect(() => {
+    if (!patient) return;
+    const list: string[] = [];
+    const add = (v: any) => {
+      if (!v) return;
+      if (Array.isArray(v)) {
+        v.forEach(x => {
+          if (typeof x === 'string' && x.trim()) list.push(x.trim());
+          else if (x && typeof x === 'object') {
+            const u = x.url || x.imageUrl || x.prescriptionUrl || x.fileUrl || x.uri;
+            if (u && typeof u === 'string') list.push(u.trim());
+          }
+        });
+      } else if (typeof v === 'string' && v.trim()) {
+        list.push(v.trim());
+      } else if (v && typeof v === 'object') {
+        const u = v.url || v.imageUrl || v.prescriptionUrl || v.fileUrl || v.uri;
+        if (u && typeof u === 'string') list.push(u.trim());
+      }
+    };
+    add(patient.uploadedPrescriptions);
+    add(patient.prescriptionUrls);
+    add(patient.prescriptionUrl);
+    add(patient.prescriptionImage);
+    add(patient.prescriptionImages);
+    add(patient.canvasPrescriptionUrl);
+    add(patient.canvasUrl);
+    add(patient.imageUrl);
+    add(patient.fileUrl);
+    add(patient.reports);
+    add(patient.images);
+    if (list.length > 0) {
+      setUploadedImages(prev => Array.from(new Set([...prev, ...list])));
+    }
+  }, [patient]);
+
   const [selectedPreviewImage, setSelectedPreviewImage] = useState<string | null>(null);
   const [showAddImageModal, setShowAddImageModal] = useState(false);
   const [customImageUrlInput, setCustomImageUrlInput] = useState('');

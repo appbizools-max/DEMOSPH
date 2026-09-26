@@ -24,7 +24,12 @@ import {
   Layers,
   Send,
   Sparkles,
-  Info
+  Info,
+  Building2,
+  Scale,
+  Plane,
+  Check,
+  XCircle
 } from 'lucide-react';
 import {
   getShiprocketConfig,
@@ -36,8 +41,14 @@ import {
   trackByAwb,
   generateShippingLabel,
   requestCourierPickup,
+  generateManifest,
+  printManifest,
+  getWeightDiscrepancies,
+  cancelShiprocketOrder,
   getClinicShipmentRecords,
   saveClinicShipmentRecord,
+  addShiprocketPickupLocation,
+  calculateShiprocketWeight,
   ShiprocketConfig,
   CourierServiceabilityItem,
   TrackingResult,
@@ -49,8 +60,7 @@ const SHIPROCKET_PORTAL_URL = 'https://app.shiprocket.in';
 
 export const ShiprocketPage: React.FC = () => {
   // Navigation Tabs
-  const [activeTab, setActiveTab] = useState<'shipments' | 'create' | 'track' | 'rates' | 'settings' | 'portal'>('shipments');
-
+  const [activeTab, setActiveTab] = useState<'shipments' | 'create' | 'track' | 'rates' | 'discrepancy' | 'settings' | 'portal'>('shipments');
   // Config State
   const [config, setConfig] = useState<ShiprocketConfig>({
     email: '',
@@ -67,13 +77,12 @@ export const ShiprocketPage: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [configMessage, setConfigMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Shipments List
   const [shipments, setShipments] = useState<ClinicShipmentRecord[]>([]);
   const [isShipmentsLoading, setIsShipmentsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
 
-  // Create Order Form State
+  // Create Order Form State with Full Pickup Location Fields
   const [orderForm, setOrderForm] = useState<{
     orderId: string;
     patientName: string;
@@ -83,8 +92,15 @@ export const ShiprocketPage: React.FC = () => {
     city: string;
     state: string;
     pincode: string;
-    branchName: string;
     pickupLocation: string;
+    pickupContactName: string;
+    pickupPhone: string;
+    pickupEmail: string;
+    pickupAddress: string;
+    pickupAddress2: string;
+    pickupCity: string;
+    pickupState: string;
+    pickupPincode: string;
     itemName: string;
     itemUnits: number;
     sellingPrice: number;
@@ -94,30 +110,95 @@ export const ShiprocketPage: React.FC = () => {
     breadth: number;
     height: number;
     comments: string;
+    selectedCourierId?: number | null;
+    selectedCourierName?: string;
+    selectedCourierRate?: number | null;
+    selectedCourierMode?: string;
+    selectedCourierEtd?: string;
   }>({
     orderId: `SPH-${Math.floor(100000 + Math.random() * 900000)}`,
     patientName: '',
     phone: '',
-    email: 'sphclinics@gmail.com',
+    email: '',
     address: '',
     city: '',
-    state: 'Telangana',
+    state: '',
     pincode: '',
-    branchName: 'Dilsukhnagar Main',
-    pickupLocation: 'Primary',
-    itemName: 'Homeopathic Medicine Package',
+    pickupLocation: '',
+    pickupContactName: '',
+    pickupPhone: '',
+    pickupEmail: '',
+    pickupAddress: '',
+    pickupAddress2: '',
+    pickupCity: '',
+    pickupState: '',
+    pickupPincode: '',
+    itemName: '',
     itemUnits: 1,
-    sellingPrice: 450,
+    sellingPrice: '' as any,
     paymentMethod: 'Prepaid',
     weight: 0.5,
     length: 10,
     breadth: 10,
     height: 10,
-    comments: 'Clinic Prescription Medicine - Handle with Care'
+    comments: '',
+    selectedCourierId: null as number | null,
+    selectedCourierName: '',
+    selectedCourierRate: null as number | null,
+    selectedCourierMode: '',
+    selectedCourierEtd: ''
   });
+
+  const [formCouriers, setFormCouriers] = useState<CourierServiceabilityItem[]>([]);
+  const [isFormCouriersLoading, setIsFormCouriersLoading] = useState(false);
+  const [formCouriersError, setFormCouriersError] = useState<string | null>(null);
 
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [orderResult, setOrderResult] = useState<{ success: boolean; message: string; details?: any } | null>(null);
+
+  const [isRegisteringPickup, setIsRegisteringPickup] = useState(false);
+  const [pickupRegisterMsg, setPickupRegisterMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleRegisterPickupWithShiprocket = async () => {
+    if (!orderForm.pickupLocation.trim()) {
+      alert('Please enter a Pickup Location Name / Code.');
+      return;
+    }
+    if (!orderForm.pickupAddress.trim()) {
+      alert('Please enter a Pickup Street Address.');
+      return;
+    }
+    if (!orderForm.pickupPincode.trim() || orderForm.pickupPincode.trim().length !== 6) {
+      alert('Please enter a valid 6-digit Pickup Pincode.');
+      return;
+    }
+
+    setIsRegisteringPickup(true);
+    setPickupRegisterMsg(null);
+    try {
+      const res = await addShiprocketPickupLocation({
+        pickup_location: orderForm.pickupLocation,
+        name: orderForm.pickupContactName || 'Clinic Reception',
+        email: orderForm.pickupEmail || 'sphclinics@gmail.com',
+        phone: orderForm.pickupPhone || '8125384387',
+        address: orderForm.pickupAddress,
+        address_2: orderForm.pickupAddress2,
+        city: orderForm.pickupCity || 'Hyderabad',
+        state: orderForm.pickupState || 'Telangana',
+        country: 'India',
+        pin_code: orderForm.pickupPincode
+      });
+      if (res.success) {
+        setPickupRegisterMsg({ type: 'success', text: res.message || 'Pickup location registered with Shiprocket successfully!' });
+      } else {
+        setPickupRegisterMsg({ type: 'error', text: res.message || 'Failed to register pickup location in Shiprocket' });
+      }
+    } catch (e: any) {
+      setPickupRegisterMsg({ type: 'error', text: e.message || 'Error communicating with Shiprocket' });
+    } finally {
+      setIsRegisteringPickup(false);
+    }
+  };
 
   // Tracking State
   const [trackInput, setTrackInput] = useState('');
@@ -129,6 +210,9 @@ export const ShiprocketPage: React.FC = () => {
   const [pickupPincode, setPickupPincode] = useState('500081');
   const [deliveryPincode, setDeliveryPincode] = useState('');
   const [rateWeight, setRateWeight] = useState(0.5);
+  const [rateLength, setRateLength] = useState(10);
+  const [rateBreadth, setRateBreadth] = useState(10);
+  const [rateHeight, setRateHeight] = useState(10);
   const [rateCod, setRateCod] = useState(false);
   const [rateResults, setRateResults] = useState<CourierServiceabilityItem[]>([]);
   const [isRateLoading, setIsRateLoading] = useState(false);
@@ -151,9 +235,7 @@ export const ShiprocketPage: React.FC = () => {
     try {
       const cfg = await getShiprocketConfig();
       setConfig(cfg);
-      if (cfg.pickupLocation) {
-        setOrderForm(prev => ({ ...prev, pickupLocation: cfg.pickupLocation || 'Primary' }));
-      }
+
     } catch (e) {
       console.warn('Config load error', e);
     } finally {
@@ -197,12 +279,15 @@ export const ShiprocketPage: React.FC = () => {
     }
   };
 
-  // Handle Manual Config Save
+  // Handle Warehouse Defaults Save
   const handleSaveConfig = async () => {
     try {
-      const saved = await saveShiprocketConfig(config);
+      const saved = await saveShiprocketConfig({
+        pickupLocation: config.pickupLocation || 'Primary',
+        defaultWeight: config.defaultWeight || 0.5
+      });
       setConfig(saved);
-      setConfigMessage({ type: 'success', text: 'Shiprocket configuration saved successfully!' });
+      setConfigMessage({ type: 'success', text: 'Warehouse & parcel defaults saved successfully!' });
       setTimeout(() => setConfigMessage(null), 4000);
     } catch (e: any) {
       setConfigMessage({ type: 'error', text: e.message || 'Failed to save configuration' });
@@ -233,16 +318,24 @@ export const ShiprocketPage: React.FC = () => {
     setIsSubmittingOrder(true);
     setOrderResult(null);
 
+    // Calculate official Shiprocket Chargeable Weight: Max(Dead Weight, (L*B*H)/5000)
+    const weightCalc = calculateShiprocketWeight(
+      orderForm.weight,
+      orderForm.length,
+      orderForm.breadth,
+      orderForm.height
+    );
+
     const payload: CreateShipmentPayload = {
       order_id: orderForm.orderId,
       pickup_location: orderForm.pickupLocation || config.pickupLocation || 'Primary',
       billing_customer_name: orderForm.patientName,
       billing_address: orderForm.address,
-      billing_city: orderForm.city || 'City',
+      billing_city: orderForm.city || 'Hyderabad',
       billing_pincode: orderForm.pincode,
       billing_state: orderForm.state || 'Telangana',
       billing_country: 'India',
-      billing_email: orderForm.email,
+      billing_email: orderForm.email || 'sphclinics@gmail.com',
       billing_phone: orderForm.phone,
       shipping_is_billing: true,
       order_items: [
@@ -258,9 +351,11 @@ export const ShiprocketPage: React.FC = () => {
       length: Number(orderForm.length) || 10,
       breadth: Number(orderForm.breadth) || 10,
       height: Number(orderForm.height) || 10,
-      weight: Number(orderForm.weight) || 0.5,
-      branch_name: orderForm.branchName,
-      comment: orderForm.comments
+      weight: weightCalc.chargeableWeight,
+      branch_name: orderForm.pickupLocation || 'Primary',
+      comment: orderForm.comments || 'Spiritual Homeopathy Medicine Dispatch',
+      courier_company_id: orderForm.selectedCourierId || undefined,
+      courier_name: orderForm.selectedCourierName || undefined
     };
 
     try {
@@ -275,16 +370,23 @@ export const ShiprocketPage: React.FC = () => {
         // Refresh list
         loadShipments();
 
-        // Reset Order ID for next parcel
+        // Reset Order ID & fields for next parcel
         setOrderForm(prev => ({
           ...prev,
           orderId: `SPH-${Math.floor(100000 + Math.random() * 900000)}`,
           patientName: '',
           phone: '',
+          email: '',
           address: '',
           city: '',
-          pincode: ''
+          pincode: '',
+          selectedCourierId: null,
+          selectedCourierName: '',
+          selectedCourierRate: null,
+          selectedCourierMode: '',
+          selectedCourierEtd: ''
         }));
+        setFormCouriers([]);
       } else {
         setOrderResult({
           success: false,
@@ -299,6 +401,70 @@ export const ShiprocketPage: React.FC = () => {
       });
     } finally {
       setIsSubmittingOrder(false);
+    }
+  };
+
+  // Fetch available Shiprocket courier methods directly for the active dispatch form
+  const handleFetchOrderCouriers = async () => {
+    const pickupPin = (orderForm.pickupPincode || '500072').trim();
+    const deliveryPin = (orderForm.pincode || '').trim();
+    if (!deliveryPin || deliveryPin.length !== 6) {
+      setFormCouriersError('Please enter a valid 6-digit Patient Delivery Pincode in Section 2.');
+      return;
+    }
+    if (!pickupPin || pickupPin.length !== 6) {
+      setFormCouriersError('Please enter a valid 6-digit Pickup Pincode in Section 1.');
+      return;
+    }
+
+    const weightInfo = calculateShiprocketWeight(
+      orderForm.weight,
+      orderForm.length,
+      orderForm.breadth,
+      orderForm.height
+    );
+
+    setIsFormCouriersLoading(true);
+    setFormCouriersError(null);
+    setFormCouriers([]);
+
+    try {
+      const res = await checkCourierServiceability(
+        pickupPin,
+        deliveryPin,
+        weightInfo.chargeableWeight,
+        orderForm.paymentMethod === 'COD',
+        {
+          length: Number(orderForm.length) || 10,
+          breadth: Number(orderForm.breadth) || 10,
+          height: Number(orderForm.height) || 10,
+          declaredValue: Number(orderForm.sellingPrice) || 0
+        }
+      );
+
+      if (res.success && res.couriers.length > 0) {
+        setFormCouriers(res.couriers);
+        // Default to lowest rate courier if not already picked
+        if (!orderForm.selectedCourierId) {
+          const cheapest = [...res.couriers].sort((a, b) => a.rate - b.rate)[0];
+          if (cheapest) {
+            setOrderForm(prev => ({
+              ...prev,
+              selectedCourierId: cheapest.courier_company_id,
+              selectedCourierName: cheapest.courier_name,
+              selectedCourierRate: cheapest.rate,
+              selectedCourierMode: cheapest.mode || 'Surface',
+              selectedCourierEtd: cheapest.etd
+            }));
+          }
+        }
+      } else {
+        setFormCouriersError(res.message || 'No serviceable Shiprocket couriers found for this route.');
+      }
+    } catch (err: any) {
+      setFormCouriersError(err.message || 'Error checking Shiprocket courier serviceability');
+    } finally {
+      setIsFormCouriersLoading(false);
     }
   };
 
@@ -331,17 +497,33 @@ export const ShiprocketPage: React.FC = () => {
   // Handle Rate Calculation
   const handleCheckRates = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!pickupPincode.trim() || pickupPincode.trim().length !== 6) {
+      setRateError('Please enter a valid 6-digit pickup pincode.');
+      return;
+    }
     if (!deliveryPincode.trim() || deliveryPincode.trim().length !== 6) {
       setRateError('Please enter a valid 6-digit delivery pincode.');
       return;
     }
+
+    const weightCalc = calculateShiprocketWeight(rateWeight, rateLength, rateBreadth, rateHeight);
 
     setIsRateLoading(true);
     setRateError(null);
     setRateResults([]);
 
     try {
-      const res = await checkCourierServiceability(pickupPincode, deliveryPincode, rateWeight, rateCod);
+      const res = await checkCourierServiceability(
+        pickupPincode,
+        deliveryPincode,
+        weightCalc.chargeableWeight,
+        rateCod,
+        {
+          length: Number(rateLength) || 10,
+          breadth: Number(rateBreadth) || 10,
+          height: Number(rateHeight) || 10
+        }
+      );
       if (res.success && res.couriers.length > 0) {
         setRateResults(res.couriers);
       } else {
@@ -395,6 +577,75 @@ export const ShiprocketPage: React.FC = () => {
       alert('Pickup request error: ' + e.message);
     } finally {
       setActionNotice(null);
+    }
+  };
+
+  // Quick Action: Generate Manifest
+  const handleGenerateManifest = async (shipment: ClinicShipmentRecord) => {
+    if (!shipment.shipment_id) {
+      alert('Shipment ID is missing for this record. Manifest cannot be generated.');
+      return;
+    }
+    setActionNotice(`Generating shipping manifest for Order ${shipment.order_id}...`);
+    try {
+      const res = await generateManifest([shipment.shipment_id]);
+      if (res.success && res.manifestUrl) {
+        window.open(res.manifestUrl, '_blank');
+        setActionNotice(`Manifest PDF opened in a new tab.`);
+      } else {
+        alert(res.message || 'Manifest generation failed. AWB must be assigned and pickup requested first.');
+      }
+    } catch (e: any) {
+      alert('Manifest generation error: ' + e.message);
+    } finally {
+      setTimeout(() => setActionNotice(null), 4000);
+    }
+  };
+
+  // Quick Action: Cancel Order in Shiprocket
+  const handleCancelOrder = async (shipment: ClinicShipmentRecord) => {
+    const idToCancel = shipment.shipment_id || shipment.order_id;
+    if (!idToCancel) return;
+    if (!window.confirm(`Are you sure you want to cancel Order ${shipment.order_id} in Shiprocket?`)) {
+      return;
+    }
+    setActionNotice(`Cancelling Order ${shipment.order_id} in Shiprocket...`);
+    try {
+      const res = await cancelShiprocketOrder([idToCancel]);
+      if (res.success) {
+        alert(res.message || 'Order successfully cancelled in Shiprocket!');
+        loadShipments();
+      } else {
+        alert(res.message || 'Could not cancel order in Shiprocket.');
+      }
+    } catch (e: any) {
+      alert('Order cancellation error: ' + e.message);
+    } finally {
+      setActionNotice(null);
+    }
+  };
+
+  // Discrepancy State & Loader
+  const [discrepancies, setDiscrepancies] = useState<any[]>([]);
+  const [discrepancyText, setDiscrepancyText] = useState<{ upper?: string; lower?: string }>({});
+  const [isDiscrepancyLoading, setIsDiscrepancyLoading] = useState(false);
+  const [discrepancyError, setDiscrepancyError] = useState<string | null>(null);
+
+  const loadDiscrepancies = async () => {
+    setIsDiscrepancyLoading(true);
+    setDiscrepancyError(null);
+    try {
+      const res = await getWeightDiscrepancies();
+      if (res.success) {
+        setDiscrepancies(res.discrepancies);
+        setDiscrepancyText({ upper: res.upperFoldText, lower: res.lowerFoldText });
+      } else {
+        setDiscrepancyError(res.message || 'No discrepancy data returned.');
+      }
+    } catch (e: any) {
+      setDiscrepancyError(e.message || 'Error loading discrepancy data');
+    } finally {
+      setIsDiscrepancyLoading(false);
     }
   };
 
@@ -573,6 +824,7 @@ export const ShiprocketPage: React.FC = () => {
           { id: 'create', label: 'Create New Shipment', icon: PlusCircle },
           { id: 'track', label: 'Track Live Shipment', icon: Navigation },
           { id: 'rates', label: 'Rate & ETA Calculator', icon: IndianRupee },
+          { id: 'discrepancy', label: 'Weight Audits & Webhooks', icon: Scale },
           { id: 'settings', label: 'Shiprocket API Setup', icon: Settings },
           { id: 'portal', label: 'Shiprocket Web Console', icon: Globe }
         ].map(tab => {
@@ -903,13 +1155,13 @@ export const ShiprocketPage: React.FC = () => {
                             background: s.status.toLowerCase().includes('delivered')
                               ? '#dcfce7'
                               : s.status.toLowerCase().includes('transit')
-                              ? '#fef3c7'
-                              : '#e0e7ff',
+                                ? '#fef3c7'
+                                : '#e0e7ff',
                             color: s.status.toLowerCase().includes('delivered')
                               ? '#15803d'
                               : s.status.toLowerCase().includes('transit')
-                              ? '#b45309'
-                              : '#4338ca'
+                                ? '#b45309'
+                                : '#4338ca'
                           }}>
                             {s.status}
                           </span>
@@ -968,6 +1220,40 @@ export const ShiprocketPage: React.FC = () => {
                                 <Printer size={13} />
                               </button>
                             )}
+
+                            {s.shipment_id && (
+                              <button
+                                onClick={() => handleGenerateManifest(s)}
+                                title="Generate Shipping Manifest PDF"
+                                style={{
+                                  padding: '6px 10px',
+                                  borderRadius: '6px',
+                                  border: '1px solid #cbd5e1',
+                                  background: '#ffffff',
+                                  color: '#4f46e5',
+                                  fontSize: '12px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <FileText size={13} />
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => handleCancelOrder(s)}
+                              title="Cancel Order in Shiprocket"
+                              style={{
+                                padding: '6px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #fecaca',
+                                background: '#fef2f2',
+                                color: '#ef4444',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <XCircle size={13} />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1042,6 +1328,28 @@ export const ShiprocketPage: React.FC = () => {
                   <div style={{ fontSize: '13px', marginTop: '3px' }}>
                     {orderResult.message}
                   </div>
+                  {orderResult.message?.includes('Shiprocket Authentication Notice') && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('settings')}
+                      style={{
+                        marginTop: '10px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        background: '#4f46e5',
+                        color: '#ffffff',
+                        border: 'none',
+                        padding: '7px 14px',
+                        borderRadius: '8px',
+                        fontSize: '12.5px',
+                        fontWeight: 700,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <Settings size={14} /> Open Shiprocket API Setup
+                    </button>
+                  )}
                   {orderResult.details?.awbCode && (
                     <div style={{ marginTop: '8px', fontSize: '12.5px', fontWeight: 600 }}>
                       Assigned AWB: <span style={{ color: '#4f46e5' }}>{orderResult.details.awbCode}</span> ({orderResult.details.courierName})
@@ -1052,76 +1360,265 @@ export const ShiprocketPage: React.FC = () => {
             )}
 
             <form onSubmit={handleCreateOrder}>
-              {/* Section 1: Order & Clinic Info */}
-              <div style={{ marginBottom: '24px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 800, color: '#4f46e5', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '12px' }}>
-                  1. Order & Clinic Branch Info
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                      Shiprocket Order ID *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={orderForm.orderId}
-                      onChange={(e) => setOrderForm(prev => ({ ...prev, orderId: e.target.value }))}
-                      style={{
-                        width: '100%',
-                        padding: '9px 12px',
-                        borderRadius: '8px',
-                        border: '1px solid #cbd5e1',
-                        fontSize: '13px',
-                        fontWeight: 700,
-                        background: '#f8fafc'
-                      }}
-                    />
+              {/* Section 1: Order ID & Complete Shiprocket Pickup Location */}
+              <div style={{ marginBottom: '28px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '13.5px', fontWeight: 800, color: '#4f46e5', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    1. Order ID & Shiprocket Pickup Location
                   </div>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#16a34a', background: '#dcfce7', padding: '3px 8px', borderRadius: '6px' }}>
+                    Courier Dispatch Point
+                  </span>
+                </div>
 
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                      Dispatching Clinic Branch
-                    </label>
-                    <select
-                      value={orderForm.branchName}
-                      onChange={(e) => setOrderForm(prev => ({ ...prev, branchName: e.target.value }))}
+                {/* Order ID Input */}
+                <div style={{ marginBottom: '18px', maxWidth: '320px' }}>
+                  <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
+                    Shiprocket Order ID *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={orderForm.orderId}
+                    onChange={(e) => setOrderForm(prev => ({ ...prev, orderId: e.target.value }))}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      background: '#ffffff',
+                      color: '#0f172a'
+                    }}
+                  />
+                </div>
+
+                {/* Pickup Location Details Grid */}
+                <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                    <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#0f172a' }}>
+                      Shiprocket Pickup Location Fields (Warehouse / Dispatch Point):
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRegisterPickupWithShiprocket}
+                      disabled={isRegisteringPickup}
                       style={{
-                        width: '100%',
-                        padding: '9px 12px',
-                        borderRadius: '8px',
-                        border: '1px solid #cbd5e1',
-                        fontSize: '13px',
-                        background: '#ffffff'
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        background: '#e0e7ff',
+                        border: '1px solid #c7d2fe',
+                        color: '#3730a3',
+                        fontSize: '11.5px',
+                        fontWeight: 700,
+                        cursor: isRegisteringPickup ? 'not-allowed' : 'pointer'
                       }}
                     >
-                      <option value="Dilsukhnagar Main">Dilsukhnagar Clinic</option>
-                      <option value="Kukatpally">Kukatpally Branch</option>
-                      <option value="Secunderabad">Secunderabad Branch</option>
-                      <option value="Madhapur">Madhapur Clinic</option>
-                      <option value="Ameerpet">Ameerpet Clinic</option>
-                      <option value="Gachibowli">Gachibowli Clinic</option>
-                      <option value="Central Pharmacy">Central Pharmacy Hub</option>
-                    </select>
+                      {isRegisteringPickup ? <RefreshCw size={12} className="spin" /> : <MapPin size={12} />}
+                      Sync/Register in Shiprocket API
+                    </button>
                   </div>
 
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                      Shiprocket Pickup Location
-                    </label>
-                    <input
-                      type="text"
-                      value={orderForm.pickupLocation}
-                      onChange={(e) => setOrderForm(prev => ({ ...prev, pickupLocation: e.target.value }))}
-                      placeholder="e.g. Primary or Clinic Address"
-                      style={{
-                        width: '100%',
-                        padding: '9px 12px',
-                        borderRadius: '8px',
-                        border: '1px solid #cbd5e1',
-                        fontSize: '13px'
-                      }}
-                    />
+                  {pickupRegisterMsg && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      marginBottom: '14px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      background: pickupRegisterMsg.type === 'success' ? '#f0fdf4' : '#fef2f2',
+                      border: `1px solid ${pickupRegisterMsg.type === 'success' ? '#bbf7d0' : '#fecaca'}`,
+                      color: pickupRegisterMsg.type === 'success' ? '#15803d' : '#b91c1c'
+                    }}>
+                      {pickupRegisterMsg.text}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Pickup Location Code / Nickname *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. KPHB Clinic or Primary"
+                        value={orderForm.pickupLocation}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupLocation: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px',
+                          fontWeight: 600,
+                          background: '#f8fafc'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Dispatcher Contact Person *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Spiritual Homeopathy Dispatcher"
+                        value={orderForm.pickupContactName}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupContactName: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Pickup Phone Number *
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        placeholder="10-digit mobile"
+                        value={orderForm.pickupPhone}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupPhone: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Pickup Email
+                      </label>
+                      <input
+                        type="email"
+                        placeholder="sphclinics@gmail.com"
+                        value={orderForm.pickupEmail}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupEmail: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ gridColumn: 'span 2' }}>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Pickup Street Address (Line 1) *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Plot / Door No, Street, Colony"
+                        value={orderForm.pickupAddress}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupAddress: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Landmark / Address Line 2
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Near Landmark / Hospital"
+                        value={orderForm.pickupAddress2}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupAddress2: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        City *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={orderForm.pickupCity}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupCity: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        State *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={orderForm.pickupState}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupState: e.target.value }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                        Pickup Pincode *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        maxLength={6}
+                        placeholder="500072"
+                        value={orderForm.pickupPincode}
+                        onChange={(e) => setOrderForm(prev => ({ ...prev, pickupPincode: e.target.value.replace(/\D/g, '') }))}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontSize: '12.5px',
+                          fontWeight: 700,
+                          color: '#0f172a'
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1418,14 +1915,311 @@ export const ShiprocketPage: React.FC = () => {
                     />
                   </div>
                 </div>
+
+                {/* Shiprocket Official Weight Calculation Card */}
+                {(() => {
+                  const weightCalc = calculateShiprocketWeight(
+                    orderForm.weight,
+                    orderForm.length,
+                    orderForm.breadth,
+                    orderForm.height
+                  );
+                  return (
+                    <div style={{
+                      background: 'linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%)',
+                      border: '1.5px solid #bfdbfe',
+                      borderRadius: '12px',
+                      padding: '16px 20px',
+                      marginTop: '16px'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <Scale size={18} color="#4f46e5" />
+                          <span style={{ fontSize: '13.5px', fontWeight: 800, color: '#0f172a' }}>
+                            Shiprocket Official Weight Calculation
+                          </span>
+                        </div>
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          background: '#e0e7ff',
+                          color: '#3730a3',
+                          padding: '3px 9px',
+                          borderRadius: '6px'
+                        }}>
+                          Formula: (L × B × H) / 5000
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', alignItems: 'center' }}>
+                        <div style={{ background: '#ffffff', padding: '10px 14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Actual / Dead Weight</div>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a', marginTop: '2px' }}>
+                            {weightCalc.actualWeight} <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b' }}>kg</span>
+                          </div>
+                        </div>
+
+                        <div style={{ background: '#ffffff', padding: '10px 14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Volumetric Weight</div>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a', marginTop: '2px' }}>
+                            {weightCalc.volumetricWeight} <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b' }}>kg</span>
+                          </div>
+                        </div>
+
+                        <div style={{
+                          background: '#ecfdf5',
+                          padding: '10px 14px',
+                          borderRadius: '10px',
+                          border: '1.5px solid #a7f3d0'
+                        }}>
+                          <div style={{ fontSize: '11px', color: '#047857', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span>Chargeable Weight</span>
+                            <span style={{ fontSize: '9.5px', background: '#059669', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>
+                              Shiprocket
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '18px', fontWeight: 900, color: '#065f46', marginTop: '2px' }}>
+                            {weightCalc.chargeableWeight} <span style={{ fontSize: '11px', fontWeight: 600 }}>kg</span>
+                          </div>
+                        </div>
+
+                        <div style={{ background: '#ffffff', padding: '10px 14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Billable Courier Slab</div>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: '#4f46e5', marginTop: '2px' }}>
+                            {weightCalc.billingSlab} <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b' }}>kg slab</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ fontSize: '12px', color: '#475569', marginTop: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Info size={14} color="#6366f1" />
+                        <span>
+                          {weightCalc.isVolumetricHigher
+                            ? `Volumetric Weight (${weightCalc.volumetricWeight} kg) exceeds Dead Weight (${weightCalc.actualWeight} kg). Shiprocket will bill based on Volumetric Weight.`
+                            : `Dead Weight (${weightCalc.actualWeight} kg) is equal to or higher than Volumetric Weight (${weightCalc.volumetricWeight} kg). Shiprocket applies Dead Weight.`}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
-              {/* Section 4: Payment Method */}
-              <div style={{ marginBottom: '28px', background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+              {/* Section 4: Shiprocket Shipping Methods & Live Rates */}
+              <div style={{ marginBottom: '28px', background: '#f8fafc', padding: '20px', borderRadius: '14px', border: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#4f46e5', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      4. Shiprocket Shipping Methods & Available Couriers
+                    </div>
+                    <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0 0' }}>
+                      Query Shiprocket live API to see all serviceable couriers (Air/Surface), rates & delivery times
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleFetchOrderCouriers}
+                    disabled={isFormCouriersLoading}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                      border: 'none',
+                      color: '#ffffff',
+                      fontSize: '12.5px',
+                      fontWeight: 700,
+                      cursor: isFormCouriersLoading ? 'not-allowed' : 'pointer',
+                      boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)'
+                    }}
+                  >
+                    {isFormCouriersLoading ? <RefreshCw size={13} className="spin" /> : <Truck size={13} />}
+                    {isFormCouriersLoading ? 'Checking Shiprocket...' : 'Fetch Live Couriers & Rates'}
+                  </button>
+                </div>
+
+                {formCouriersError && (
+                  <div style={{
+                    padding: '12px 14px',
+                    borderRadius: '8px',
+                    marginBottom: '14px',
+                    background: '#fef2f2',
+                    border: '1px solid #fecaca',
+                    color: '#b91c1c',
+                    fontSize: '12.5px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    flexWrap: 'wrap'
+                  }}>
+                    <div style={{ flex: 1 }}>{formCouriersError}</div>
+                    {formCouriersError.includes('Shiprocket Authentication Notice') && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('settings')}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          background: '#4f46e5',
+                          color: '#ffffff',
+                          border: 'none',
+                          padding: '6px 14px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        <Settings size={13} /> Open Shiprocket Setup
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Courier Methods List */}
+                {formCouriers.length > 0 ? (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: '#334155' }}>
+                        Select Shipping Method / Courier Partner ({formCouriers.length} available):
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setOrderForm(prev => ({
+                          ...prev,
+                          selectedCourierId: null,
+                          selectedCourierName: '',
+                          selectedCourierRate: null,
+                          selectedCourierMode: '',
+                          selectedCourierEtd: ''
+                        }))}
+                        style={{
+                          fontSize: '11px',
+                          color: '#4f46e5',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontWeight: 700
+                        }}
+                      >
+                        Use Auto-Assign (Shiprocket Best Rate)
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px' }}>
+                      {/* Option for Auto Assign */}
+                      <div
+                        onClick={() => setOrderForm(prev => ({
+                          ...prev,
+                          selectedCourierId: null,
+                          selectedCourierName: '',
+                          selectedCourierRate: null,
+                          selectedCourierMode: '',
+                          selectedCourierEtd: ''
+                        }))}
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: '10px',
+                          border: orderForm.selectedCourierId === null ? '2px solid #4f46e5' : '1px solid #cbd5e1',
+                          background: orderForm.selectedCourierId === null ? '#eef2ff' : '#ffffff',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <div style={{ fontWeight: 800, fontSize: '13px', color: '#0f172a' }}>
+                            ⚡ Auto-Assign Courier
+                          </div>
+                          {orderForm.selectedCourierId === null && (
+                            <span style={{ fontSize: '10.5px', background: '#4f46e5', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>
+                              Selected
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: '4px' }}>
+                          Shiprocket automatically picks the fastest / lowest rate courier partner.
+                        </div>
+                      </div>
+
+                      {/* Real Shiprocket Courier Cards */}
+                      {formCouriers.map(courier => {
+                        const isSelected = orderForm.selectedCourierId === courier.courier_company_id;
+                        return (
+                          <div
+                            key={courier.courier_company_id}
+                            onClick={() => setOrderForm(prev => ({
+                              ...prev,
+                              selectedCourierId: courier.courier_company_id,
+                              selectedCourierName: courier.courier_name,
+                              selectedCourierRate: courier.rate,
+                              selectedCourierMode: courier.mode || 'Surface',
+                              selectedCourierEtd: courier.etd
+                            }))}
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: '10px',
+                              border: isSelected ? '2px solid #4f46e5' : '1px solid #e2e8f0',
+                              background: isSelected ? '#eef2ff' : '#ffffff',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease',
+                              boxShadow: isSelected ? '0 2px 8px rgba(79, 70, 229, 0.15)' : 'none'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                              <div style={{ fontWeight: 800, fontSize: '13px', color: '#0f172a' }}>
+                                {courier.courier_name}
+                              </div>
+                              <span style={{
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                background: courier.mode === 'Air' ? '#dbeafe' : '#f1f5f9',
+                                color: courier.mode === 'Air' ? '#1d4ed8' : '#475569'
+                              }}>
+                                {courier.mode === 'Air' ? '✈️ Air' : '🚚 Surface'}
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '6px' }}>
+                              <div style={{ fontSize: '11.5px', color: '#64748b' }}>
+                                ETD: <strong>{courier.etd || `${courier.estimated_delivery_days} Days`}</strong>
+                              </div>
+                              <div style={{ fontSize: '14.5px', fontWeight: 800, color: '#16a34a' }}>
+                                ₹{courier.rate}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{
+                    padding: '14px',
+                    borderRadius: '8px',
+                    background: '#ffffff',
+                    border: '1px dashed #cbd5e1',
+                    textAlign: 'center',
+                    color: '#64748b',
+                    fontSize: '12.5px'
+                  }}>
+                    Click <strong>"Fetch Live Couriers & Rates"</strong> above to see available Shiprocket courier methods, delivery times, and pricing.
+                  </div>
+                )}
+              </div>
+
+              {/* Section 5: Payment Method & Dispatch */}
+              <div style={{ marginBottom: '28px', background: '#f8fafc', padding: '18px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
                 <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 700, color: '#334155', marginBottom: '10px' }}>
-                  Payment Method
+                  5. Payment Method & Summary
                 </label>
-                <div style={{ display: 'flex', gap: '24px' }}>
+                <div style={{ display: 'flex', gap: '24px', marginBottom: '14px' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13.5px', fontWeight: 600 }}>
                     <input
                       type="radio"
@@ -1446,6 +2240,24 @@ export const ShiprocketPage: React.FC = () => {
                     Cash On Delivery (COD collected by Courier)
                   </label>
                 </div>
+
+                {orderForm.selectedCourierName && (
+                  <div style={{
+                    background: '#e0e7ff',
+                    border: '1px solid #c7d2fe',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    color: '#3730a3',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <span>Selected Courier Method: <strong>{orderForm.selectedCourierName}</strong> ({orderForm.selectedCourierMode || 'Surface'})</span>
+                    {orderForm.selectedCourierRate !== null && <span>Rate: ₹{orderForm.selectedCourierRate}</span>}
+                  </div>
+                )}
               </div>
 
               {/* Submit Button */}
@@ -1580,9 +2392,35 @@ export const ShiprocketPage: React.FC = () => {
                 fontSize: '13px',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px'
+                justifyContent: 'space-between',
+                gap: '12px',
+                flexWrap: 'wrap'
               }}>
-                <AlertCircle size={16} /> {trackingError}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+                  <AlertCircle size={16} /> {trackingError}
+                </div>
+                {trackingError.includes('Shiprocket Authentication Notice') && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: '#4f46e5',
+                      color: '#ffffff',
+                      border: 'none',
+                      padding: '6px 14px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <Settings size={13} /> Open Shiprocket Setup
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1737,10 +2575,10 @@ export const ShiprocketPage: React.FC = () => {
             </p>
 
             <form onSubmit={handleCheckRates}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                    Pickup Pincode
+                    Pickup Pincode *
                   </label>
                   <input
                     type="text"
@@ -1784,12 +2622,12 @@ export const ShiprocketPage: React.FC = () => {
 
                 <div>
                   <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                    Parcel Weight (Kg)
+                    Actual Parcel Weight (Kg) *
                   </label>
                   <input
                     type="number"
-                    step="0.1"
-                    min={0.1}
+                    step="0.05"
+                    min={0.05}
                     value={rateWeight}
                     onChange={(e) => setRateWeight(Number(e.target.value))}
                     style={{
@@ -1804,7 +2642,7 @@ export const ShiprocketPage: React.FC = () => {
 
                 <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                    Cash on Delivery
+                    Payment Mode
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginTop: '6px' }}>
                     <input
@@ -1812,10 +2650,126 @@ export const ShiprocketPage: React.FC = () => {
                       checked={rateCod}
                       onChange={(e) => setRateCod(e.target.checked)}
                     />
-                    Include COD Charge
+                    Include Cash on Delivery (COD)
                   </label>
                 </div>
               </div>
+
+              {/* Box Dimensions for Shiprocket Volumetric Weight Calculation */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                    Length (cm)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={rateLength}
+                    onChange={(e) => setRateLength(Number(e.target.value))}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '12.5px'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                    Breadth (cm)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={rateBreadth}
+                    onChange={(e) => setRateBreadth(Number(e.target.value))}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '12.5px'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '5px' }}>
+                    Height (cm)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={rateHeight}
+                    onChange={(e) => setRateHeight(Number(e.target.value))}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '12.5px'
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Live Shiprocket Weight Breakdown Card */}
+              {(() => {
+                const weightCalc = calculateShiprocketWeight(rateWeight, rateLength, rateBreadth, rateHeight);
+                return (
+                  <div style={{
+                    background: '#f8fafc',
+                    border: '1.5px solid #bfdbfe',
+                    borderRadius: '12px',
+                    padding: '14px 18px',
+                    marginBottom: '20px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Scale size={16} color="#4f46e5" />
+                        <span style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a' }}>
+                          Shiprocket Weight Calculation Breakdown
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: '#3730a3', background: '#e0e7ff', padding: '2px 8px', borderRadius: '6px' }}>
+                        Formula: (L × B × H) / 5000
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+                      <div style={{ background: '#ffffff', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Dead Weight</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', marginTop: '2px' }}>
+                          {weightCalc.actualWeight} <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b' }}>kg</span>
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#ffffff', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Volumetric Weight</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', marginTop: '2px' }}>
+                          {weightCalc.volumetricWeight} <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b' }}>kg</span>
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#ecfdf5', padding: '10px', borderRadius: '8px', border: '1.5px solid #a7f3d0' }}>
+                        <div style={{ fontSize: '11px', color: '#047857', fontWeight: 700 }}>Chargeable Weight</div>
+                        <div style={{ fontSize: '16px', fontWeight: 900, color: '#065f46', marginTop: '2px' }}>
+                          {weightCalc.chargeableWeight} <span style={{ fontSize: '11px', fontWeight: 600 }}>kg</span>
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#ffffff', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Shiprocket Slab</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#4f46e5', marginTop: '2px' }}>
+                          {weightCalc.billingSlab} <span style={{ fontSize: '11px', fontWeight: 600, color: '#64748b' }}>kg slab</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <button
                 type="submit"
@@ -1835,7 +2789,7 @@ export const ShiprocketPage: React.FC = () => {
                 }}
               >
                 {isRateLoading ? <RefreshCw size={16} className="spin" /> : <IndianRupee size={16} />}
-                Fetch Available Courier Rates
+                {isRateLoading ? 'Querying Shiprocket API...' : 'Fetch Available Courier Rates & Methods'}
               </button>
             </form>
 
@@ -1847,17 +2801,49 @@ export const ShiprocketPage: React.FC = () => {
                 background: '#fef2f2',
                 border: '1px solid #fecaca',
                 color: '#b91c1c',
-                fontSize: '13px'
+                fontSize: '13px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                flexWrap: 'wrap'
               }}>
-                {rateError}
+                <div style={{ flex: 1 }}>{rateError}</div>
+                {rateError.includes('Shiprocket Authentication Notice') && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: '#4f46e5',
+                      color: '#ffffff',
+                      border: 'none',
+                      padding: '6px 14px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <Settings size={13} /> Open Shiprocket Setup
+                  </button>
+                )}
               </div>
             )}
 
             {rateResults.length > 0 && (
               <div style={{ marginTop: '28px' }}>
-                <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', marginBottom: '14px' }}>
-                  Available Courier Partners ({rateResults.length})
-                </h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                  <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                    Available Shiprocket Shipping Methods ({rateResults.length})
+                  </h3>
+                  <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>
+                    Route: {pickupPincode} &rarr; {deliveryPincode}
+                  </span>
+                </div>
 
                 <div style={{ display: 'grid', gap: '12px' }}>
                   {rateResults.map((courier) => (
@@ -1871,7 +2857,9 @@ export const ShiprocketPage: React.FC = () => {
                         borderRadius: '12px',
                         border: '1px solid #e2e8f0',
                         background: '#ffffff',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.02)'
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+                        flexWrap: 'wrap',
+                        gap: '12px'
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -1879,22 +2867,68 @@ export const ShiprocketPage: React.FC = () => {
                           <Truck size={20} color="#4f46e5" />
                         </div>
                         <div>
-                          <div style={{ fontWeight: 800, color: '#0f172a', fontSize: '14px' }}>
-                            {courier.courier_name}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontWeight: 800, color: '#0f172a', fontSize: '14px' }}>
+                              {courier.courier_name}
+                            </span>
+                            <span style={{
+                              fontSize: '10.5px',
+                              fontWeight: 700,
+                              padding: '2px 7px',
+                              borderRadius: '4px',
+                              background: courier.mode === 'Air' ? '#dbeafe' : '#f1f5f9',
+                              color: courier.mode === 'Air' ? '#1d4ed8' : '#475569'
+                            }}>
+                              {courier.mode === 'Air' ? '✈️ Air' : '🚚 Surface'}
+                            </span>
                           </div>
-                          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
-                            Est. Delivery: <strong>{courier.etd || `${courier.estimated_delivery_days} Days`}</strong> • Rating: {courier.rating || 4.2} ★
+                          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '3px' }}>
+                            Est. Delivery: <strong>{courier.etd || `${courier.estimated_delivery_days} Days`}</strong> • Rating: {courier.rating || 4.2} ★ • Min Wt: {courier.min_weight || 0.5} kg
                           </div>
                         </div>
                       </div>
 
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '18px', fontWeight: 800, color: '#15803d' }}>
-                          ₹{courier.rate}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '18px', fontWeight: 800, color: '#15803d' }}>
+                            ₹{courier.rate}
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>
+                            {rateCod ? 'incl. COD fees' : 'Prepaid rate'}
+                          </div>
                         </div>
-                        <div style={{ fontSize: '11px', color: '#64748b' }}>
-                          {rateCod ? 'incl. COD fees' : 'Prepaid rate'}
-                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOrderForm(prev => ({
+                              ...prev,
+                              pincode: deliveryPincode,
+                              selectedCourierId: courier.courier_company_id,
+                              selectedCourierName: courier.courier_name,
+                              selectedCourierRate: courier.rate,
+                              selectedCourierMode: courier.mode || 'Surface',
+                              selectedCourierEtd: courier.etd,
+                              weight: rateWeight,
+                              length: rateLength,
+                              breadth: rateBreadth,
+                              height: rateHeight
+                            }));
+                            setActiveTab('create');
+                          }}
+                          style={{
+                            padding: '8px 14px',
+                            borderRadius: '8px',
+                            background: '#e0e7ff',
+                            border: '1px solid #c7d2fe',
+                            color: '#3730a3',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Book via This Courier &rarr;
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1906,7 +2940,213 @@ export const ShiprocketPage: React.FC = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 5: API CREDENTIALS & SETTINGS */}
+      {/* TAB: WEIGHT DISCREPANCY AUDITS & TRACKING WEBHOOKS */}
+      {/* ========================================================================= */}
+      {activeTab === 'discrepancy' && (
+        <div style={{ maxWidth: '960px', margin: '0 auto' }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '16px',
+            border: '1px solid #e2e8f0',
+            padding: '28px',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.03)',
+            marginBottom: '24px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Scale size={22} color="#4f46e5" />
+                  <h2 style={{ fontSize: '18px', fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                    Shiprocket Weight Discrepancy & Billing Audit
+                  </h2>
+                </div>
+                <p style={{ fontSize: '13px', color: '#64748b', margin: '4px 0 0 0' }}>
+                  Verify weight adjustments and courier company scale re-evaluations via official API (GET /billing/discrepancy)
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={loadDiscrepancies}
+                disabled={isDiscrepancyLoading}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '9px 18px',
+                  borderRadius: '10px',
+                  background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                  border: 'none',
+                  color: '#ffffff',
+                  fontSize: '12.5px',
+                  fontWeight: 700,
+                  cursor: isDiscrepancyLoading ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 2px 8px rgba(79, 70, 229, 0.25)'
+                }}
+              >
+                <RefreshCw size={13} className={isDiscrepancyLoading ? 'spin' : ''} />
+                {isDiscrepancyLoading ? 'Checking API...' : 'Fetch Live Discrepancies'}
+              </button>
+            </div>
+
+            {/* Official Shiprocket Disclaimer Banner */}
+            <div style={{
+              background: '#eff6ff',
+              border: '1px solid #bfdbfe',
+              borderRadius: '12px',
+              padding: '14px 18px',
+              marginBottom: '20px'
+            }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e40af', marginBottom: '4px' }}>
+                Shiprocket Weight Discrepancy Policy:
+              </div>
+              <div style={{ fontSize: '12.5px', color: '#3b82f6', lineHeight: '1.5' }}>
+                {discrepancyText.upper ||
+                  'The entered weight for shipment was incorrect. Please allow deduction on the basis of correct charged weight as shared by the courier company (Delhivery, Blue Dart, DTDC, etc.).'}
+              </div>
+              <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: '8px' }}>
+                {discrepancyText.lower || 'Support: Call 011-39595108 or email support@shiprocket.in to raise dispute tickets.'}
+              </div>
+            </div>
+
+            {discrepancyError && (
+              <div style={{
+                padding: '12px 16px',
+                borderRadius: '10px',
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                color: '#b91c1c',
+                fontSize: '13px',
+                marginBottom: '16px'
+              }}>
+                {discrepancyError}
+              </div>
+            )}
+
+            {/* Discrepancies Table / Empty State */}
+            {discrepancies.length > 0 ? (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
+                      <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>Order / AWB</th>
+                      <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>Courier</th>
+                      <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>Entered Weight</th>
+                      <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>Charged Weight</th>
+                      <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>Difference</th>
+                      <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discrepancies.map((d, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '12px 14px', fontWeight: 700, color: '#0f172a' }}>{d.order_id || d.awb}</td>
+                        <td style={{ padding: '12px 14px', color: '#64748b' }}>{d.courier_name || '-'}</td>
+                        <td style={{ padding: '12px 14px', color: '#64748b' }}>{d.entered_weight} kg</td>
+                        <td style={{ padding: '12px 14px', fontWeight: 700, color: '#dc2626' }}>{d.charged_weight} kg</td>
+                        <td style={{ padding: '12px 14px', color: '#dc2626' }}>+{d.weight_diff} kg</td>
+                        <td style={{ padding: '12px 14px' }}>
+                          <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', background: '#fee2e2', color: '#991b1b' }}>
+                            {d.status || 'Pending Dispute'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{
+                textAlign: 'center',
+                padding: '36px 20px',
+                background: '#f8fafc',
+                borderRadius: '12px',
+                border: '1px dashed #cbd5e1'
+              }}>
+                <CheckCircle2 size={32} color="#16a34a" style={{ margin: '0 auto 8px auto' }} />
+                <div style={{ fontSize: '14.5px', fontWeight: 700, color: '#0f172a' }}>
+                  No Weight Discrepancies Recorded
+                </div>
+                <div style={{ fontSize: '12.5px', color: '#64748b', marginTop: '4px', maxWidth: '480px', margin: '4px auto 0 auto' }}>
+                  All your medicine parcels were correctly measured according to Shiprocket's (L×B×H)/5000 volumetric formula and verified by couriers.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Webhook Configuration Guide Box */}
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '16px',
+            border: '1px solid #e2e8f0',
+            padding: '28px',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.03)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+              <Globe size={22} color="#4f46e5" />
+              <h2 style={{ fontSize: '18px', fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                Shiprocket Tracking Webhook Specifications
+              </h2>
+            </div>
+            <p style={{ fontSize: '13px', color: '#64748b', margin: '0 0 20px 0' }}>
+              Configure automated webhook callbacks in your Shiprocket account (Settings &rarr; API &rarr; Webhooks) to receive real-time parcel checkpoint notifications
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '20px' }}>
+              <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>HTTP METHOD</div>
+                <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', marginTop: '2px' }}>POST</div>
+              </div>
+              <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>CONTENT TYPE</div>
+                <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', marginTop: '2px' }}>application/json</div>
+              </div>
+              <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>SECURITY HEADER</div>
+                <div style={{ fontSize: '14px', fontWeight: 800, color: '#4f46e5', marginTop: '2px' }}>x-api-key</div>
+              </div>
+              <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>RESPONSE CODE</div>
+                <div style={{ fontSize: '14px', fontWeight: 800, color: '#16a34a', marginTop: '2px' }}>200 OK</div>
+              </div>
+            </div>
+
+            <div style={{ background: '#0f172a', borderRadius: '12px', padding: '16px', color: '#f8fafc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', borderBottom: '1px solid #334155', paddingBottom: '8px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8' }}>Sample Shiprocket Webhook Body (JSON)</span>
+                <span style={{ fontSize: '11px', color: '#38bdf8', fontWeight: 600 }}>Real-Time Scans Format</span>
+              </div>
+              <pre style={{ margin: 0, fontSize: '11.5px', fontFamily: 'monospace', overflowX: 'auto', lineHeight: '1.5', color: '#e2e8f0' }}>
+                {`{
+  "awb": "19041424751540",
+  "courier_name": "Delhivery Surface",
+  "current_status": "IN TRANSIT",
+  "order_id": "SPH-581920",
+  "sr_order_id": 348456385,
+  "etd": "2026-09-27 15:40:19",
+  "scans": [
+    {
+      "date": "2026-09-24 11:59:16",
+      "status": "X-UCI",
+      "activity": "Manifested - Manifest uploaded",
+      "location": "Hyderabad Hub (Telangana)"
+    },
+    {
+      "date": "2026-09-24 15:32:17",
+      "status": "X-PPOM",
+      "activity": "In Transit - Shipment picked up",
+      "location": "Hyderabad Hub (Telangana)"
+    }
+  ]
+}`}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 6: API CREDENTIALS & SETTINGS */}
       {/* ========================================================================= */}
       {activeTab === 'settings' && (
         <div style={{ maxWidth: '860px', margin: '0 auto' }}>
@@ -1946,22 +3186,32 @@ export const ShiprocketPage: React.FC = () => {
               </div>
             )}
 
-            {/* Method A: Email & Password Direct Connect */}
+            {/* Section 1: Official Account Login & Token Generation */}
             <div style={{
               background: '#f8fafc',
               border: '1px solid #e2e8f0',
               borderRadius: '14px',
-              padding: '20px',
+              padding: '22px',
               marginBottom: '24px'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
                 <div style={{ fontWeight: 800, fontSize: '14px', color: '#1e293b' }}>
-                  Method 1: Connect via Shiprocket Login (Recommended)
+                  1. Shiprocket Account Login
                 </div>
-                <span style={{ fontSize: '11px', fontWeight: 700, color: '#4f46e5', background: '#e0e7ff', padding: '3px 8px', borderRadius: '6px' }}>
-                  Auto Token Generation
-                </span>
+                {config.token && config.isConnected ? (
+                  <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#15803d', background: '#dcfce7', border: '1px solid #bbf7d0', padding: '3px 10px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#16a34a' }}></span> Connected & Active
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', padding: '3px 10px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#d97706' }}></span> Not Connected
+                  </span>
+                )}
               </div>
+
+              <p style={{ fontSize: '12.5px', color: '#64748b', margin: '0 0 16px 0' }}>
+                Shiprocket authenticates via OAuth JWT Bearer tokens generated from your account credentials. You do not need to manage manual API keys.
+              </p>
 
               <form onSubmit={handleConnectShiprocket}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px', marginBottom: '16px' }}>
@@ -2029,31 +3279,14 @@ export const ShiprocketPage: React.FC = () => {
               </form>
             </div>
 
-            {/* Method B: Manual Token / Settings */}
+            {/* Section 2: Warehouse & Dispatch Defaults */}
             <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '20px' }}>
-              <div style={{ fontWeight: 800, fontSize: '14px', color: '#1e293b', marginBottom: '14px' }}>
-                Method 2: Custom API Token & Warehouse Defaults
+              <div style={{ fontWeight: 800, fontSize: '14px', color: '#1e293b', marginBottom: '6px' }}>
+                2. Warehouse & Parcel Defaults
               </div>
-
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
-                  Bearer Auth Token (JWT)
-                </label>
-                <input
-                  type="password"
-                  placeholder="Paste Shiprocket Bearer Token directly if available..."
-                  value={config.token || ''}
-                  onChange={(e) => setConfig(prev => ({ ...prev, token: e.target.value }))}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid #cbd5e1',
-                    fontSize: '13px',
-                    fontFamily: 'monospace'
-                  }}
-                />
-              </div>
+              <p style={{ fontSize: '12.5px', color: '#64748b', margin: '0 0 16px 0' }}>
+                Default parameters pre-filled when creating new medicine dispatches.
+              </p>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '20px' }}>
                 <div>
@@ -2064,6 +3297,7 @@ export const ShiprocketPage: React.FC = () => {
                     type="text"
                     value={config.pickupLocation || 'Primary'}
                     onChange={(e) => setConfig(prev => ({ ...prev, pickupLocation: e.target.value }))}
+                    placeholder="e.g. Primary or Main Hub"
                     style={{
                       width: '100%',
                       padding: '9px 12px',
@@ -2112,7 +3346,7 @@ export const ShiprocketPage: React.FC = () => {
                     cursor: 'pointer'
                   }}
                 >
-                  <ShieldCheck size={15} /> Save Settings & Sync
+                  <ShieldCheck size={15} /> Save Defaults & Sync
                 </button>
               </div>
             </div>

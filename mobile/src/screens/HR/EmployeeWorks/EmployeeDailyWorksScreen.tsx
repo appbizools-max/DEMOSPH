@@ -48,13 +48,13 @@ export const EmployeeDailyWorksScreen: React.FC<EmployeeDailyWorksScreenProps> =
       });
       if (list.length === 0) {
         setStaffList([
-          { id: '1', name: 'Anil Kumar M', branch: 'KPHB', role: 'Regular Staff', phone: '9030176176' },
-          { id: '2', name: 'Ashwini Begari', branch: 'Chandanagar', role: 'Regular Staff', phone: '9553176176' },
-          { id: '3', name: 'Vaishnavi Peri', branch: 'Nallagandla', role: 'Regular Staff', phone: '9132176176' },
-          { id: '4', name: 'Nandini Gottelli', branch: 'Dilshuknagar', role: 'Regular Staff', phone: '9804176176' },
-          { id: '5', name: 'Srikanth', branch: 'KPHB', role: 'Regular Staff', phone: '9030176176' },
-          { id: '6', name: 'Arun Kumar', branch: 'Nallagandla', role: 'Regular Staff', phone: '9132176176' },
-          { id: '7', name: 'Aishwarya . M', branch: 'KPHB', role: 'Regular Staff', phone: '7995532759', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
+          { id: '1', name: 'Anil Kumar M', branch: 'KPHB', role: 'Regular Staff', phone: '7338260802', mobile: '7338260802' },
+          { id: '2', name: 'Ashwini Begari', branch: 'Chandanagar', role: 'Regular Staff', phone: '6302121265', mobile: '6302121265' },
+          { id: '3', name: 'Vaishnavi Peri', branch: 'Nallagandla', role: 'Regular Staff', phone: '9874563210', mobile: '9874563210' },
+          { id: '4', name: 'Nandini Gottelli', branch: 'Dilshuknagar', role: 'Regular Staff', phone: '9652180003', mobile: '9652180003' },
+          { id: '5', name: 'Srikanth', branch: 'KPHB', role: 'Regular Staff', phone: '8125384387', mobile: '8125384387' },
+          { id: '6', name: 'Arun Kumar', branch: 'Nallagandla', role: 'Regular Staff', phone: '9876543212', mobile: '9876543212' },
+          { id: '7', name: 'Aishwarya . M', branch: 'KPHB', role: 'Regular Staff', phone: '7890123456', mobile: '7890123456', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
         ]);
       } else {
         setStaffList(list);

@@ -127,13 +127,13 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
   };
 
   const DEFAULT_STAFF_SEED = [
-    { id: '1', name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', mobile: '9030176176', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹22,000' },
-    { id: '2', name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', mobile: '9553176176', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '06:30 PM', shift: '10:00 AM - 06:30 PM', hours: '8.5 hrs/day', salary: '₹17,000' },
-    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', mobile: '9132176176', shiftType: 'Single Strict', loginTime: '09:30 AM', logoutTime: '07:00 PM', shift: '09:30 AM - 07:00 PM', hours: '9.5 hrs/day', salary: '₹17,000' },
-    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', mobile: '9804176176', shiftType: 'Multi Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', hours: '8 hrs/day', salary: '₹15,000' },
-    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', mobile: '9030176176', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:00 PM', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹18,000' },
-    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', mobile: '9132176176', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '06:00 PM', shift: '10:00 AM - 06:00 PM', hours: '8 hrs/day', salary: '₹14,000' },
-    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', mobile: '7995532759', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
+    { id: '1', name: 'M. Anil Kumar', role: 'Regular Staff', branch: 'KPHB', mobile: '7338260802', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹22,000' },
+    { id: '2', name: 'Begari Ashwini', role: 'Regular Staff', branch: 'Chandanagar', mobile: '6302121265', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '06:30 PM', shift: '10:00 AM - 06:30 PM', hours: '8.5 hrs/day', salary: '₹17,000' },
+    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', mobile: '9874563210', shiftType: 'Single Strict', loginTime: '09:30 AM', logoutTime: '07:00 PM', shift: '09:30 AM - 07:00 PM', hours: '9.5 hrs/day', salary: '₹17,000' },
+    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', mobile: '9652180003', shiftType: 'Multi Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', hours: '8 hrs/day', salary: '₹15,000' },
+    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', mobile: '8125384387', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:00 PM', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹18,000' },
+    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', mobile: '9876543212', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '06:00 PM', shift: '10:00 AM - 06:00 PM', hours: '8 hrs/day', salary: '₹14,000' },
+    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', mobile: '7890123456', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
   ];
 
   // Staff Members State & Add/Edit Modal
@@ -144,36 +144,43 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     const staffColRef = collection(db, 'staff');
 
     const unsubscribe = onSnapshot(staffColRef, async (snapshot) => {
-      // Ensure all seed members exist in Firestore and have up-to-date schedules
+      // Ensure all seed members exist in Firestore and have up-to-date real mobile numbers
       for (const item of DEFAULT_STAFF_SEED) {
-        const matchingDoc = snapshot.docs.find(d => d.id === item.id || (d.data().mobile && d.data().mobile === item.mobile) || (d.data().phone && d.data().phone === item.mobile) || (d.data().name && d.data().name.toLowerCase() === item.name.toLowerCase()));
+        const matchingDoc = snapshot.docs.find(d => 
+          d.id === item.id || 
+          (d.data().name && d.data().name.toLowerCase().replace(/[^a-z]/g, '') === item.name.toLowerCase().replace(/[^a-z]/g, ''))
+        );
         if (!matchingDoc) {
           try {
             await setDoc(doc(db, 'staff', item.id), item, { merge: true });
           } catch (e) {
             console.warn('Seed staff item error:', e);
           }
-        } else if (item.id === '7' && (matchingDoc.data().salary !== '₹14,000' || matchingDoc.data().logoutTime !== '08:30 PM')) {
-          try {
-            await setDoc(doc(db, 'staff', matchingDoc.id), {
-              salary: '₹14,000',
-              shiftType: 'Single Strict',
-              loginTime: '10:00 AM',
-              logoutTime: '08:30 PM',
-              shift: '10:00 AM - 08:30 PM',
-              hours: '10.5 hrs/day'
-            }, { merge: true });
-          } catch (e) {
-            console.warn('Update staff item error:', e);
+        } else {
+          const docData = matchingDoc.data();
+          // Update Firestore if mobile number is different from the real personal phone number
+          if (docData.mobile !== item.mobile || docData.phone !== item.mobile) {
+            try {
+              await setDoc(doc(db, 'staff', matchingDoc.id), {
+                mobile: item.mobile,
+                phone: item.mobile
+              }, { merge: true });
+            } catch (e) {
+              console.warn('Update staff real mobile error:', e);
+            }
           }
         }
       }
 
       if (!snapshot.empty) {
-        const loadedStaff = snapshot.docs.map(docSnap => ({
-          id: docSnap.id,
-          ...docSnap.data()
-        })) as typeof DEFAULT_STAFF_SEED;
+        const loadedStaff = snapshot.docs.map(docSnap => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            ...d,
+            mobile: d.mobile || d.phone || ''
+          };
+        }) as typeof DEFAULT_STAFF_SEED;
         setStaffMembers(loadedStaff);
       }
     }, (error) => {
@@ -244,7 +251,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     setEditingStaffId(s.id);
     setStaffFormRole(s.role || 'Regular Staff');
     setStaffFormName(s.name);
-    setStaffFormMobile(s.mobile || '');
+    setStaffFormMobile(s.mobile || (s as any).phone || '');
     setStaffFormBranch(s.branch);
     setStaffFormSalary(s.salary ? s.salary.replace(/[^0-9]/g, '') : '');
     const currentShiftType = (s.shiftType as any) || 'Single Strict';
@@ -277,6 +284,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
       role: staffFormRole,
       branch: staffFormBranch,
       mobile: staffFormMobile,
+      phone: staffFormMobile,
       salary: formattedSalary,
       shiftType: staffFormShiftType,
       loginTime: staffFormSlots[0]?.loginTime || '09:00 AM',
@@ -2329,10 +2337,10 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
                           {s.name}
                         </td>
                         <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#334155', fontWeight: 600 }}>
-                          {s.mobile ? (
+                          {(s.mobile || (s as any).phone) ? (
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                               <Phone size={13} color="#0284c7" />
-                              +91 {s.mobile.replace(/\D/g, '').slice(-10)}
+                              +91 {(s.mobile || (s as any).phone).replace(/\D/g, '').slice(-10)}
                             </span>
                           ) : (
                             <span style={{ color: '#94a3b8' }}>—</span>

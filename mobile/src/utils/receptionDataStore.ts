@@ -2,7 +2,7 @@ import { getSafeDb, collection, onSnapshot, getDocs, query, limit, where } from 
 import { getBranchQueryNames, sanitizeDoctorName } from '@app/shared';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const CACHE_KEY = '@sph_mobile_reception_store_v1';
+const CACHE_KEY = '@sph_mobile_reception_store_v2';
 
 const ACTIVE_STATUSES = [
   'waiting',
@@ -73,9 +73,9 @@ class ReceptionDataStore {
     this.saveCacheTimer = setTimeout(async () => {
       try {
         const payload = JSON.stringify({
-          appointments: this.appointments.slice(0, 1000),
-          allCollectionsPool: this.allCollectionsPool.slice(0, 1500),
-          packageMembersList: this.packageMembersList.slice(0, 150),
+          appointments: this.appointments.slice(0, 150),
+          allCollectionsPool: this.allCollectionsPool.slice(0, 200),
+          packageMembersList: this.packageMembersList.slice(0, 100),
           timestamp: Date.now()
         });
         await AsyncStorage.setItem(CACHE_KEY, payload);
@@ -316,7 +316,19 @@ class ReceptionDataStore {
     const tomorrowDDMMYYYY = `${td}-${tm}-${ty}`;
     const tomorrowSlash = `${td}/${tm}/${ty}`;
 
-    const targetDateStrings = [todayISO, todayDDMMYYYY, todaySlash, tomorrowISO, tomorrowDDMMYYYY, tomorrowSlash];
+    const yesterday = new Date(Date.now() - 86400000);
+    const yd = String(yesterday.getDate()).padStart(2, '0');
+    const ym = String(yesterday.getMonth() + 1).padStart(2, '0');
+    const yy = yesterday.getFullYear();
+    const yesterdayISO = `${yy}-${ym}-${yd}`;
+    const yesterdayDDMMYYYY = `${yd}-${ym}-${yy}`;
+    const yesterdaySlash = `${yd}/${ym}/${yy}`;
+
+    const targetDateStrings = [
+      todayISO, todayDDMMYYYY, todaySlash,
+      yesterdayISO, yesterdayDDMMYYYY, yesterdaySlash,
+      tomorrowISO, tomorrowDDMMYYYY, tomorrowSlash
+    ];
 
     // ==============================================================
     // PHASE 1: Fast Immediate Active & Upcoming Queue (< 150ms)
@@ -384,34 +396,33 @@ class ReceptionDataStore {
     }
 
     // ==============================================================
-    // PHASE 2: Full Historical Stream (Deferred 1.2s background sync)
-    // Guarantees 100% of ALL data without blocking the UI thread!
+    // PHASE 2: Background Historical Sync (One-time lightweight fetch)
+    // Avoids massive open long-polling streaming connections that cause
+    // RangeError: String length exceeds limit in Hermes React Native!
     // ==============================================================
-    setTimeout(() => {
-      // 2A. Full appointments collection (up to 2500)
+    setTimeout(async () => {
+      // 2A. Recent appointments collection (one-off getDocs, limit 150)
       try {
-        this.unsubFullApp = onSnapshot(query(collection(activeDb, 'appointments'), limit(2500)), (snapshot) => {
-          snapshot.forEach((snap) => {
-            this.fullAppsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
-          });
-          this.scheduleMergeAndSet(false);
-        }, (err) => console.warn('Appointments full store listener notice:', err));
+        const appSnap = await getDocs(query(collection(activeDb, 'appointments'), limit(150)));
+        appSnap.forEach((snap) => {
+          this.fullAppsMap.set(snap.id, { ...snap.data(), id: snap.id, docId: snap.id, collectionName: 'appointments' });
+        });
+        this.scheduleMergeAndSet(false);
       } catch (e) {
-        console.warn('Appointments full store listener setup error:', e);
+        console.warn('Appointments history store notice:', e);
       }
 
-      // 2B. Full allpatients collection (up to 2500)
+      // 2B. Recent allpatients collection (one-off getDocs, limit 150)
       try {
-        this.unsubFullPat = onSnapshot(query(collection(activeDb, 'allpatients'), limit(2500)), (snapshot) => {
-          snapshot.forEach((snap) => {
-            const data = snap.data();
-            const item = { ...data, id: snap.id, docId: snap.id, collectionName: 'allpatients' };
-            this.fullPatsMap.set(snap.id, item);
-          });
-          this.scheduleMergeAndSet(false);
-        }, (err) => console.warn('Mobile allpatients full store listener notice:', err));
+        const patSnap = await getDocs(query(collection(activeDb, 'allpatients'), limit(150)));
+        patSnap.forEach((snap) => {
+          const data = snap.data();
+          const item = { ...data, id: snap.id, docId: snap.id, collectionName: 'allpatients' };
+          this.fullPatsMap.set(snap.id, item);
+        });
+        this.scheduleMergeAndSet(false);
       } catch (e) {
-        console.warn('Mobile allpatients full store listener setup error:', e);
+        console.warn('Mobile allpatients history store notice:', e);
       }
 
       // 2C. Background historical patients collection scoped to branch
@@ -419,27 +430,26 @@ class ReceptionDataStore {
         const branchQueries = getBranchQueryNames(branchName);
         const qList = branchQueries.length > 0
           ? [
-              query(collection(activeDb, 'patients'), where('branchName', 'in', branchQueries), limit(500)),
-              query(collection(activeDb, 'patients'), where('branch', 'in', branchQueries), limit(500))
+              query(collection(activeDb, 'patients'), where('branchName', 'in', branchQueries), limit(150)),
+              query(collection(activeDb, 'patients'), where('branch', 'in', branchQueries), limit(150))
             ]
-          : [query(collection(activeDb, 'patients'), limit(300))];
+          : [query(collection(activeDb, 'patients'), limit(150))];
 
-        Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] })))).then((snaps) => {
-          const list: any[] = [];
-          const seen = new Set<string>();
-          snaps.forEach((snapshot: any) => {
-            snapshot.docs?.forEach((snap: any) => {
-              if (!seen.has(snap.id)) {
-                seen.add(snap.id);
-                list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
-              }
-            });
+        const snaps = await Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] }))));
+        const list: any[] = [];
+        const seen = new Set<string>();
+        snaps.forEach((snapshot: any) => {
+          snapshot.docs?.forEach((snap: any) => {
+            if (!seen.has(snap.id)) {
+              seen.add(snap.id);
+              list.push(this.sanitizeHistoryDoc(snap.data(), snap.id, 'patients'));
+            }
           });
-          this.patientsFromPatientsCol = list;
-          this.scheduleMergeAndSet(false);
-        }).catch((err) => console.warn('Historical patients load notice:', err));
+        });
+        this.patientsFromPatientsCol = list;
+        this.scheduleMergeAndSet(false);
       } catch (e) {
-        console.warn('Patients store load setup error:', e);
+        console.warn('Historical patients load notice:', e);
       }
     }, 1200);
   }
