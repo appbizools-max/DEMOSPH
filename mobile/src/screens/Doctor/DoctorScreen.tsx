@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { DoctorDashboardScreen } from './Dashboard/DoctorDashboardScreen';
 import { DoctorPatientListScreen } from './PatientList/DoctorPatientListScreen';
@@ -22,6 +23,18 @@ export const DoctorScreen: React.FC<DoctorScreenProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'patients' | 'packages' | 'revenue'>('dashboard');
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem('@sph_doctor_tab').then((saved) => {
+      if (saved && ['dashboard', 'patients', 'packages', 'revenue'].includes(saved)) {
+        setActiveTab(saved as any);
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.setItem('@sph_doctor_tab', activeTab).catch(() => {});
+  }, [activeTab]);
 
   // Helper to determine if Head Doctor
   const isHeadDoctor = doctorCategory === 'Head Doctor' || doctorName.includes('Prashanth') || doctorName.includes('Rama');

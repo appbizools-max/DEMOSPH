@@ -5,8 +5,9 @@ import {
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import {
-  getSafeDb, collection, doc, onSnapshot, updateDoc, setDoc
+  getSafeDb, collection, doc, onSnapshot, updateDoc, setDoc, query, limit
 } from '../../../utils/firebaseSafe';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   CleaningSchedule, CleaningSubmission, BRANCH_LIST,
   getTodayDateString, formatDisplayDate, checkBranchLockoutStatus
@@ -53,6 +54,24 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
   // Lightbox modal
   const [previewImg, setPreviewImg] = useState<string | null>(null);
 
+  // Instant cache restore
+  useEffect(() => {
+    AsyncStorage.getItem('@sph_cleaning_screen_cache').then(raw => {
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && Array.isArray(parsed.submissions) && parsed.submissions.length > 0) {
+            setSubmissions(parsed.submissions);
+            setLoading(false);
+          }
+          if (parsed && parsed.schedules) {
+            setSchedules(prev => ({ ...prev, ...parsed.schedules }));
+          }
+        } catch (_) {}
+      }
+    }).catch(() => {});
+  }, []);
+
   // 1. Listen to schedules
   useEffect(() => {
     if (!db) return;
@@ -71,6 +90,10 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
         }
       });
       setSchedules(map);
+      AsyncStorage.getItem('@sph_cleaning_screen_cache').then(raw => {
+        const old = raw ? JSON.parse(raw) : {};
+        AsyncStorage.setItem('@sph_cleaning_screen_cache', JSON.stringify({ ...old, schedules: map })).catch(() => {});
+      }).catch(() => {});
     }, (err) => console.warn('Mobile schedules listener error:', err));
     return () => unsub();
   }, [today]);
@@ -78,9 +101,8 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
   // 2. Listen to submissions
   useEffect(() => {
     if (!db) return;
-    setLoading(true);
-    const colRef = collection(db, 'branch_cleaning_submissions');
-    const unsub = onSnapshot(colRef, (snap) => {
+    const qSub = query(collection(db, 'branch_cleaning_submissions'), limit(50));
+    const unsub = onSnapshot(qSub, (snap) => {
       const list: CleaningSubmission[] = snap.docs.map(d => ({
         id: d.id,
         ...(d.data() as any)
@@ -88,6 +110,10 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
       list.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
       setSubmissions(list);
       setLoading(false);
+      AsyncStorage.getItem('@sph_cleaning_screen_cache').then(raw => {
+        const old = raw ? JSON.parse(raw) : {};
+        AsyncStorage.setItem('@sph_cleaning_screen_cache', JSON.stringify({ ...old, submissions: list.slice(0, 30) })).catch(() => {});
+      }).catch(() => {});
     }, (err) => {
       console.warn('Mobile submissions listener error:', err);
       setLoading(false);
@@ -204,24 +230,9 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
-      {/* Top Header */}
+      {/* Top Header / Quick summary cards */}
       <View style={styles.header}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            {onBack && (
-              <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-                <Ionicons name="arrow-back" size={20} color="#0284c7" />
-              </TouchableOpacity>
-            )}
-            <View>
-              <Text style={styles.title}>Branch Clinic Cleaning</Text>
-              <Text style={styles.subtitle}>Assigned dates audit & HR verification</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Quick summary cards */}
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
           <View style={[styles.statBox, { backgroundColor: '#fefce8', borderColor: '#fef08a' }]}>
             <Text style={{ fontSize: 11, color: '#854d0e', fontWeight: '700' }}>Pending Review</Text>
             <Text style={{ fontSize: 16, fontWeight: '900', color: '#a16207' }}>{pendingCount}</Text>
@@ -394,7 +405,7 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
                     <View>
                       <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>{sub.branch} Branch</Text>
                       <Text style={{ fontSize: 11.5, color: '#64748b' }}>
-                        Scheduled Date: <strong>{formatDisplayDate(sub.assignedDate)}</strong>
+                        Scheduled Date: <Text style={{ fontWeight: '700', color: '#0f172a' }}>{formatDisplayDate(sub.assignedDate)}</Text>
                       </Text>
                       <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
                         By {sub.submittedBy} • {new Date(sub.submittedAt).toLocaleDateString()}

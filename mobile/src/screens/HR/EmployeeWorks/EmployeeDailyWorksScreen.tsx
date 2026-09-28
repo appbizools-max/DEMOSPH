@@ -235,26 +235,8 @@ export const EmployeeDailyWorksScreen: React.FC<EmployeeDailyWorksScreenProps> =
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
 
-      {/* Header Bar */}
+      {/* View Mode Switcher (Day-wise vs Month-wise) */}
       <View style={styles.headerBar}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, marginRight: 8 }}>
-          {onBack && (
-            <TouchableOpacity onPress={onBack} style={styles.backButton}>
-              <Ionicons name="arrow-back" size={18} color="#0f172a" />
-            </TouchableOpacity>
-          )}
-          <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View style={styles.liveTag}>
-                <Text style={styles.liveTagText}>LIVE</Text>
-              </View>
-              <Text style={styles.titleText} numberOfLines={1}>Daily Works</Text>
-            </View>
-            <Text style={styles.subtitleText} numberOfLines={1}>Staff performance reports</Text>
-          </View>
-        </View>
-
-        {/* View Mode Switcher (Day-wise vs Month-wise) */}
         <View style={styles.modeToggleContainer}>
           <TouchableOpacity
             onPress={() => setViewMode('day')}
@@ -543,7 +525,7 @@ const styles = StyleSheet.create({
   headerBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     marginBottom: 10,
   },
   backButton: {

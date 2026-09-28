@@ -351,45 +351,44 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
     let appsFromAppointments: any[] = [];
     let appsFromAllPatients: any[] = [];
 
+    let mergeTimer: any = null;
     const mergeAndSet = () => {
-      const combinedMap = new Map<string, any>();
+      if (mergeTimer) clearTimeout(mergeTimer);
+      mergeTimer = setTimeout(() => {
+        const combinedMap = new Map<string, any>();
+        const phoneDateSet = new Set<string>();
 
-      // 1. Add records from appointments collection
-      appsFromAppointments.forEach(item => {
-        if (item && item.id) {
-          combinedMap.set(item.id, item);
-        }
-      });
-
-      // 2. Merge from allpatients collection with smart deduplication
-      appsFromAllPatients.forEach(item => {
-        if (!item || !item.id) return;
-        if (combinedMap.has(item.id)) {
-          const existing = combinedMap.get(item.id);
-          combinedMap.set(item.id, { ...existing, ...item });
-        } else {
-          const cleanPhone = String(item.phoneNumber || item.phone || item.mobile || '').replace(/\D/g, '').slice(-10);
-          const date = String(item.appointmentDate || item.date || '').trim();
-
-          let isDuplicate = false;
-          if (cleanPhone && date) {
-            for (const existing of combinedMap.values()) {
-              const exPhone = String(existing.phoneNumber || existing.phone || existing.mobile || '').replace(/\D/g, '').slice(-10);
-              const exDate = String(existing.appointmentDate || existing.date || '').trim();
-              if (exPhone === cleanPhone && exDate === date) {
-                isDuplicate = true;
-                break;
-              }
+        // 1. Add records from appointments collection
+        appsFromAppointments.forEach(item => {
+          if (item && item.id) {
+            combinedMap.set(item.id, item);
+            const cleanPhone = String(item.phoneNumber || item.phone || item.mobile || '').replace(/\D/g, '').slice(-10);
+            const date = String(item.appointmentDate || item.date || '').trim();
+            if (cleanPhone && date) {
+              phoneDateSet.add(`${cleanPhone}_${date}`);
             }
           }
+        });
 
-          if (!isDuplicate) {
-            combinedMap.set(item.id, item);
+        // 2. Merge from allpatients collection with instant O(1) deduplication
+        appsFromAllPatients.forEach(item => {
+          if (!item || !item.id) return;
+          if (combinedMap.has(item.id)) {
+            const existing = combinedMap.get(item.id);
+            combinedMap.set(item.id, { ...existing, ...item });
+          } else {
+            const cleanPhone = String(item.phoneNumber || item.phone || item.mobile || '').replace(/\D/g, '').slice(-10);
+            const date = String(item.appointmentDate || item.date || '').trim();
+            const key = (cleanPhone && date) ? `${cleanPhone}_${date}` : null;
+            if (!key || !phoneDateSet.has(key)) {
+              combinedMap.set(item.id, item);
+              if (key) phoneDateSet.add(key);
+            }
           }
-        }
-      });
+        });
 
-      setLiveAppointments(Array.from(combinedMap.values()));
+        setLiveAppointments(Array.from(combinedMap.values()));
+      }, 30);
     };
 
     const unsubApp = onSnapshot(collection(db, 'appointments'), (snap) => {
@@ -742,70 +741,13 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
 
   const pendingFeeCount = feeRequests.filter(r => normalizeFeeStatus(r.status) === 'Pending').length;
 
-  const [pendingCleaningCount, setPendingCleaningCount] = useState(0);
-  useEffect(() => {
-    if (!db) return;
-    const unsubCleaning = onSnapshot(collection(db, 'branch_cleaning_submissions'), (snap) => {
-      const pCount = snap.docs.filter(d => d.data()?.status === 'Pending').length;
-      setPendingCleaningCount(pCount);
-    }, (err) => console.warn('Mobile cleaning submissions count listener error:', err));
-    return () => unsubCleaning();
-  }, []);
-
-  const renderTopSwitcher = () => (
-    <View style={{ marginBottom: 10, paddingHorizontal: 12, paddingTop: 6 }}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 2 }}>
-        {[
-          { id: 'analytics', label: 'Operations', icon: 'grid-outline' },
-          { id: 'employee_attendance', label: 'Attendance Report', icon: 'time-outline' },
-          { id: 'employee_works', label: 'Daily Works', icon: 'document-text-outline' },
-          { id: 'branch_cleaning', label: pendingCleaningCount > 0 ? `Cleaning & Sanitation (${pendingCleaningCount})` : 'Cleaning & Sanitation', icon: 'sparkles-outline' },
-          { id: 'leave_requests', label: pendingLeaveCount > 0 ? `Leaves (${pendingLeaveCount})` : 'Leaves', icon: 'calendar-outline' },
-          { id: 'staff', label: 'Staff Roster', icon: 'people-outline' },
-          { id: 'branches', label: 'Branches', icon: 'business-outline' },
-          { id: 'doctors', label: 'Doctor Timings', icon: 'medkit-outline' },
-        ].map(tab => (
-          <TouchableOpacity
-            key={tab.id}
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 5,
-              paddingVertical: 7,
-              paddingHorizontal: 12,
-              borderRadius: 10,
-              backgroundColor: activeTab === tab.id ? '#258ec8' : '#ffffff',
-              borderWidth: 1,
-              borderColor: activeTab === tab.id ? '#258ec8' : '#cbd5e1'
-            }}
-            onPress={() => {
-              const nextId = tab.id as any;
-              setActiveTab(nextId);
-              if (onNavigateTab) {
-                onNavigateTab(nextId);
-              }
-            }}
-          >
-            <Ionicons name={tab.icon as any} size={14} color={activeTab === tab.id ? '#ffffff' : '#475569'} />
-            <Text style={{ fontSize: 12, fontWeight: '800', color: activeTab === tab.id ? '#ffffff' : '#475569' }}>
-              {tab.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-    </View>
-  );
-
   if (activeTab === 'branch_cleaning') {
     return (
       <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-        {renderTopSwitcher()}
-        <View style={{ flex: 1 }}>
-          <BranchCleaningScreen onBack={() => {
-            setActiveTab('analytics');
-            if (onNavigateTab) onNavigateTab('admin');
-          }} role={role} />
-        </View>
+        <BranchCleaningScreen onBack={() => {
+          setActiveTab('analytics');
+          if (onNavigateTab) onNavigateTab('admin');
+        }} role={role} />
       </View>
     );
   }
@@ -813,10 +755,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   if (activeTab === 'employee_works') {
     return (
       <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-        {renderTopSwitcher()}
-        <View style={{ flex: 1 }}>
-          <EmployeeDailyWorksScreen onBack={() => setActiveTab('analytics')} />
-        </View>
+        <EmployeeDailyWorksScreen onBack={() => setActiveTab('analytics')} />
       </View>
     );
   }
@@ -824,10 +763,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   if (activeTab === 'employee_attendance') {
     return (
       <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-        {renderTopSwitcher()}
-        <View style={{ flex: 1 }}>
-          <AttendanceRosterScreen onBack={() => setActiveTab('analytics')} />
-        </View>
+        <AttendanceRosterScreen onBack={() => setActiveTab('analytics')} />
       </View>
     );
   }
@@ -835,10 +771,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   if (activeTab === 'branches') {
     return (
       <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-        {renderTopSwitcher()}
-        <View style={{ flex: 1 }}>
-          <ManageBranchesScreen onBack={() => setActiveTab('analytics')} />
-        </View>
+        <ManageBranchesScreen onBack={() => setActiveTab('analytics')} />
       </View>
     );
   }
@@ -846,17 +779,13 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   if (activeTab === 'doctors') {
     return (
       <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-        {renderTopSwitcher()}
-        <View style={{ flex: 1 }}>
-          <DoctorTimingsScreen />
-        </View>
+        <DoctorTimingsScreen />
       </View>
     );
   }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
-      {renderTopSwitcher()}
 
       {/* TAB 1: ANALYTICS & REVENUE - 4 BRANCHES DAILY OPERATIONS */}
       {activeTab === 'analytics' && (

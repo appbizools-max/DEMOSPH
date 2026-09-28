@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Linking, Alert, TextInput, ActivityIndicator } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { getSafeDb, collection, onSnapshot, doc, updateDoc, deleteDoc, getDocs } from '../../../utils/firebaseSafe';
-import { sendCancellationWhatsAppNotification, sanitizeDoctorName } from '@app/shared';
+import { sendCancellationWhatsAppNotification, sanitizeDoctorName, resolveCanonicalBranchId, BRANCHES } from '@app/shared';
 import { PatientAppointmentRecord } from '../../../components/AppointmentsQueueUI';
 import { getBranchShortcut } from '../../../utils/idGenerator';
 import { DEFAULT_DOCTORS_SEED } from '../BookAppointment/BookAppointmentScreen';
@@ -21,14 +21,14 @@ export const DASHBOARD_BRANCH_OPTIONS = [
 ];
 
 export const normalizeToDashboardBranch = (branch?: string): string => {
-  if (!branch) return 'All Branches';
+  if (!branch) return 'KPHB Branch';
   const norm = String(branch).toLowerCase();
   if (norm.includes('admin') || norm.includes('hr') || norm === 'all' || norm.includes('all branches')) return 'All Branches';
-  if (norm.includes('kphb') || norm.includes('kukatpally')) return 'KPHB Branch';
-  if (norm.includes('nalla') || norm.includes('nallagandla')) return 'Nallagandla Branch';
-  if (norm.includes('dilshuk') || norm.includes('dilsukh') || norm.includes('dsnr')) return 'Dilshuknagar Branch';
-  if (norm.includes('chanda') || norm.includes('chnr') || norm.includes('chandanagar')) return 'Chandanagar Branch';
-  return 'All Branches';
+  const canonical = resolveCanonicalBranchId(branch);
+  if (canonical && BRANCHES[canonical]) {
+    return BRANCHES[canonical].fullName;
+  }
+  return 'KPHB Branch';
 };
 
 interface ReceptionDashboardScreenProps {
@@ -173,28 +173,40 @@ const isMatchingDate = (app: any, targetDate: string): boolean => {
 };
 
 const normalizeBranchName = (b: string): string => {
-  return b.toLowerCase().replace(/\s*branch\s*/i, '').trim();
+  return String(b || '').toLowerCase().replace(/\s*branch\s*/i, '').trim();
 };
 
 const getBranchCode = (str: string): string => {
-  if (str.includes('kphb') || str.includes('kukatpally')) return 'kphb';
-  if (str.includes('nalla') || str.includes('nallagandla')) return 'nalla';
-  if (str.includes('chanda') || str.includes('chnr') || str.includes('chandanagar')) return 'chanda';
-  if (str.includes('dilshuk') || str.includes('dilsukh') || str.includes('dsnr') || str.includes('dshnr')) return 'dsnr';
-  return str;
+  const s = String(str || '').toLowerCase();
+  if (s.includes('kphb') || s.includes('kukatpally') || s.includes('kpb')) return 'kphb';
+  if (s.includes('nalla') || s.includes('nallagandla') || s.includes('nlg')) return 'nalla';
+  if (s.includes('chanda') || s.includes('chnr') || s.includes('chandanagar') || s.includes('chan')) return 'chanda';
+  if (s.includes('dilshuk') || s.includes('dilsukh') || s.includes('dsnr') || s.includes('dshnr')) return 'dsnr';
+  return s;
 };
 
 const isBranchMatching = (b1: string, b2: string): boolean => {
+  if (!b1 || !b2) return false;
+  const canonical1 = resolveCanonicalBranchId(b1);
+  const canonical2 = resolveCanonicalBranchId(b2);
+  if (canonical1 && canonical2) {
+    return canonical1 === canonical2;
+  }
+  const code1 = getBranchCode(b1);
+  const code2 = getBranchCode(b2);
+  if (code1 && code2 && (code1 === 'kphb' || code1 === 'nalla' || code1 === 'chanda' || code1 === 'dsnr')) {
+    return code1 === code2;
+  }
   const n1 = normalizeBranchName(b1);
   const n2 = normalizeBranchName(b2);
-  if (n1 === n2 || n1.includes(n2) || n2.includes(n1)) return true;
-  return getBranchCode(n1) === getBranchCode(n2);
+  if (!n1 || !n2 || n1 === 'clinic' || n2 === 'clinic' || n1 === 'branch' || n2 === 'branch') return false;
+  return n1 === n2;
 };
 
 const isMatchingBranch = (app: any, activeBranch?: string): boolean => {
   if (!activeBranch || activeBranch === 'All Branches' || activeBranch.toLowerCase().includes('all')) return true;
-  const appBranch = app.branch || app.targetBranch || app.branchName || app.clinic || app.location || app.center || app.assignedBranch;
-  if (!appBranch) return true;
+  const appBranch = app.branch || app.branchName || app.targetBranch || app.branchId || app.assignedBranch || app.registrationId || app.regId;
+  if (!appBranch) return false;
   return isBranchMatching(String(appBranch), String(activeBranch));
 };
 
@@ -216,7 +228,8 @@ const mapRecord = (
   index: number,
   selectedDate: string,
   allRecords: any[] = [],
-  packageMembers: any[] = []
+  packageMembers: any[] = [],
+  fallbackBranch: string = 'KPHB Branch'
 ): PatientAppointmentRecord => {
   let status: 'upcoming' | 'active' | 'collect_fee' | 'completed' = 'upcoming';
   const s = String(app.status || '').toLowerCase().trim();
@@ -235,19 +248,23 @@ const mapRecord = (
 
   const vState = getPatientVisitState(app, allRecords, packageMembers);
 
+  const rawBranch = app.branch || app.branchName || app.targetBranch || app.branchId || app.registrationId || app.regId;
+  const canonicalBranch = resolveCanonicalBranchId(rawBranch);
+  const cleanBranch = (canonicalBranch && BRANCHES[canonicalBranch]?.fullName) || (fallbackBranch && fallbackBranch !== 'All Branches' ? fallbackBranch : 'KPHB Branch');
+
   return {
     ...app,
     id: app.id || String(index),
     name: app.patientName || app.name || 'Patient',
     phone: app.phoneNumber || app.phone || app.mobile || '',
     regId: getCleanRegId(app, index),
-    doctor: sanitizeDoctorName(app.doctorName || app.doctor, app.branch),
+    doctor: sanitizeDoctorName(app.doctorName || app.doctor, cleanBranch),
     time: app.appointmentTime || app.time || '10:00 AM',
     date: app.appointmentDate || selectedDate,
     status: status,
     rawStatus: app.status,
     paymentStatus: app.paymentStatus,
-    branch: app.branch || 'Clinic',
+    branch: cleanBranch,
     mode: app.consultationMode || 'In-Clinic',
     isPackageMember: Boolean(app.isPackageMember || app.hasActivePackage || app.hasPackage),
     visitState: vState,
@@ -996,8 +1013,9 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
 
   // Map filtered appointments once with pre-calculated visit state
   const mappedAppointments = useMemo(() => {
-    return filteredAppointments.map((app, idx) => mapRecord(app, idx, selectedDate, allRecordsPool, packageMembersList));
-  }, [filteredAppointments, selectedDate, allRecordsPool, packageMembersList]);
+    const fallbackBranch = (activeBranch && activeBranch !== 'All Branches') ? activeBranch : 'KPHB Branch';
+    return filteredAppointments.map((app, idx) => mapRecord(app, idx, selectedDate, allRecordsPool, packageMembersList, fallbackBranch));
+  }, [filteredAppointments, selectedDate, allRecordsPool, packageMembersList, activeBranch]);
 
   // Memoized Sub-lists (upcomingList, activeList, completedList)
   const upcomingList = useMemo(() => {
@@ -1322,9 +1340,6 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
                     <Text style={{ color: '#ffffff', fontSize: 9.5, fontWeight: '800' }}>{deleted24hList.length}</Text>
                   </View>
                 )}
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => onNavigate && onNavigate('reception_book')}>
-                <Text style={{ color: '#258ec8', fontSize: 12, fontWeight: '700' }}>View All</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1763,7 +1778,7 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
                         {rescheduleDoctor || 'Select Doctor'}
                       </Text>
                       <Text style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                        Homeopathy Physician • {selectedRescheduleAppt?.branch || 'Clinic'}
+                        Homeopathy Physician • {selectedRescheduleAppt?.branch || activeBranch || 'KPHB Branch'}
                       </Text>
                     </View>
                   </View>

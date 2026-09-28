@@ -1936,16 +1936,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       showsVerticalScrollIndicator={false}
       nestedScrollEnabled={true}
     >
-      {/* Back Arrow < & Title Header */}
-      <View style={styles.topHeaderNav}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={handleDirectGoBack}
-        >
-          <Feather name="chevron-left" size={24} color="#0f172a" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Book Appointment</Text>
-      </View>
+
 
       {/* CARD 1: PATIENT DETAILS */}
       <View style={[styles.card, { zIndex: (marketingExpanded || modeExpanded || (showSuggestions && patientSuggestions.length > 0)) ? 1000 : 1 }]}>

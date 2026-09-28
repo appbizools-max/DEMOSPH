@@ -445,20 +445,7 @@ export const AttendanceRosterScreen: React.FC<AttendanceRosterScreenProps> = ({ 
 
   return (
     <View style={styles.container}>
-      {/* Top Header */}
-      <View style={styles.topHeader}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          {onBack && (
-            <TouchableOpacity onPress={onBack} style={{ padding: 8, borderRadius: 10, backgroundColor: '#f1f5f9', borderWidth: 1, borderColor: '#e2e8f0' }}>
-              <Ionicons name="arrow-back" size={20} color="#0f172a" />
-            </TouchableOpacity>
-          )}
-          <View style={{ flex: 1 }}>
-            <Text style={styles.title}>Staff Attendance & Work Portal</Text>
-            <Text style={styles.subtitle}>Punch logs, 15m late flags, monthly analysis & leaves.</Text>
-          </View>
-        </View>
-      </View>
+
 
       {/* 4 Main Management Tabs */}
       <View style={styles.tabBar}>

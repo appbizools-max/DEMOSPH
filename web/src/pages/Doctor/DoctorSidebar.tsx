@@ -27,6 +27,7 @@ export const DoctorSidebar: React.FC<DoctorSidebarProps> = ({
   ];
 
   const handleLogout = async () => {
+    if (!window.confirm('Are you sure you want to log out?')) return;
     await signOutUser();
     if (onLogout) {
       onLogout();

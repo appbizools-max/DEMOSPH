@@ -42,6 +42,8 @@ import {
 
 const MOBILE_AUTH_KEY = '@sph_auth_session';
 const READ_NOTIS_KEY = '@sph_read_noti_ids';
+const ACTIVE_TAB_KEY = '@sph_active_tab';
+const SELECTED_PATIENT_KEY = '@sph_selected_patient';
 
 const safeResolveCanonicalBranchId = (input?: string | null): CanonicalBranchId => {
   try {
@@ -274,7 +276,12 @@ function MainApp() {
   useEffect(() => {
     const restoreSession = async () => {
       try {
-        const saved = await AsyncStorage.getItem(MOBILE_AUTH_KEY);
+        const [saved, savedTab, savedPatient] = await Promise.all([
+          AsyncStorage.getItem(MOBILE_AUTH_KEY),
+          AsyncStorage.getItem(ACTIVE_TAB_KEY),
+          AsyncStorage.getItem(SELECTED_PATIENT_KEY),
+        ]);
+
         if (saved) {
           const parsed = JSON.parse(saved);
           if (parsed && parsed.role) {
@@ -288,14 +295,45 @@ function MainApp() {
             setBranchName(parsed.branchName || (BRANCHES && BRANCHES[canonical]?.fullName) || 'KPHB Branch');
             setBranchPhone(parsed.branchPhone || (BRANCHES && BRANCHES[canonical]?.formattedPhone) || '+91 90301 76176');
             if (parsed.staffId) setStaffId(parsed.staffId);
-            if (parsed.role === 'admin' || parsed.role === 'hr') {
-              setActiveTab('admin');
-            } else if (parsed.role === 'doctor') {
-              setActiveTab('doctor');
-            } else if (parsed.role === 'staff') {
-              setActiveTab('staff');
+
+            const defaultHome = (parsed.role === 'admin' || parsed.role === 'hr')
+              ? 'admin'
+              : parsed.role === 'doctor'
+                ? 'doctor'
+                : parsed.role === 'staff'
+                  ? 'staff'
+                  : 'reception_dashboard';
+
+            // Restore saved patient if any
+            let restoredPatient: any = null;
+            if (savedPatient) {
+              try {
+                restoredPatient = JSON.parse(savedPatient);
+                if (restoredPatient) setSelectedPatient(restoredPatient);
+              } catch (_) {}
+            }
+
+            // Restore last active screen/tab
+            let targetTab = defaultHome;
+            if (savedTab && typeof savedTab === 'string' && savedTab !== 'auth' && savedTab.trim().length > 0) {
+              if (savedTab === 'patient_file' || savedTab === 'reception_patient_file') {
+                if (restoredPatient) {
+                  targetTab = savedTab;
+                } else {
+                  targetTab = 'reception_patients';
+                }
+              } else {
+                targetTab = savedTab;
+              }
+            }
+
+            setActiveTab(targetTab);
+
+            // If restored on a sub-screen, initialize tabHistory with default home so back button navigates home cleanly
+            if (targetTab !== defaultHome) {
+              setTabHistory([defaultHome]);
             } else {
-              setActiveTab('reception_dashboard');
+              setTabHistory([]);
             }
 
             // Register FCM device token and subscribe to role/branch topics
@@ -325,6 +363,22 @@ function MainApp() {
       unsubFCM();
     };
   }, []);
+
+  // Persist current active tab so the app reopens exactly where user left off
+  useEffect(() => {
+    if (isLoadingSession || activeTab === 'auth') return;
+    AsyncStorage.setItem(ACTIVE_TAB_KEY, activeTab).catch(() => {});
+  }, [activeTab, isLoadingSession]);
+
+  // Persist selected patient for patient file restoration
+  useEffect(() => {
+    if (isLoadingSession) return;
+    if (selectedPatient) {
+      AsyncStorage.setItem(SELECTED_PATIENT_KEY, JSON.stringify(selectedPatient)).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(SELECTED_PATIENT_KEY).catch(() => {});
+    }
+  }, [selectedPatient, isLoadingSession]);
 
   // Real-time Firestore notification alert for Reception (matching branch), HR / Admin (all branches), Doctors & Staff
   // Robust branch key normalizer for exact multi-branch matching across all variations
@@ -518,18 +572,21 @@ function MainApp() {
       }).catch(() => {});
     }
 
-    if (data.role === 'admin' || data.role === 'hr') {
-      setActiveTab('admin');
-    } else if (data.role === 'doctor') {
-      setActiveTab('doctor');
-    } else if (data.role === 'staff') {
-      setActiveTab('staff');
-    } else {
-      setActiveTab('reception_dashboard');
-    }
+    const defaultHome = (data.role === 'admin' || data.role === 'hr')
+      ? 'admin'
+      : data.role === 'doctor'
+        ? 'doctor'
+        : data.role === 'staff'
+          ? 'staff'
+          : 'reception_dashboard';
+
+    setSelectedPatient(null);
+    setActiveTab(defaultHome);
+    AsyncStorage.setItem(ACTIVE_TAB_KEY, defaultHome).catch(() => {});
+    AsyncStorage.removeItem(SELECTED_PATIENT_KEY).catch(() => {});
   };
 
-  const handleSignOut = async () => {
+  const performSignOut = async () => {
     // When staff logs out on mobile, send notification to HR
     if (userRole === 'staff') {
       createStaffLogoutNotificationInFirestore({
@@ -540,12 +597,38 @@ function MainApp() {
     }
 
     try {
-      await AsyncStorage.removeItem(MOBILE_AUTH_KEY);
+      await Promise.all([
+        AsyncStorage.removeItem(MOBILE_AUTH_KEY),
+        AsyncStorage.removeItem(ACTIVE_TAB_KEY),
+        AsyncStorage.removeItem(SELECTED_PATIENT_KEY),
+      ]);
     } catch (e) { }
     await signOutUser();
+    setSelectedPatient(null);
     setTabHistory([]);
     setActiveTab('auth');
     Alert.alert('Signed Out', 'You have been logged out of SPH Staff Portal.');
+  };
+
+  const handleSignOut = () => {
+    Alert.alert(
+      'Confirm Logout',
+      'Are you sure you want to log out?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'OK',
+          style: 'destructive',
+          onPress: () => {
+            performSignOut();
+          },
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
   const isAuthScreen = activeTab === 'auth';
@@ -920,7 +1003,7 @@ function MainApp() {
       )}
 
       {/* Sub-Page Professional Navigation Header with Back Arrow < and Page Title */}
-      {!isAuthScreen && userRole !== 'doctor' && userRole !== 'staff' && (activeTab !== 'reception_dashboard' && activeTab !== 'reception' && activeTab !== 'admin' && activeTab !== 'analytics') && (
+      {!isAuthScreen && userRole !== 'doctor' && userRole !== 'staff' && (activeTab !== 'reception_dashboard' && activeTab !== 'reception' && activeTab !== 'admin' && activeTab !== 'analytics' && activeTab !== 'patient_file' && activeTab !== 'reception_patient_file') && (
         <View style={styles.subPageHeader}>
           <TouchableOpacity style={styles.headerBackBtn} onPress={handleGoBack}>
             <Ionicons name="arrow-back" size={22} color="#0f172a" />

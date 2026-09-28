@@ -131,6 +131,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    if (!window.confirm('Are you sure you want to log out?')) return;
     try {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch (e) { }

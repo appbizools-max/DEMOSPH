@@ -3,6 +3,7 @@ import {
   StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput,
   Alert, ActivityIndicator, Image, Modal, Platform, PermissionsAndroid
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -57,6 +58,18 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'punch' | 'leaves' | 'reports' | 'history'>('punch');
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
+
+  useEffect(() => {
+    AsyncStorage.getItem('@sph_staff_tab').then((saved) => {
+      if (saved && ['punch', 'leaves', 'reports', 'history'].includes(saved)) {
+        setActiveTab(saved as any);
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.setItem('@sph_staff_tab', activeTab).catch(() => {});
+  }, [activeTab]);
 
   // Staff details
   const [staffProfile, setStaffProfile] = useState({

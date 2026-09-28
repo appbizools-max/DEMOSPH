@@ -51,6 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   const handleLogout = async () => {
+    if (!window.confirm('Are you sure you want to log out?')) return;
     await signOutUser();
     setActiveTab('auth');
   };
