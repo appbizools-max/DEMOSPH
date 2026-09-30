@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ScrollView, Platform, Modal, FlatList } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -49,6 +49,14 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
 }) => {
   const initialBranch = branchName || currentBranch || 'KPHB Branch';
   const [selectedBranch, setSelectedBranch] = useState(initialBranch);
+
+  useEffect(() => {
+    const active = branchName || currentBranch;
+    if (active) {
+      setSelectedBranch(active);
+    }
+  }, [branchName, currentBranch]);
+
   const [patientName, setPatientName] = useState('');
   const [patientAge, setPatientAge] = useState('');
   const [gender, setGender] = useState('Mr.');
@@ -522,18 +530,16 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </View>
 
           <View style={[styles.inputGroup, { flex: 1.4 }]}>
-            <Text style={styles.inputLabel}>Branch Name</Text>
-            <TouchableOpacity
-              style={[styles.inputWrapper, { justifyContent: 'space-between' }]}
-              onPress={() => setShowBranchPicker(true)}
-              activeOpacity={0.7}
+            <Text style={styles.inputLabel}>Branch Name (Locked)</Text>
+            <View
+              style={[styles.inputWrapper, { justifyContent: 'space-between', backgroundColor: '#f1f5f9' }]}
             >
               <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                <Feather name="map-pin" size={16} color="#94a3b8" style={styles.inputIcon} />
-                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '600' }}>{selectedBranch}</Text>
+                <Feather name="map-pin" size={16} color="#258ec8" style={styles.inputIcon} />
+                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{selectedBranch || initialBranch}</Text>
               </View>
-              <Feather name="chevron-down" size={14} color="#94a3b8" />
-            </TouchableOpacity>
+              <Feather name="lock" size={13} color="#64748b" />
+            </View>
           </View>
         </View>
 

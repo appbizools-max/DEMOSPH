@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, Modal, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getSafeDb, collection, onSnapshot, doc, deleteDoc, addDoc, updateDoc, setDoc } from '../../../utils/firebaseSafe';
+import { DEFAULT_STAFF_MEMBERS } from '@app/shared';
 
 export const StaffManagementScreen: React.FC = () => {
   const db = getSafeDb();
@@ -14,6 +16,9 @@ export const StaffManagementScreen: React.FC = () => {
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffPhone, setNewStaffPhone] = useState('');
   const [newStaffBranch, setNewStaffBranch] = useState('KPHB');
+  const [newStaffEmail, setNewStaffEmail] = useState('');
+  const [newStaffPassword, setNewStaffPassword] = useState('email123');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [newStaffShift, setNewStaffShift] = useState('10:00 AM - 08:30 PM');
   const [newStaffHours, setNewStaffHours] = useState('10.5 hrs/day');
   const [newStaffSalary, setNewStaffSalary] = useState('₹18,000');
@@ -30,18 +35,7 @@ export const StaffManagementScreen: React.FC = () => {
   const [newDocHours, setNewDocHours] = useState('10 hrs/day');
   const [newDocSalary, setNewDocSalary] = useState('₹95,000');
 
-  // Seed Data for Staff
-  const DEFAULT_STAFF = [
-    { id: '1', name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹22,000', phone: '7338260802', mobile: '7338260802' },
-    { id: '2', name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', hours: '8.5 hrs/day', salary: '₹17,000', phone: '6302121265', mobile: '6302121265' },
-    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', hours: '9.5 hrs/day', salary: '₹17,000', phone: '9874563210', mobile: '9874563210' },
-    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', hours: '8 hrs/day', salary: '₹15,000', phone: '9652180003', mobile: '9652180003' },
-    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', hours: '10 hrs/day', salary: '₹18,000', phone: '8125384387', mobile: '8125384387' },
-    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', hours: '8 hrs/day', salary: '₹14,000', phone: '9876543212', mobile: '9876543212' },
-    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', hours: '10.5 hrs/day', salary: '₹14,000', phone: '7890123456', mobile: '7890123456' },
-  ];
-
-  // Seed Data for Doctors
+  // Doctors Seed fallback (if collection empty)
   const DEFAULT_DOCTORS = [
     { id: 'doc-prashanth', name: 'Dr. Prashanth k vaidya', role: 'Head Doctor', category: 'Head Doctor', phone: '8125260176', mobile: '8125260176', branch: 'KPHB Branch', shift: '-', hours: '-', salary: '-' },
     { id: 'doc-jobedah', name: 'Dr. Jobeadh parveej', role: 'Head Doctor', category: 'Head Doctor', phone: '9903119766', mobile: '9903119766', branch: 'Nallagandla Branch', shift: '-', hours: '-', salary: '-' },
@@ -49,29 +43,46 @@ export const StaffManagementScreen: React.FC = () => {
     { id: 'doc-ramakrishna', name: 'Dr. Ramakrishna Chanduri', role: 'Head Doctor', category: 'Head Doctor', phone: '1111111111', mobile: '1111111111', branch: 'Dilshuknagar Branch', shift: '-', hours: '-', salary: '-' },
   ];
 
-  const [liveStaffMembers, setLiveStaffMembers] = useState<any[]>(DEFAULT_STAFF);
+  const [liveStaffMembers, setLiveStaffMembers] = useState<any[]>(DEFAULT_STAFF_MEMBERS);
   const [liveDoctors, setLiveDoctors] = useState<any[]>(DEFAULT_DOCTORS);
 
-  // Firestore Listener: Staff Collection
+  // Firestore Listener: Staff Collection (Instant Cache + Firestore Sync)
   useEffect(() => {
+    // 1. Instant load from local AsyncStorage
+    AsyncStorage.getItem('@sph_cached_staff_members').then(raw => {
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setLiveStaffMembers(parsed);
+          }
+        } catch (e) {}
+      }
+    }).catch(() => {});
+
+    // 2. Background live sync from Firestore
     if (!db) return;
     const colRef = collection(db, 'staff');
     const unsub = onSnapshot(colRef, (snap) => {
       if (!snap.empty) {
         const loaded = snap.docs.map(d => {
           const data = d.data();
+          const fallbackEmail = `${(data.name || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
           return {
             id: d.id,
             name: data.name || 'Staff Member',
             role: data.role || 'Regular Staff',
             branch: data.branch || 'KPHB',
             phone: data.mobile || data.phone || '',
+            email: data.email || fallbackEmail,
+            password: data.password || 'email123',
             shift: data.shift || '10:00 AM - 08:30 PM',
             hours: data.hours || '8 hrs/day',
             salary: data.salary || '₹18,000'
           };
         });
         setLiveStaffMembers(loaded);
+        AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(loaded)).catch(() => {});
       }
     }, (err) => console.warn('Firestore mobile staff listener error:', err));
     return () => unsub();
@@ -132,7 +143,11 @@ export const StaffManagementScreen: React.FC = () => {
                 console.warn('Error deleting staff from Firestore:', e);
               }
             }
-            setLiveStaffMembers(prev => prev.filter(s => s.id !== staffId && s.name !== staffName));
+            setLiveStaffMembers(prev => {
+              const updated = prev.filter(s => s.id !== staffId && s.name !== staffName);
+              AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(updated)).catch(() => {});
+              return updated;
+            });
             Alert.alert('Deleted', `${staffName} has been deleted and their login access is revoked.`);
           }
         }
@@ -145,6 +160,9 @@ export const StaffManagementScreen: React.FC = () => {
     setNewStaffName(staff.name);
     setNewStaffPhone(staff.phone || staff.mobile || '');
     setNewStaffBranch(staff.branch || 'KPHB');
+    const fallbackEmail = `${(staff.name || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
+    setNewStaffEmail(staff.email || fallbackEmail);
+    setNewStaffPassword(staff.password || 'email123');
     setNewStaffShift(staff.shift || '10:00 AM - 08:30 PM');
     setNewStaffHours(staff.hours || '10.5 hrs/day');
     setNewStaffSalary(staff.salary || '₹18,000');
@@ -158,6 +176,8 @@ export const StaffManagementScreen: React.FC = () => {
     }
 
     const cleanPhone = newStaffPhone.trim().replace(/\D/g, '');
+    const cleanEmail = (newStaffEmail.trim() || `${newStaffName.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`).toLowerCase();
+    const cleanPassword = newStaffPassword.trim() || 'email123';
     const salaryFormatted = newStaffSalary.trim().startsWith('₹') ? newStaffSalary.trim() : `₹${newStaffSalary.trim()}`;
 
     const staffData = {
@@ -165,6 +185,8 @@ export const StaffManagementScreen: React.FC = () => {
       mobile: cleanPhone,
       phone: cleanPhone,
       branch: newStaffBranch,
+      email: cleanEmail,
+      password: cleanPassword,
       shift: newStaffShift.trim() || '10:00 AM - 08:30 PM',
       hours: newStaffHours.trim() || '10.5 hrs/day',
       salary: salaryFormatted || '₹18,000',
@@ -175,9 +197,13 @@ export const StaffManagementScreen: React.FC = () => {
     if (showEditStaffModal && editingStaffId && db) {
       try {
         await updateDoc(doc(db, 'staff', editingStaffId), staffData);
-        setLiveStaffMembers(prev => prev.map(s => s.id === editingStaffId ? { id: editingStaffId, ...staffData } : s));
+        setLiveStaffMembers(prev => {
+          const updated = prev.map(s => s.id === editingStaffId ? { id: editingStaffId, ...staffData } : s);
+          AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
         setShowEditStaffModal(false);
-        Alert.alert('Updated', `${staffData.name} details updated.`);
+        Alert.alert('Updated', `${staffData.name} details updated.\n\nLogin Email: ${cleanEmail}\nPassword: ${cleanPassword}`);
       } catch (e) {
         console.warn('Error updating staff:', e);
       }
@@ -191,13 +217,19 @@ export const StaffManagementScreen: React.FC = () => {
           console.warn('Error saving staff to Firestore:', e);
         }
       }
-      setLiveStaffMembers(prev => [{ id: newId, ...staffData }, ...prev]);
+      setLiveStaffMembers(prev => {
+        const updated = [{ id: newId, ...staffData }, ...prev];
+        AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(updated)).catch(() => {});
+        return updated;
+      });
       setShowAddStaffModal(false);
-      Alert.alert('Staff Added', `${staffData.name} has been added. They can now log in immediately via SMS OTP.`);
+      Alert.alert('Staff Added', `${staffData.name} has been added.\n\nLogin Email: ${cleanEmail}\nPassword: ${cleanPassword}`);
     }
 
     setNewStaffName('');
     setNewStaffPhone('');
+    setNewStaffEmail('');
+    setNewStaffPassword('email123');
     setNewStaffSalary('₹18,000');
   };
 
@@ -337,6 +369,8 @@ export const StaffManagementScreen: React.FC = () => {
               onPress={() => {
                 setNewStaffName('');
                 setNewStaffPhone('');
+                setNewStaffEmail('');
+                setNewStaffPassword('email123');
                 setNewStaffSalary('₹18,000');
                 setShowAddStaffModal(true);
               }}
@@ -388,8 +422,19 @@ export const StaffManagementScreen: React.FC = () => {
                 </View>
               </View>
               {s.phone ? (
-                <Text style={{ fontSize: 11.5, color: '#0284c7', fontWeight: '600', marginTop: 2 }}>Phone: +91 {s.phone}</Text>
+                <Text style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>Phone: +91 {s.phone}</Text>
               ) : null}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                <Ionicons name="mail-outline" size={12} color="#0284c7" />
+                <Text style={{ fontSize: 11.5, color: '#334155', fontWeight: '600' }}>
+                  {s.email || `${(s.name || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#94a3b8' }}>•</Text>
+                <Text style={{ fontSize: 11, color: '#64748b' }}>Pass:</Text>
+                <Text style={{ fontSize: 11, fontWeight: '800', color: '#0f172a', backgroundColor: '#e2e8f0', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4 }}>
+                  {s.password || 'email123'}
+                </Text>
+              </View>
               <Text style={styles.itemRole}>Role: {s.role}</Text>
               <View style={styles.itemDetailsRow}>
                 <Text style={styles.hoursText}>Hours: {s.hours}</Text>
@@ -572,6 +617,42 @@ export const StaffManagementScreen: React.FC = () => {
                     <Text style={[styles.chipBtnText, newStaffBranch === br && styles.chipBtnTextActive]}>{br}</Text>
                   </TouchableOpacity>
                 ))}
+              </View>
+
+              {/* STAFF LOGIN CREDENTIALS - DIRECTLY BELOW BRANCH ASSIGNMENT */}
+              <View style={{ backgroundColor: '#f8fafc', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#cbd5e1', marginVertical: 6 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                  <Ionicons name="mail-outline" size={15} color="#0284c7" />
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: '#0f172a' }}>Staff Login Credentials</Text>
+                </View>
+
+                <Text style={[styles.fieldLabel, { marginTop: 0 }]}>Staff Login Email ID *</Text>
+                <View style={[styles.inputBox, { backgroundColor: '#ffffff' }]}>
+                  <TextInput
+                    style={styles.inputText}
+                    placeholder="e.g. anil@sph.com"
+                    placeholderTextColor="#94a3b8"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={newStaffEmail}
+                    onChangeText={setNewStaffEmail}
+                  />
+                </View>
+
+                <Text style={styles.fieldLabel}>Staff Login Password * (Standard: email123)</Text>
+                <View style={[styles.inputBox, { backgroundColor: '#ffffff', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+                  <TextInput
+                    style={[styles.inputText, { flex: 1 }]}
+                    placeholder="email123"
+                    placeholderTextColor="#94a3b8"
+                    secureTextEntry={!showStaffPassword}
+                    value={newStaffPassword}
+                    onChangeText={setNewStaffPassword}
+                  />
+                  <TouchableOpacity onPress={() => setShowStaffPassword(!showStaffPassword)} style={{ padding: 4 }}>
+                    <Ionicons name={showStaffPassword ? "eye-off-outline" : "eye-outline"} size={18} color="#64748b" />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <Text style={styles.fieldLabel}>Shift Hours</Text>

@@ -6,11 +6,17 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import {
   getSafeDb, collection, query, where, onSnapshot, addDoc, updateDoc, doc, orderBy, getDocs
 } from '../../utils/firebaseSafe';
 import { StaffAttendanceRecord, StaffLeaveRequest, StaffDailyReport } from '@app/shared';
-import { createStaffDailyReportNotificationInFirestore } from '../../utils/fcmService';
+import {
+  createStaffDailyReportNotificationInFirestore,
+  createStaffPunchInNotificationInFirestore,
+  createStaffPunchOutNotificationInFirestore,
+  triggerSystemPushNotification
+} from '../../utils/fcmService';
 
 // Date Helper: Format Date to DD-MM-YYYY
 const formatToDDMMYYYY = (d: Date = new Date()): string => {
@@ -104,6 +110,7 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
   const [contacts, setContacts] = useState('');
   const [gReviews, setGReviews] = useState('');
   const [videoReviews, setVideoReviews] = useState('');
+  const [reportNotes, setReportNotes] = useState('');
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [myReports, setMyReports] = useState<StaffDailyReport[]>([]);
 
@@ -316,100 +323,110 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
     }
   }, [staffProfile.id, staffProfile.name]);
 
-  // Helper: Get Exact Device Location (Street, Area, District, GPS Coordinates)
+  // Helper: Get Exact Device Location (Street, Area, District, GPS Coordinates via Hardware GPS)
   const getDeviceLocation = async (): Promise<{ latitude: number; longitude: number; address: string } | null> => {
     let lat: number | null = null;
     let lon: number | null = null;
-    let fallbackCityArea = '';
+    let exactPhysicalAddress = '';
 
-    // 1. Android Native Location Permission
-    if (Platform.OS === 'android') {
-      try {
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          {
-            title: 'GPS Location Permission',
-            message: 'Spiritual Homeo requires your exact GPS location for attendance punch in/out.',
-            buttonPositive: 'Allow',
-          }
+    try {
+      // 1. Request foreground location permission through expo-location
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Location Permission Required',
+          'Please allow Location access in your device settings so Spiritual Homeo can record your attendance at your branch.'
         );
-      } catch (permErr) {
-        console.warn('Android location permission check notice:', permErr);
+        return null;
       }
-    }
 
-    // 2. Try standard device navigator.geolocation if available
-    if (lat === null && typeof navigator !== 'undefined' && (navigator as any).geolocation) {
+      // 2. Verify GPS / Location services is turned ON on device
+      const isLocationEnabled = await Location.hasServicesEnabledAsync();
+      if (!isLocationEnabled) {
+        Alert.alert(
+          'Turn On GPS',
+          'Please enable Location / GPS on your device and try again.'
+        );
+        return null;
+      }
+
+      // 3. Get exact hardware GPS location
+      let location = null;
       try {
-        const navPos: any = await new Promise((res, rej) => {
-          (navigator as any).geolocation.getCurrentPosition(res, rej, {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0
-          });
+        location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
         });
-        if (navPos && navPos.coords) {
-          lat = Number(navPos.coords.latitude.toFixed(5));
-          lon = Number(navPos.coords.longitude.toFixed(5));
-        }
-      } catch (navErr) {
-        console.warn('navigator.geolocation notice:', navErr);
+      } catch (locErr) {
+        console.warn('getCurrentPosition fast attempt failed, trying last known position:', locErr);
+        location = await Location.getLastKnownPositionAsync();
       }
+
+      if (location && location.coords) {
+        lat = Number(location.coords.latitude.toFixed(5));
+        lon = Number(location.coords.longitude.toFixed(5));
+      }
+    } catch (err) {
+      console.warn('Expo Location hardware detection error:', err);
     }
 
-    // 3. Real High-Accuracy Network Location Fallback
-    if (lat === null) {
-      try {
-        const ipRes = await fetch('https://ipwho.is/');
-        if (ipRes.ok) {
-          const ipData = await ipRes.json();
-          if (ipData && ipData.success && ipData.latitude && ipData.longitude) {
-            lat = Number(Number(ipData.latitude).toFixed(5));
-            lon = Number(Number(ipData.longitude).toFixed(5));
-            fallbackCityArea = [ipData.city, ipData.region, ipData.postal].filter(Boolean).join(', ');
-          }
-        }
-      } catch (ipErr) {
-        console.warn('IP geolocation query notice:', ipErr);
-      }
-    }
-
-    // 4. Exact Physical Reverse Geocoding (Road, Suburb, District, City, PIN)
+    // 4. Reverse Geocode Coordinates to human-readable address
     if (lat !== null && lon !== null) {
-      let exactPhysicalAddress = '';
       try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`, {
-          headers: {
-            'Accept-Language': 'en',
-            'User-Agent': 'SpiritualHomeoApp/1.0 (contact@spiritualhomeo.com)'
+        const reverseResults = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon });
+        if (reverseResults && reverseResults.length > 0) {
+          const r = reverseResults[0];
+          const parts = [
+            r.name && r.name !== r.street ? r.name : '',
+            r.street,
+            r.district || r.subregion,
+            r.city,
+            r.region,
+            r.postalCode ? `PIN: ${r.postalCode}` : ''
+          ].filter(Boolean);
+          if (parts.length > 0) {
+            exactPhysicalAddress = parts.join(', ');
           }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.address) {
-            const a = data.address;
-            const parts = [
-              a.road || a.pedestrian || a.street,
-              a.neighbourhood || a.suburb || a.colony || a.residential,
-              a.city_district || a.subdistrict || a.county,
-              a.city || a.town || a.village || a.municipality,
-              a.state_district,
-              a.postcode ? `PIN: ${a.postcode}` : ''
-            ].filter(Boolean);
+        }
+      } catch (revErr) {
+        console.warn('Expo reverse geocode notice:', revErr);
+      }
 
-            if (parts.length > 0) {
-              exactPhysicalAddress = parts.join(', ');
+      // OpenStreetMap Nominatim Fallback if Expo reverseGeocode had no street name
+      if (!exactPhysicalAddress) {
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`, {
+            headers: {
+              'Accept-Language': 'en',
+              'User-Agent': 'SpiritualHomeoApp/1.0 (contact@spiritualhomeo.com)'
+            }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.address) {
+              const a = data.address;
+              const parts = [
+                a.road || a.pedestrian || a.street,
+                a.neighbourhood || a.suburb || a.colony || a.residential,
+                a.city_district || a.subdistrict || a.county,
+                a.city || a.town || a.village || a.municipality,
+                a.state_district,
+                a.postcode ? `PIN: ${a.postcode}` : ''
+              ].filter(Boolean);
+
+              if (parts.length > 0) {
+                exactPhysicalAddress = parts.join(', ');
+              }
+            }
+            if (!exactPhysicalAddress && data?.display_name) {
+              exactPhysicalAddress = data.display_name.split(',').slice(0, 4).join(', ').trim();
             }
           }
-          if (!exactPhysicalAddress && data?.display_name) {
-            exactPhysicalAddress = data.display_name.split(',').slice(0, 4).join(', ').trim();
-          }
+        } catch (osmErr) {
+          console.warn('Nominatim reverse geocode notice:', osmErr);
         }
-      } catch (osmErr) {
-        console.warn('Nominatim reverse geocode notice:', osmErr);
       }
 
-      const finalAddress = exactPhysicalAddress || fallbackCityArea || `Location Coordinates: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      const finalAddress = exactPhysicalAddress || `Coordinates: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
 
       return {
         latitude: lat,
@@ -421,12 +438,12 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
     // If location could not be determined at all
     Alert.alert(
       'Location / GPS Required',
-      'Unable to detect your device location. Please make sure Location / GPS is turned ON and try again.'
+      'Unable to detect your device GPS location. Please make sure Location / GPS is turned ON and permissions are allowed.'
     );
     return null;
   };
 
-  // Helper: Capture Photo (Camera with Gallery fallback)
+  // Helper: Capture Photo (Camera with Gallery fallback, front selfie + high compression)
   const captureSelfiePhoto = async (): Promise<string | null> => {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -435,7 +452,7 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
         const gal = await ImagePicker.launchImageLibraryAsync({
           allowsEditing: true,
           aspect: [1, 1],
-          quality: 0.3,
+          quality: 0.1, // Heavily compressed to ~25-45KB for fast upload and light Firestore storage
           base64: true
         });
         if (!gal.canceled && gal.assets && gal.assets[0]) {
@@ -446,9 +463,10 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
       }
 
       const result = await ImagePicker.launchCameraAsync({
+        cameraType: ImagePicker.CameraType.front,
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.3,
+        quality: 0.1, // Heavily compressed to ~25-45KB for fast upload and light Firestore storage
         base64: true,
       });
 
@@ -463,7 +481,7 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
       const fallback = await ImagePicker.launchImageLibraryAsync({
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.3,
+        quality: 0.1, // Heavily compressed to ~25-45KB
         base64: true
       });
       if (!fallback.canceled && fallback.assets && fallback.assets[0]) {
@@ -521,6 +539,23 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
         };
 
         await addDoc(collection(db, 'attendance'), newRecord);
+
+        // 1. Immediate local push notification with vibration for the staff member on their device
+        triggerSystemPushNotification(
+          'Punched In Successfully 🟢',
+          `You have been punched in at ${timeStr} for ${staffProfile.branch} Branch.\nLocation: ${loc.address}`,
+          { type: 'staff_punch_in', staffName: staffProfile.name, branch: staffProfile.branch, punchInTime: timeStr }
+        ).catch(() => {});
+
+        // 2. Notify HR & Admin in Firestore so HR mobile device receives real-time notification
+        createStaffPunchInNotificationInFirestore({
+          staffName: staffProfile.name,
+          staffId: staffProfile.id,
+          branch: staffProfile.branch,
+          punchInTime: timeStr,
+          locationAddress: loc.address
+        }).catch(() => {});
+
         Alert.alert(
           'Punch In Successful! 🟢',
           `Welcome, ${staffProfile.name}!\n\nPunched in at ${timeStr}\nLocation: ${loc.address}`
@@ -599,6 +634,24 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
                   status: 'Completed',
                   updatedAt: now.toISOString()
                 });
+
+                // 1. Immediate local push notification with vibration for the staff member on their device
+                triggerSystemPushNotification(
+                  'Punched Out Successfully 🔴',
+                  `You have been punched out at ${timeStr} (${staffProfile.branch} Branch).\nTotal duration: ${hoursWorked}`,
+                  { type: 'staff_punch_out', staffName: staffProfile.name, branch: staffProfile.branch, punchOutTime: timeStr, workingHours: hoursWorked }
+                ).catch(() => {});
+
+                // 2. Notify HR & Admin in Firestore so HR mobile device receives real-time notification
+                createStaffPunchOutNotificationInFirestore({
+                  staffName: staffProfile.name,
+                  staffId: staffProfile.id,
+                  branch: staffProfile.branch,
+                  punchOutTime: timeStr,
+                  workingHours: hoursWorked,
+                  locationAddress: loc.address
+                }).catch(() => {});
+
                 Alert.alert(
                   'Punch Out Successful! 🔴',
                   `Shift completed.\n\nTotal duration: ${hoursWorked}\nLocation: ${loc.address}\n\nHave a great evening!`
@@ -693,8 +746,8 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
     const gRev = Number(gReviews) || 0;
     const vRev = Number(videoReviews) || 0;
 
-    if (!totalCalls && !followUps && !contacts && !gReviews && !videoReviews) {
-      Alert.alert('Empty Report', 'Please enter your daily metrics (Total Calls, Follow Ups, Contacts, Reviews).');
+    if (!totalCalls && !followUps && !contacts && !gReviews && !videoReviews && !reportNotes.trim()) {
+      Alert.alert('Empty Report', 'Please enter your daily metrics or work notes.');
       return;
     }
 
@@ -714,6 +767,8 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
           videoReviews: vRev,
           callsCount: tCalls,
           reviewsCount: gRev,
+          tasksSummary: reportNotes.trim(),
+          notes: reportNotes.trim(),
           submittedAt: new Date().toISOString()
         };
 
@@ -726,6 +781,10 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
           staffId: staffProfile.id,
           totalCalls: tCalls,
           followUps: fUps,
+          contacts: conts,
+          gReviews: gRev,
+          videoReviews: vRev,
+          notes: reportNotes.trim(),
         }).catch(() => {});
 
         Alert.alert('Report Submitted! 🎉', 'Your daily work report has been logged and sent to Admin & HR.');
@@ -734,6 +793,7 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
         setContacts('');
         setGReviews('');
         setVideoReviews('');
+        setReportNotes('');
       }
     } catch (e) {
       console.error('Submit report error:', e);
@@ -1146,6 +1206,13 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
                   </View>
                 </View>
 
+                {(todayReport.notes || todayReport.tasksSummary) ? (
+                  <View style={{ marginTop: 10, padding: 8, backgroundColor: '#ffffff', borderRadius: 6, borderWidth: 1, borderColor: '#bbf7d0' }}>
+                    <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#166534', marginBottom: 2 }}>Notes / Remarks:</Text>
+                    <Text style={{ fontSize: 11.5, color: '#334155', lineHeight: 16 }}>{todayReport.notes || todayReport.tasksSummary}</Text>
+                  </View>
+                ) : null}
+
                 <Text style={{ fontSize: 11, color: '#059669', marginTop: 8, fontWeight: '700' }}>
                   Submitted at: {new Date(todayReport.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </Text>
@@ -1238,6 +1305,23 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
                   </View>
                 </View>
 
+                {/* Row 4: Work Notes / Remarks Text Box */}
+                <View style={{ marginTop: 10 }}>
+                  <Text style={styles.fieldLabel}>Work Notes / Remarks:</Text>
+                  <View style={[styles.inputWithIcon, { alignItems: 'flex-start', paddingTop: 8, minHeight: 74 }]}>
+                    <Ionicons name="document-text-outline" size={16} color="#64748b" style={{ marginRight: 6, marginTop: 2 }} />
+                    <TextInput
+                      style={[styles.flexInput, { height: 60, textAlignVertical: 'top' }]}
+                      multiline
+                      numberOfLines={3}
+                      placeholder="Enter today's work notes, follow-up remarks, or patient updates..."
+                      placeholderTextColor="#94a3b8"
+                      value={reportNotes}
+                      onChangeText={setReportNotes}
+                    />
+                  </View>
+                </View>
+
                 <TouchableOpacity
                   style={[styles.submitPrimaryBtn, { backgroundColor: '#258ec8', marginTop: 14 }]}
                   onPress={handleSubmitWorkReport}
@@ -1292,6 +1376,14 @@ export const StaffScreen: React.FC<StaffScreenProps> = ({
                       <Text style={styles.metricCellKey}>Video</Text>
                     </View>
                   </View>
+
+                  {/* Notes / Remarks Strip */}
+                  {(rep.notes || rep.tasksSummary) ? (
+                    <View style={{ marginTop: 8, padding: 8, backgroundColor: '#f8fafc', borderRadius: 6, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                      <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#64748b', marginBottom: 2 }}>Notes / Remarks:</Text>
+                      <Text style={{ fontSize: 11.5, color: '#334155', lineHeight: 16 }}>{rep.notes || rep.tasksSummary}</Text>
+                    </View>
+                  ) : null}
                 </View>
               ))
             )}

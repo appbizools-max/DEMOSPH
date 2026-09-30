@@ -12,6 +12,7 @@ import {
   CleaningSchedule, CleaningSubmission, BRANCH_LIST,
   getTodayDateString, formatDisplayDate, checkBranchLockoutStatus
 } from '../../../utils/cleaningService';
+import { createCleaningApprovalNotificationInFirestore } from '../../../utils/fcmService';
 
 interface BranchCleaningScreenProps {
   onBack?: () => void;
@@ -171,6 +172,14 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
         reviewedBy: role === 'hr' ? 'HR Manager' : 'Administrator',
         rejectReason: ''
       });
+
+      // Send push notification to branch reception and HR
+      createCleaningApprovalNotificationInFirestore({
+        branch: sub.branch,
+        status: 'Approved',
+        reviewedBy: role === 'hr' ? 'HR Manager' : 'Administrator',
+      }).catch(err => console.warn('Cleaning approval notification notice:', err));
+
       Alert.alert('Approved ✅', `${sub.branch} clinic cleaning approved! Reception is unblocked.`);
     } catch (e) {
       Alert.alert('Error', 'Failed to accept submission.');
@@ -194,6 +203,15 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
         reviewedAt: new Date().toISOString(),
         reviewedBy: role === 'hr' ? 'HR Manager' : 'Administrator'
       });
+
+      // Send push notification to branch reception and HR
+      createCleaningApprovalNotificationInFirestore({
+        branch: rejectingItem.branch,
+        status: 'Rejected',
+        rejectReason: rejectReason.trim(),
+        reviewedBy: role === 'hr' ? 'HR Manager' : 'Administrator',
+      }).catch(err => console.warn('Cleaning rejection notification notice:', err));
+
       Alert.alert('Rejected ❌', `${rejectingItem.branch} submission rejected. Reception is notified to re-upload.`);
       setRejectingItem(null);
       setRejectReason('');

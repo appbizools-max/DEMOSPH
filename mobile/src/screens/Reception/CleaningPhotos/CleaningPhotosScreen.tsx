@@ -12,6 +12,7 @@ import {
   CleaningSchedule, CleaningSubmission, normalizeBranchName,
   getTodayDateString, formatDisplayDate, checkBranchLockoutStatus
 } from '../../../utils/cleaningService';
+import { createCleaningUploadedNotificationInFirestore } from '../../../utils/fcmService';
 
 interface CleaningPhotosScreenProps {
   currentBranch?: string;
@@ -92,6 +93,9 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
   }, [schedule.assignedDate, submissions]);
 
   const activeSubmission = lockoutInfo.currentSubmission;
+  const isPendingReview = lockoutInfo.status === 'Pending' || activeSubmission?.status === 'Pending';
+  const isApproved = lockoutInfo.status === 'Approved' || activeSubmission?.status === 'Approved';
+  const isRejected = lockoutInfo.status === 'Rejected' || activeSubmission?.status === 'Rejected';
 
   // Pick photos from camera
   const handleTakePhoto = async () => {
@@ -106,7 +110,7 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
         return;
       }
       const res = await ImagePicker.launchCameraAsync({
-        quality: 0.35,
+        quality: 0.12,
         base64: true,
       });
 
@@ -138,7 +142,7 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
         selectionLimit: remaining,
-        quality: 0.35,
+        quality: 0.12,
         base64: true,
       });
 
@@ -187,7 +191,26 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
         status: 'Pending',
       };
 
+      const docSize = JSON.stringify(docData).length;
+      console.log(`[CleaningPhotos] Submitting ${selectedPhotos.length} photos. Total doc size: ${(docSize / 1024).toFixed(1)} KB`);
+
+      if (docSize > 980000) {
+        Alert.alert(
+          'Photos Too Large',
+          `The selected photos exceed the database upload limit (${(docSize / (1024 * 1024)).toFixed(2)} MB). Please tap 'Clear All' and retake using the Camera or Gallery with automatic compression.`
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       await addDoc(collection(db, 'branch_cleaning_submissions'), docData);
+
+      // Trigger push notification to HR & Admin
+      createCleaningUploadedNotificationInFirestore({
+        branch,
+        photoCount: selectedPhotos.length,
+        submittedBy: `${branch} Receptionist`,
+      }).catch(err => console.warn('Cleaning upload notification notice:', err));
 
       setSelectedPhotos([]);
       setNotes('');
@@ -240,7 +263,9 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
             {lockoutInfo.reason}
           </Text>
           <Text style={styles.lockoutSub}>
-            Upload 5 to 7 clean clinic photos below to request unblocking from HR.
+            {isPendingReview
+              ? 'Photos have been submitted and are currently awaiting HR / Admin review. Reception will unlock immediately once approved.'
+              : 'Upload 5 to 7 clean clinic photos below to request unblocking from HR.'}
           </Text>
         </View>
       )}
@@ -309,11 +334,38 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
         )}
       </View>
 
-      {/* PHOTO UPLOAD BOX (5 TO 7 PHOTOS) */}
-      {(lockoutInfo.status !== 'Approved' || lockoutInfo.isBlocked) && (
+      {/* UNDER REVIEW NOTICE (Upload is disabled while awaiting HR/Admin review) */}
+      {isPendingReview && (
+        <View style={styles.card}>
+          <View style={{ alignItems: 'center', paddingVertical: 18 }}>
+            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fef9c3', alignItems: 'center', justifyContent: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#fde047' }}>
+              <Ionicons name="time" size={30} color="#ca8a04" />
+            </View>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: '#854d0e', marginBottom: 6 }}>
+              Photos Under Review by HR ⏳
+            </Text>
+            <Text style={{ fontSize: 13, color: '#64748b', textAlign: 'center', lineHeight: 19, paddingHorizontal: 16 }}>
+              Your cleaning photos ({activeSubmission?.photos?.length || '5–7'} photos) have been submitted and are currently awaiting HR / Admin verification.
+            </Text>
+            <View style={{ marginTop: 14, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#fefce8', borderRadius: 10, borderWidth: 1, borderColor: '#fef08a' }}>
+              <Text style={{ fontSize: 12, color: '#a16207', fontWeight: '800', textAlign: 'center' }}>
+                🔒 Upload disabled while under review
+              </Text>
+              <Text style={{ fontSize: 11, color: '#ca8a04', textAlign: 'center', marginTop: 3 }}>
+                If HR rejects, upload will reopen with feedback. Once approved, reception unlocks as normal.
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* PHOTO UPLOAD BOX (5 TO 7 PHOTOS) - Disabled while Pending or Approved; Enabled if Not Submitted, Due Today, or Rejected */}
+      {!isPendingReview && !isApproved && (
         <View style={styles.card}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <Text style={styles.cardHeader}>Upload 5 to 7 Photos</Text>
+            <Text style={styles.cardHeader}>
+              {isRejected ? 'Re-upload 5 to 7 Photos' : 'Upload 5 to 7 Photos'}
+            </Text>
             <View style={[
               styles.countPill,
               selectedPhotos.length >= 5 && selectedPhotos.length <= 7
@@ -332,7 +384,9 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
           </View>
 
           <Text style={styles.subText}>
-            Take photos of Consultation Rooms 1 & 2, Waiting Lounge, Doctor Desk, and Medicine Counter.
+            {isRejected
+              ? 'HR requested re-upload. Please check feedback above and take 5 to 7 clean clinic photos.'
+              : 'Take photos of Consultation Rooms 1 & 2, Waiting Lounge, Doctor Desk, and Medicine Counter.'}
           </Text>
 
           {/* Action Buttons: Camera & Gallery */}
@@ -359,6 +413,14 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
           {/* Thumbnails preview */}
           {selectedPhotos.length > 0 && (
             <View style={{ marginTop: 6, marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <Text style={{ fontSize: 11.5, color: '#64748b', fontWeight: '700' }}>
+                  {selectedPhotos.length} / 7 photos ready
+                </Text>
+                <TouchableOpacity onPress={() => setSelectedPhotos([])}>
+                  <Text style={{ fontSize: 11.5, color: '#ef4444', fontWeight: '800' }}>Clear All</Text>
+                </TouchableOpacity>
+              </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
                 {selectedPhotos.map((uri, idx) => (
                   <View key={idx} style={styles.thumbWrap}>

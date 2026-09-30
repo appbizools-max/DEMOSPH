@@ -87,6 +87,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffPassword, setStaffPassword] = useState('');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
   const [displayedOtp, setDisplayedOtp] = useState('');
   const [smsNotice, setSmsNotice] = useState('');
@@ -451,131 +454,98 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  // Helper to resolve staff login directly
+  // Helper to resolve staff login using Email ID and Password
   const handleStaffLogin = async () => {
-    const rawInput = phoneNumber.trim() || selectedStaffId;
-    if (!rawInput) {
-      Alert.alert('Select Staff', 'Please select a staff member or enter your registered mobile number.');
+    const cleanEmail = staffEmail.trim().toLowerCase();
+    const cleanPass = staffPassword.trim();
+
+    if (!cleanEmail) {
+      Alert.alert('Email Required', 'Please enter your registered staff email ID (e.g. anil@sph.com).');
+      return;
+    }
+    if (!cleanPass) {
+      Alert.alert('Password Required', 'Please enter your staff login password.');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const rawDetected = await detectRoleAndBranch(rawInput);
+      // 1. Search live staff chips first (0ms delay)
+      let matchedStaff = (liveStaffChips || []).find((s: any) => {
+        const sEmail = String(s.email || '').trim().toLowerCase();
+        const fallbackEmail = `${String(s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
+        return sEmail === cleanEmail || fallbackEmail === cleanEmail;
+      });
 
-      // 1. Strictly block Doctors and Receptionists from Staff tab
-      if (rawDetected && (rawDetected.role === 'doctor' || rawDetected.role === 'reception')) {
-        setIsSubmitting(false);
-        const roleTitle = rawDetected.role === 'doctor' ? 'Doctor' : 'Receptionist';
-        Alert.alert(
-          'Access Denied',
-          `This mobile number belongs to a ${roleTitle}.\n\nOnly registered clinic staff can log in through the Staff portal. Please switch to the 'Doctor / Reception' tab to sign in.`
-        );
-        return;
-      }
-
-      // 2. Strictly block Admin and HR from Staff tab
-      if (rawDetected && (rawDetected.role === 'admin' || rawDetected.role === 'hr')) {
-        setIsSubmitting(false);
-        Alert.alert(
-          'Admin / HR Account Detected',
-          `Hello ${rawDetected.userName}, please use the 'Admin / HR' tab to sign in with your email and password.`,
-          [
-            { text: 'Switch to Admin / HR', onPress: () => setLoginMethod('email') },
-            { text: 'Cancel', style: 'cancel' }
-          ]
-        );
-        return;
-      }
-      const staffRecord = rawDetected;
-
-      if (!staffRecord) {
-        setIsSubmitting(false);
-        Alert.alert(
-          'Access Denied',
-          'Staff record not found or access has been revoked by Admin / HR.'
-        );
-        return;
-      }
-
-      const authData: LoginSuccessData = {
-        ...staffRecord,
-        role: 'staff'
-      };
-
-      // If user hasn't requested an SMS OTP yet, generate and send 4-digit OTP
-      if (!otpSent) {
-        const generatedOtp = generate4DigitOtp();
-        setSentOtp(generatedOtp);
-        const { clean10 } = normalizePhoneForSms(authData.branchPhone || rawInput);
+      // 2. Fallback to Firestore staff collection if not found in chips
+      if (!matchedStaff) {
         const activeDb = getSafeDb();
-
-        if (activeDb && clean10) {
-          try {
-            await setDoc(doc(activeDb, 'auth_otps', clean10), {
-              phone: clean10,
-              otp: generatedOtp,
-              expiresAt: Date.now() + 30 * 1000,
-              role: 'staff',
-              staffId: authData.staffId || null,
-              userName: authData.userName || '',
-              branchName: authData.branchName || '',
-              createdAt: new Date().toISOString()
-            });
-          } catch (e) {
-            console.warn('Error storing staff OTP:', e);
-          }
-        }
-
-        sendSmsOtp(clean10, generatedOtp).catch(() => {});
-        setIsSubmitting(false);
-        setOtpSent(true);
-        setCountdown(30);
-        setOtpCode('1234');
-        Alert.alert(
-          'SMS OTP Sent',
-          `Your 4-digit OTP has been sent via SMS to +91 ${clean10}.\n\nValid for 30 seconds. (Default OTP: 1234)`
-        );
-        return;
-      }
-
-      // If OTP was sent, verify it
-      const cleanOtp = otpCode.trim() || '1234';
-      let isOtpValid = cleanOtp === '1234' || (sentOtp && cleanOtp === sentOtp);
-
-      if (!isOtpValid) {
-        const { clean10 } = normalizePhoneForSms(authData.branchPhone || rawInput);
-        const activeDb = getSafeDb();
-        if (activeDb && clean10) {
-          const otpSnap = await getDoc(doc(activeDb, 'auth_otps', clean10));
-          if (otpSnap.exists() && otpSnap.data().otp === cleanOtp) {
-            if (Date.now() <= (otpSnap.data().expiresAt || 0)) {
-              isOtpValid = true;
-            } else {
-              setIsSubmitting(false);
-              Alert.alert('OTP Expired', 'The OTP has expired (30-second validity). Please tap Send OTP again or use 1234.');
-              return;
+        if (activeDb) {
+          const snap = await getDocs(collection(activeDb, 'staff'));
+          for (const d of snap.docs) {
+            const data = d.data();
+            const sEmail = String(data.email || '').trim().toLowerCase();
+            const fallbackEmail = `${String(data.name || '').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
+            if (sEmail === cleanEmail || fallbackEmail === cleanEmail) {
+              matchedStaff = { id: d.id, ...data };
+              break;
             }
           }
         }
       }
 
-      if (!isOtpValid) {
+      if (!matchedStaff) {
         setIsSubmitting(false);
-        Alert.alert('Invalid OTP', 'The OTP code is incorrect. Please check your SMS message or use 1234.');
+        Alert.alert(
+          'Staff Member Not Found',
+          `No regular staff member found with email "${cleanEmail}".\n\nPlease check your email ID or contact HR / Admin.`
+        );
         return;
       }
 
+      // Check if this record is Doctor or Reception
+      const matchedRole = String(matchedStaff.role || '').toLowerCase();
+      if (matchedRole.includes('doctor') || matchedRole.includes('reception')) {
+        setIsSubmitting(false);
+        Alert.alert(
+          'Access Denied',
+          'Doctors and Receptionists must sign in using the "Doctor / Reception" tab with mobile OTP.'
+        );
+        return;
+      }
+
+      // 3. Verify Password (Standard default: email123)
+      const expectedPassword = String(matchedStaff.password || 'email123').trim();
+      if (cleanPass !== expectedPassword) {
+        setIsSubmitting(false);
+        Alert.alert(
+          'Incorrect Password',
+          'The password you entered is incorrect. Standard default password is email123, or contact HR if changed.'
+        );
+        return;
+      }
+
+      // 4. Success Login!
       setIsSubmitting(false);
+      const canonical = safeResolveCanonicalBranchId(matchedStaff.branchId || matchedStaff.branch);
+      const authData: LoginSuccessData = {
+        role: 'staff',
+        userName: matchedStaff.name || 'Staff Member',
+        branchId: canonical,
+        branchName: matchedStaff.branch ? (matchedStaff.branch.includes('Branch') ? matchedStaff.branch : `${matchedStaff.branch} Branch`) : 'KPHB Branch',
+        branchPhone: matchedStaff.mobile || matchedStaff.phone || '',
+        staffId: matchedStaff.id
+      };
+
       if (onLoginSuccess) {
         onLoginSuccess(authData);
       } else {
-        Alert.alert('Access Granted', `Welcome ${authData.userName} (Regular Staff Portal)`);
+        Alert.alert('Access Granted', `Welcome ${authData.userName} (Staff Portal)`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Staff login error:', err);
       setIsSubmitting(false);
-      Alert.alert('Login Error', 'Failed to authenticate staff.');
+      Alert.alert('Login Error', err?.message || 'Failed to authenticate staff.');
     }
   };
 
@@ -715,35 +685,31 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
 
             {loginMethod === 'staff' && (
               <>
-                <Text style={styles.sectionSubtitle}>Regular Staff Login (Punch, Leaves & Reports)</Text>
+                <Text style={styles.sectionSubtitle}>Regular Staff Login (Email & Password)</Text>
 
-                {/* Staff Mobile Number Input (Phone Dial Pad Only) */}
+                {/* Staff Email ID Input */}
                 <View style={styles.inputContainer}>
-                  <Ionicons name="call-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
+                  <Ionicons name="mail-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
                   <TextInput
                     style={styles.inputField}
-                    placeholder="Staff Mobile Number (10 digits)"
+                    placeholder="Staff Login Email (e.g. anil@sph.com)"
                     placeholderTextColor="#94a3b8"
-                    keyboardType="phone-pad"
-                    maxLength={10}
-                    value={phoneNumber}
-                    onChangeText={(t) => {
-                      setPhoneNumber(t.replace(/\D/g, ''));
-                      setOtpSent(false);
-                    }}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={staffEmail}
+                    onChangeText={setStaffEmail}
                   />
                 </View>
 
                 {/* Live Real-time Database Staff Match Badge */}
                 {(() => {
-                  const cleanDigits = phoneNumber.replace(/\D/g, '');
-                  const clean10 = cleanDigits.length > 10 ? cleanDigits.slice(-10) : cleanDigits;
-                  if (!clean10 || clean10.length < 10) return null;
+                  const clean = staffEmail.trim().toLowerCase();
+                  if (!clean || clean.length < 3) return null;
 
-                  const matched = (liveStaffChips || []).find(s => {
-                    const sPhone = String(s.mobile || s.phone || '').replace(/\D/g, '');
-                    if (sPhone && RECEPTION_DESK_DIRECTORY[sPhone]) return false;
-                    return sPhone.endsWith(clean10);
+                  const matched = (liveStaffChips || []).find((s: any) => {
+                    const sEmail = String(s.email || '').trim().toLowerCase();
+                    const fallbackEmail = `${String(s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
+                    return sEmail === clean || fallbackEmail === clean;
                   });
 
                   if (matched) {
@@ -767,104 +733,40 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
                     );
                   }
 
-                  return (
-                    <View style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      paddingVertical: 7,
-                      paddingHorizontal: 12,
-                      borderRadius: 8,
-                      backgroundColor: '#fef2f2',
-                      borderColor: '#fecaca',
-                      borderWidth: 1,
-                      marginBottom: 12
-                    }}>
-                      <Ionicons name="close-circle" size={15} color="#dc2626" style={{ marginRight: 6 }} />
-                      <Text style={{ fontSize: 12, color: '#b91c1c', fontWeight: '600' }}>
-                        Mobile number not registered in regular staff
-                      </Text>
-                    </View>
-                  );
+                  return null;
                 })()}
 
-                {otpSent ? (
-                  <>
-                    {/* Notice Banner */}
-                    {smsNotice ? (
-                      <View style={{
-                        backgroundColor: '#eff6ff',
-                        borderRadius: 10,
-                        borderWidth: 1,
-                        borderColor: '#bfdbfe',
-                        padding: 10,
-                        marginBottom: 10
-                      }}>
-                        <Text style={{ fontSize: 11.5, color: '#1e40af', fontWeight: '600' }}>{smsNotice}</Text>
-                        {displayedOtp ? (
-                          <Text style={{ fontSize: 12, color: '#0284c7', fontWeight: '800', marginTop: 4 }}>
-                            OTP Code: <Text style={{ letterSpacing: 2, backgroundColor: '#dbeafe' }}>{displayedOtp}</Text>
-                          </Text>
-                        ) : null}
-                      </View>
-                    ) : null}
-
-                    {/* OTP Code (4 digits) */}
-                    <View style={styles.inputContainer}>
-                      <Ionicons name="lock-closed-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
-                      <TextInput
-                        style={styles.inputField}
-                        placeholder="Enter 4-Digit SMS OTP"
-                        placeholderTextColor="#94a3b8"
-                        keyboardType="number-pad"
-                        value={otpCode}
-                        onChangeText={setOtpCode}
-                        maxLength={6}
-                      />
-                    </View>
-
-                    <TouchableOpacity
-                      style={[styles.primaryButton, { backgroundColor: '#16a34a' }]}
-                      onPress={handleStaffLogin}
-                      disabled={isSubmitting}
-                    >
-                      {isSubmitting ? (
-                        <ActivityIndicator color="#ffffff" />
-                      ) : (
-                        <Text style={styles.primaryButtonText}>Verify & Sign In to Staff Portal</Text>
-                      )}
-                    </TouchableOpacity>
-
-                    {/* 30-Second Countdown & Resend Option */}
-                    <View style={{ alignItems: 'center', marginTop: 10 }}>
-                      {countdown > 0 ? (
-                        <Text style={{ fontSize: 13, color: '#64748b', fontWeight: '500' }}>
-                          OTP expires in <Text style={{ color: '#ef4444', fontWeight: '700' }}>{countdown}s</Text>
-                        </Text>
-                      ) : (
-                        <TouchableOpacity
-                          onPress={handleSendOTP}
-                          style={{ flexDirection: 'row', alignItems: 'center' }}
-                          disabled={isSubmitting}
-                        >
-                          <Ionicons name="refresh-outline" size={15} color="#258ec8" style={{ marginRight: 4 }} />
-                          <Text style={{ fontSize: 12, color: '#258ec8', fontWeight: '700' }}>Resend 4-Digit SMS OTP</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  </>
-                ) : (
-                  <TouchableOpacity
-                    style={[styles.primaryButton, { backgroundColor: '#258ec8' }]}
-                    onPress={handleSendOTP}
-                    disabled={isSubmitting}
-                  >
-                    {isSubmitting ? (
-                      <ActivityIndicator color="#ffffff" />
-                    ) : (
-                      <Text style={styles.primaryButtonText}>Send 4-Digit SMS OTP</Text>
-                    )}
+                {/* Staff Password Input */}
+                <View style={styles.inputContainer}>
+                  <Ionicons name="lock-closed-outline" size={18} color="#258ec8" style={{ marginRight: 8 }} />
+                  <TextInput
+                    style={[styles.inputField, { flex: 1 }]}
+                    placeholder="Staff Password"
+                    placeholderTextColor="#94a3b8"
+                    secureTextEntry={!showStaffPassword}
+                    value={staffPassword}
+                    onChangeText={setStaffPassword}
+                  />
+                  <TouchableOpacity onPress={() => setShowStaffPassword(!showStaffPassword)} style={{ padding: 4 }}>
+                    <Ionicons name={showStaffPassword ? "eye-off-outline" : "eye-outline"} size={18} color="#64748b" />
                   </TouchableOpacity>
-                )}
+                </View>
+
+                <Text style={{ fontSize: 11, color: '#64748b', marginBottom: 14, marginTop: -4 }}>
+                  Standard default password for all staff is <Text style={{ fontWeight: '700', color: '#0f172a' }}>email123</Text>
+                </Text>
+
+                <TouchableOpacity
+                  style={[styles.primaryButton, { backgroundColor: '#258ec8' }]}
+                  onPress={handleStaffLogin}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>Sign In to Staff Portal</Text>
+                  )}
+                </TouchableOpacity>
               </>
             )}
 

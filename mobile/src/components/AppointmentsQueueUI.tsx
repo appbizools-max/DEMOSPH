@@ -482,6 +482,12 @@ export const AppointmentsQueueUI: React.FC<AppointmentsQueueUIProps> = ({
             paymentMode: (targetApp as any).paymentMode || 'UPI',
             branch: targetApp.branch || 'KPHB',
             doctorName: targetApp.doctorName || targetApp.assignedDoctor || 'Dr. Prashanth K Vaidya'
+          }).then(res => {
+            const generatedPdfUrl = (res as any)?.pdfUrl;
+            if (generatedPdfUrl && activeDb) {
+              updateDoc(doc(activeDb, 'appointments', targetApp.id), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+              updateDoc(doc(activeDb, 'allpatients', targetApp.id), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+            }
           }).catch(e => console.error('WhatsApp invoice flow error:', e));
         }
       }

@@ -51,7 +51,7 @@ const safeResolveCanonicalBranchId = (input?: string | null): CanonicalBranchId 
       const res = resolveCanonicalBranchId(input);
       if (res) return res;
     }
-  } catch (_) {}
+  } catch (_) { }
   if (!input || typeof input !== 'string') return 'kphb';
   const lower = input.toLowerCase();
   if (lower.includes('kphb') || lower.includes('kpb')) return 'kphb';
@@ -310,7 +310,7 @@ function MainApp() {
               try {
                 restoredPatient = JSON.parse(savedPatient);
                 if (restoredPatient) setSelectedPatient(restoredPatient);
-              } catch (_) {}
+              } catch (_) { }
             }
 
             // Restore last active screen/tab
@@ -367,16 +367,16 @@ function MainApp() {
   // Persist current active tab so the app reopens exactly where user left off
   useEffect(() => {
     if (isLoadingSession || activeTab === 'auth') return;
-    AsyncStorage.setItem(ACTIVE_TAB_KEY, activeTab).catch(() => {});
+    AsyncStorage.setItem(ACTIVE_TAB_KEY, activeTab).catch(() => { });
   }, [activeTab, isLoadingSession]);
 
   // Persist selected patient for patient file restoration
   useEffect(() => {
     if (isLoadingSession) return;
     if (selectedPatient) {
-      AsyncStorage.setItem(SELECTED_PATIENT_KEY, JSON.stringify(selectedPatient)).catch(() => {});
+      AsyncStorage.setItem(SELECTED_PATIENT_KEY, JSON.stringify(selectedPatient)).catch(() => { });
     } else {
-      AsyncStorage.removeItem(SELECTED_PATIENT_KEY).catch(() => {});
+      AsyncStorage.removeItem(SELECTED_PATIENT_KEY).catch(() => { });
     }
   }, [selectedPatient, isLoadingSession]);
 
@@ -430,7 +430,7 @@ function MainApp() {
           const isStaff = userRole === 'staff' && isBranchMatch;
 
           let shouldInclude = false;
-          if (noti.type === 'staff_login' || noti.type === 'staff_logout') {
+          if (noti.type === 'staff_login' || noti.type === 'staff_logout' || noti.type === 'staff_punch_in' || noti.type === 'staff_punch_out') {
             shouldInclude = isHR;
           } else if (noti.type === 'staff_report') {
             const isMatchingStaff = userRole === 'staff' && (
@@ -439,6 +439,12 @@ function MainApp() {
               isStaff
             );
             shouldInclude = isHR || isMatchingStaff;
+          } else if (noti.type === 'cleaning_submission') {
+            // Clinic cleaning uploaded: HR / Admin and Branch Reception get notified
+            shouldInclude = isHR || isBranchStaffOrReception;
+          } else if (noti.type === 'cleaning_approved' || noti.type === 'cleaning_rejected') {
+            // Cleaning approval/rejection: Branch Reception and HR/Admin get notified
+            shouldInclude = isHR || isBranchStaffOrReception;
           } else if (noti.type === 'payment' || noti.type === 'booking' || noti.title?.toLowerCase().includes('appointment') || noti.title?.toLowerCase().includes('booked')) {
             // Bookings & Payments: HR gets all branches, Branch staff & reception get their branch
             shouldInclude = isHR || isBranchStaffOrReception;
@@ -486,7 +492,7 @@ function MainApp() {
             const isStaff = userRole === 'staff' && isBranchMatch;
 
             let shouldNotify = false;
-            if (noti.type === 'staff_login' || noti.type === 'staff_logout') {
+            if (noti.type === 'staff_login' || noti.type === 'staff_logout' || noti.type === 'staff_punch_in' || noti.type === 'staff_punch_out') {
               shouldNotify = isHR;
             } else if (noti.type === 'staff_report') {
               const isMatchingStaff = userRole === 'staff' && (
@@ -495,6 +501,12 @@ function MainApp() {
                 isStaff
               );
               shouldNotify = isHR || isMatchingStaff;
+            } else if (noti.type === 'cleaning_submission') {
+              // Clinic cleaning uploaded: notify HR / Admin and Branch Reception
+              shouldNotify = isHR || isBranchStaffOrReception;
+            } else if (noti.type === 'cleaning_approved' || noti.type === 'cleaning_rejected') {
+              // Cleaning approval / rejection: notify Branch Reception and HR/Admin
+              shouldNotify = isHR || isBranchStaffOrReception;
             } else if (noti.type === 'payment' || noti.type === 'booking' || noti.title?.toLowerCase().includes('appointment') || noti.title?.toLowerCase().includes('booked')) {
               // Bookings & Payments: HR gets all branches, Branch staff & reception get their branch
               shouldNotify = isHR || isBranchStaffOrReception;
@@ -504,21 +516,40 @@ function MainApp() {
 
             if (shouldNotify) {
               const notiTitle = noti.title || (
-                noti.type === 'staff_login' ? 'Staff Logged In' :
-                noti.type === 'staff_logout' ? 'Staff Logged Out' :
-                noti.type === 'staff_report' ? 'Daily Report Submitted' :
-                noti.type === 'payment' ? 'Payment Received' : 'Appointment Booked'
+                noti.type === 'staff_punch_in' ? '🟢 Staff Punched In' :
+                  noti.type === 'staff_punch_out' ? '🔴 Staff Punched Out' :
+                    noti.type === 'staff_login' ? 'Staff Logged In' :
+                      noti.type === 'staff_logout' ? 'Staff Logged Out' :
+                        noti.type === 'staff_report' ? 'Daily Report Submitted' :
+                          noti.type === 'cleaning_submission' ? `${noti.branch || 'Branch'} Cleaning Photos Uploaded 📸` :
+                            noti.type === 'cleaning_approved' ? `${noti.branch || 'Branch'} Cleaning Approved ✅` :
+                              noti.type === 'cleaning_rejected' ? `${noti.branch || 'Branch'} Cleaning Rejected ❌` :
+                                noti.type === 'payment' ? 'Payment Received' : 'Appointment Booked'
               );
 
               const notiBody = noti.body || (
-                noti.type === 'staff_login' ? `${noti.staffName} logged in at ${noti.branch}` :
-                noti.type === 'staff_logout' ? `${noti.staffName} logged out from ${noti.branch}` :
-                noti.type === 'staff_report' ? `${noti.staffName} submitted Daily Report for ${noti.branch}` :
-                noti.type === 'payment' ? `Payment of ₹${Number(noti.amount || 0).toLocaleString('en-IN')} received from ${noti.patientName} (${noti.branch})` :
-                `Appointment booked for ${noti.patientName} at ${noti.appointmentTime} (${noti.branch})`
+                noti.type === 'staff_punch_in' ? `${noti.staffName || 'Staff'} punched in at ${noti.branch || 'Branch'} (${noti.punchInTime || ''})` :
+                  noti.type === 'staff_punch_out' ? `${noti.staffName || 'Staff'} punched out from ${noti.branch || 'Branch'} (${noti.punchOutTime || ''})${noti.workingHours ? ` • Worked: ${noti.workingHours}` : ''}` :
+                    noti.type === 'staff_login' ? `${noti.staffName} logged in at ${noti.branch}` :
+                      noti.type === 'staff_logout' ? `${noti.staffName} logged out from ${noti.branch}` :
+                        noti.type === 'staff_report' ? `${noti.staffName} submitted Daily Report for ${noti.branch}` :
+                          noti.type === 'cleaning_submission' ? `${noti.photoCount || 5} clinic cleaning photos uploaded from ${noti.branch} for HR inspection.` :
+                            noti.type === 'cleaning_approved' ? `Clinic cleaning approved by ${noti.reviewedBy || 'HR'} for ${noti.branch}. Reception is unlocked.` :
+                              noti.type === 'cleaning_rejected' ? `Cleaning submission for ${noti.branch} rejected by ${noti.reviewedBy || 'HR'}. Please re-upload photos.` :
+                                noti.type === 'payment' ? `Payment of ₹${Number(noti.amount || 0).toLocaleString('en-IN')} received from ${noti.patientName} (${noti.branch})` :
+                                  `Appointment booked for ${noti.patientName} at ${noti.appointmentTime} (${noti.branch})`
               );
 
               triggerSystemPushNotification(notiTitle, notiBody, noti).catch(() => { });
+
+              // For Branch Reception, also show immediate in-app Alert when cleaning is Approved or Rejected
+              if (isBranchStaffOrReception) {
+                if (noti.type === 'cleaning_approved') {
+                  Alert.alert('Cleaning Approved ✅', notiBody);
+                } else if (noti.type === 'cleaning_rejected') {
+                  Alert.alert('Cleaning Rejected ❌', notiBody);
+                }
+              }
             }
           }
         });
@@ -569,7 +600,7 @@ function MainApp() {
         staffName: resolvedName,
         branch: data.branchName || branchName || 'SPH Clinic',
         staffId: data.staffId || staffId || '',
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     const defaultHome = (data.role === 'admin' || data.role === 'hr')
@@ -582,8 +613,8 @@ function MainApp() {
 
     setSelectedPatient(null);
     setActiveTab(defaultHome);
-    AsyncStorage.setItem(ACTIVE_TAB_KEY, defaultHome).catch(() => {});
-    AsyncStorage.removeItem(SELECTED_PATIENT_KEY).catch(() => {});
+    AsyncStorage.setItem(ACTIVE_TAB_KEY, defaultHome).catch(() => { });
+    AsyncStorage.removeItem(SELECTED_PATIENT_KEY).catch(() => { });
   };
 
   const performSignOut = async () => {
@@ -593,7 +624,7 @@ function MainApp() {
         staffName: userName || 'Staff Member',
         branch: branchName || 'SPH Clinic',
         staffId: staffId || '',
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     try {
@@ -753,7 +784,7 @@ function MainApp() {
         return <ProductBillingScreen />;
       case 'reception_medicines':
       case 'medicine_requests':
-        return <MedicineRequestsScreen />;
+        return <MedicineRequestsScreen branchName={branchName} currentBranch={branchName} />;
       case 'reception_noshow':
         return <DoctorNoShowScreen currentBranch={branchName} />;
       case 'reception_shiprocket':
@@ -776,7 +807,6 @@ function MainApp() {
             <BranchCleaningScreen onBack={handleGoBack} role={(userRole as any) === 'hr' ? 'hr' : 'admin'} />
           </View>
         );
-
       default:
         return (
           <ReceptionDashboardScreen

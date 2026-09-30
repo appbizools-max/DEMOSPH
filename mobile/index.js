@@ -3,21 +3,64 @@ import { registerRootComponent } from 'expo';
 import React, { useState, useEffect } from 'react';
 import { Text, View, ScrollView, SafeAreaView, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 
+// Polyfill global.Blob in React Native to support ArrayBuffer & Uint8Array without throwing
+if (typeof global !== 'undefined' && global.Blob) {
+  try {
+    var OriginalBlob = global.Blob;
+    var supportsArrayBuffer = false;
+    try {
+      new OriginalBlob([new Uint8Array(1)]);
+      supportsArrayBuffer = true;
+    } catch (_) {
+      supportsArrayBuffer = false;
+    }
+
+    if (!supportsArrayBuffer) {
+      function uint8ArrayToBinaryString(uint8Array) {
+        var result = '';
+        var chunkSize = 32768;
+        for (var i = 0; i < uint8Array.length; i += chunkSize) {
+          result += String.fromCharCode.apply(null, uint8Array.subarray(i, i + chunkSize));
+        }
+        return result;
+      }
+
+      function PatchedBlob(parts, options) {
+        if (Array.isArray(parts)) {
+          parts = parts.map(function (part) {
+            if (part instanceof ArrayBuffer) {
+              return uint8ArrayToBinaryString(new Uint8Array(part));
+            }
+            if (ArrayBuffer.isView(part)) {
+              return uint8ArrayToBinaryString(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+            }
+            return part;
+          });
+        }
+        return new OriginalBlob(parts, options);
+      }
+      PatchedBlob.prototype = OriginalBlob.prototype;
+      global.Blob = PatchedBlob;
+    }
+  } catch (e) {
+    console.warn('[SPH_ENTRY] Blob polyfill notice:', e);
+  }
+}
+
 // Global error store for release mode diagnostic capture
 var globalJsError = null;
 var globalErrorListeners = [];
-
 function notifyError(errStr) {
   globalJsError = errStr;
   for (var i = 0; i < globalErrorListeners.length; i++) {
-    try { globalErrorListeners[i](errStr); } catch (e) {}
+    try { globalErrorListeners[i](errStr); } catch (e) { }
   }
 }
 
 // Override React Native's default release error handler to prevent automatic app shutdown
 if (typeof global !== 'undefined' && global.ErrorUtils) {
   try {
-    global.ErrorUtils.setGlobalHandler(function(error, isFatal) {
+    global.ErrorUtils.setGlobalHandler(function (error, isFatal) {
       var stack = error && error.stack ? String(error.stack) : String(error && error.message ? error.message : error || 'Unknown Error');
       console.error('[SPH_RELEASE_FATAL_ERROR]', stack, 'isFatal:', isFatal);
       notifyError(stack);
@@ -34,14 +77,14 @@ if (typeof Promise !== 'undefined') {
     if (tracking && typeof tracking.enable === 'function') {
       tracking.enable({
         allRejections: true,
-        onUnhandled: function(id, error) {
+        onUnhandled: function (id, error) {
           var stack = error && error.stack ? String(error.stack) : String(error && error.message ? error.message : error || 'Unhandled Promise Rejection');
           console.error('[SPH_UNHANDLED_PROMISE]', stack);
           notifyError('Unhandled Promise: ' + stack);
         },
       });
     }
-  } catch (e) {}
+  } catch (e) { }
 }
 
 var TargetApp = null;
@@ -61,10 +104,10 @@ function GlobalAppWrapper() {
   const [activeError, setActiveError] = useState(globalJsError || startupImportError);
 
   useEffect(() => {
-    const handler = function(err) { setActiveError(err); };
+    const handler = function (err) { setActiveError(err); };
     globalErrorListeners.push(handler);
     return () => {
-      globalErrorListeners = globalErrorListeners.filter(function(l) { return l !== handler; });
+      globalErrorListeners = globalErrorListeners.filter(function (l) { return l !== handler; });
     };
   }, []);
 

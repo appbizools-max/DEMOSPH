@@ -717,11 +717,11 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       if (docId && seenDocIds.has(docId)) return;
       if (docId) seenDocIds.add(docId);
 
-      const pName = data.fullName || data.patientName || data.name || data.patient_name;
-      const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || '';
+      const pName = data.fullName || data.patientName || data.name || data.patient_name || data.patient || data.patient_fullName || data.displayName || '';
+      const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || data.mobileNumber || data.tel || '';
       const cleanDocPhone = String(docPhone).replace(/\D/g, '').slice(-10);
       if (pName && cleanDocPhone === clean) {
-        const rawReg = data.regNo || data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid || data.customId;
+        const rawReg = data.regNo || data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid || data.customId || data.id;
         const originalBranch = data.branchName || data.branch || data.targetBranch || '';
         let regId = '';
         const isValidReg = rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 25 && !/^[a-zA-Z0-9]{20,32}$/.test(rawReg.trim()) && !rawReg.trim().toLowerCase().startsWith('temp_') && !rawReg.trim().toLowerCase().startsWith('app_');
@@ -729,7 +729,8 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
           regId = rawReg.trim().toUpperCase();
         }
 
-        const personKey = `${pName.trim().toLowerCase()}_${cleanDocPhone}`;
+        const normalizedName = pName.trim().replace(/^(mr|mrs|ms|dr|master)\.?\s+/i, '').trim().toLowerCase();
+        const personKey = `${normalizedName}_${cleanDocPhone}`;
         if (!profilesMap.has(personKey)) {
           if (!regId) {
             const shortcut = getBranchShortcut(originalBranch || selectedBranch);
@@ -747,7 +748,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
             patientType: 'revisit',
             isNewPatient: false,
             isExistingProfile: true,
-            collectionName: 'patients',
+            collectionName: data.collectionName || 'patients',
             branchName: originalBranch || '',
             homeBranch: originalBranch || ''
           });
@@ -769,22 +770,19 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
 
     // 1. Search in-memory state & cache instantly (0ms)
     try {
-      const storePool = receptionDataStore.getAllCollectionsPool();
-      if (storePool && storePool.length > 0) {
-        storePool.forEach(p => processDoc(p, p?.id));
-      }
-      const storeAppts = receptionDataStore.getAppointments();
-      if (storeAppts && storeAppts.length > 0) {
-        storeAppts.forEach(a => processDoc(a, a?.id));
-      }
-      (allPatientsList || []).forEach(p => processDoc(p, p?.id));
-      (patientsList || []).forEach(p => processDoc(p, p?.id));
-      (existingAppointments || []).forEach(a => processDoc(a, a?.id));
-      (GLOBAL_MOBILE_ALLPATIENTS_CACHE || []).forEach(p => processDoc(p, p?.id));
-      (GLOBAL_MOBILE_PATIENTS_CACHE || []).forEach(p => processDoc(p, p?.id));
-    } catch (e) { }
+      const storePool = receptionDataStore.getAllCollectionsPool() || [];
+      storePool.forEach(p => processDoc(p, p?.id || p?.docId));
 
-    // 2. Query Firestore collections with a 2.5s max timeout safety using safe active DB
+      const storeAppts = receptionDataStore.getAppointments() || [];
+      storeAppts.forEach(a => processDoc(a, a?.id || a?.docId));
+
+      const storePkg = receptionDataStore.getPackageMembers() || [];
+      storePkg.forEach(m => processDoc(m, m?.id || m?.docId));
+    } catch (e) {
+      console.warn("In-memory phone search notice:", e);
+    }
+
+    // 2. Query Firestore collections with multi-format phone matching & safe timeout
     const activeDb = getSafeDb();
     if (activeDb) {
       const safeQuery = (q: any) => Promise.race([
@@ -795,15 +793,30 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
         new Promise(res => setTimeout(() => res({ docs: [] }), 2500))
       ]);
 
-      try {
-        const [snapAll, snapPatients, snapAppts, snapProfiles] = await Promise.all([
-          safeQuery(query(collection(activeDb, 'allpatients'), where('phone', '==', clean), limit(20))),
-          safeQuery(query(collection(activeDb, 'patients'), where('phone', '==', clean), limit(20))),
-          safeQuery(query(collection(activeDb, 'appointments'), where('phone', '==', clean), limit(20))),
-          safeQuery(query(collection(activeDb, 'patient_profiles'), where('phone', '==', clean), limit(20)))
-        ]);
+      const phoneVariants = Array.from(new Set([
+        clean,
+        `+91${clean}`,
+        `+91 ${clean}`,
+        `+91-${clean}`,
+        `0${clean}`,
+        `${clean.slice(0, 5)} ${clean.slice(5)}`,
+        `+91 ${clean.slice(0, 5)} ${clean.slice(5)}`
+      ])).filter(Boolean);
 
-        [snapAll, snapPatients, snapAppts, snapProfiles].forEach((snap: any) => {
+      try {
+        const queryPromises = [
+          safeQuery(query(collection(activeDb, 'allpatients'), where('phone', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'allpatients'), where('patientPhone', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'patients'), where('phone', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'patients'), where('patientPhone', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'appointments'), where('phone', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'appointments'), where('patientPhone', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'appointments'), where('phoneNumber', 'in', phoneVariants), limit(25))),
+          safeQuery(query(collection(activeDb, 'patient_profiles'), where('phone', 'in', phoneVariants), limit(25)))
+        ];
+
+        const snapshots = await Promise.all(queryPromises);
+        snapshots.forEach((snap: any) => {
           if (!snap || snap.empty || !snap.forEach) return;
           snap.forEach((docSnap: any) => {
             processDoc(docSnap.data(), docSnap.id);

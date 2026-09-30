@@ -6,10 +6,11 @@ import {
 } from 'react-native';
 import { Feather, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import {
   getSafeDb, collection, onSnapshot, addDoc, updateDoc, doc, arrayUnion, setDoc, getDoc, getDocs, query, where, limit
 } from '../../utils/firebaseSafe';
-import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref as storageRef, uploadString, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { sanitizeDoctorName } from '@app/shared';
 import { receptionDataStore } from '../../utils/receptionDataStore';
@@ -34,7 +35,51 @@ const getFirebaseStorage = () => {
 
 const db = getSafeDb();
 
-// Cloud image uploader: guarantees images are uploaded to Firebase Storage and returns lightweight https URLs
+// Polyfill global.Blob in React Native to support ArrayBuffer & Uint8Array without throwing
+if (typeof global !== 'undefined' && (global as any).Blob) {
+  try {
+    const OriginalBlob = (global as any).Blob;
+    let supportsUint8 = false;
+    try {
+      new OriginalBlob([new Uint8Array(1)]);
+      supportsUint8 = true;
+    } catch (_) {
+      supportsUint8 = false;
+    }
+
+    if (!supportsUint8) {
+      const u2s = (arr: Uint8Array): string => {
+        let result = '';
+        const chunkSize = 32768;
+        for (let i = 0; i < arr.length; i += chunkSize) {
+          result += String.fromCharCode.apply(null, Array.from(arr.subarray(i, i + chunkSize)));
+        }
+        return result;
+      };
+
+      function PatchedBlob(this: any, parts?: any[], options?: any) {
+        if (Array.isArray(parts)) {
+          parts = parts.map(part => {
+            if (part instanceof ArrayBuffer) {
+              return u2s(new Uint8Array(part));
+            }
+            if (ArrayBuffer.isView(part)) {
+              return u2s(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+            }
+            return part;
+          });
+        }
+        return new OriginalBlob(parts, options);
+      }
+      PatchedBlob.prototype = OriginalBlob.prototype;
+      (global as any).Blob = PatchedBlob;
+    }
+  } catch (e) {
+    console.warn('Blob polyfill notice:', e);
+  }
+}
+
+// Helper to upload images/prescriptions/canvas to Firebase Storage and return public HTTPS URLs
 const uploadPrescriptionToStorage = async (dataOrUri: string, patId?: string): Promise<string> => {
   if (!dataOrUri) return '';
   // If already an http/https URL, return directly
@@ -42,22 +87,92 @@ const uploadPrescriptionToStorage = async (dataOrUri: string, patId?: string): P
     return dataOrUri;
   }
 
+  const bucket = "spiritual-homeopathy-3b552.firebasestorage.app";
+  const safePatId = (patId || 'unknown').toString().replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  let ext = 'jpg';
+  let contentType = 'image/jpeg';
+  if (dataOrUri.includes('image/png') || dataOrUri.endsWith('.png')) {
+    ext = 'png';
+    contentType = 'image/png';
+  } else if (dataOrUri.includes('image/bmp') || dataOrUri.endsWith('.bmp')) {
+    ext = 'bmp';
+    contentType = 'image/bmp';
+  }
+
+  const filename = `prescriptions/${safePatId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+  const encodedPath = encodeURIComponent(filename);
+
+  // 1. Web environment (Browser Blobs / TypedArrays supported natively)
+  if (Platform.OS === 'web') {
+    try {
+      const storage = getFirebaseStorage();
+      if (storage) {
+        const fileRef = storageRef(storage, filename);
+        if (dataOrUri.startsWith('data:')) {
+          await uploadString(fileRef, dataOrUri, 'data_url');
+          return await getDownloadURL(fileRef);
+        } else {
+          const res = await fetch(dataOrUri);
+          const blob = await res.blob();
+          await uploadBytes(fileRef, blob, { contentType });
+          return await getDownloadURL(fileRef);
+        }
+      }
+    } catch (err) {
+      console.warn("Web storage upload notice:", err);
+    }
+    return dataOrUri;
+  }
+
+  // 2. Mobile (Android / iOS): Native FileSystem direct background streaming upload
+  // Bypasses React Native Blob limitations completely and eliminates memory overhead
+  let localFileToUpload = dataOrUri;
+  let isTempFile = false;
+
   try {
-    const storage = getFirebaseStorage();
-    if (!storage) throw new Error("Firebase Storage not available");
+    if (dataOrUri.startsWith('data:') || (!dataOrUri.startsWith('file://') && !dataOrUri.startsWith('content://'))) {
+      const commaIdx = dataOrUri.indexOf(',');
+      const base64Data = commaIdx !== -1 ? dataOrUri.substring(commaIdx + 1) : dataOrUri;
+      const tempPath = `${FileSystem.cacheDirectory}rx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${ext}`;
+      await FileSystem.writeAsStringAsync(tempPath, base64Data, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      localFileToUpload = tempPath;
+      isTempFile = true;
+    }
 
-    const safePatId = (patId || 'unknown').toString().replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `prescriptions/${safePatId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
-    const fileRef = storageRef(storage, filename);
+    const uploadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o?name=${encodedPath}`;
+    const uploadResult = await FileSystem.uploadAsync(uploadUrl, localFileToUpload, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        'Content-Type': contentType,
+      },
+    });
 
-    if (dataOrUri.startsWith('data:')) {
-      await uploadString(fileRef, dataOrUri, 'data_url');
-      const downloadUrl = await getDownloadURL(fileRef);
-      return downloadUrl;
+    if (uploadResult.status >= 200 && uploadResult.status < 300) {
+      let downloadTokens = '';
+      try {
+        const parsed = JSON.parse(uploadResult.body);
+        downloadTokens = parsed.downloadTokens || '';
+      } catch (_) {}
+      const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media&token=${downloadTokens}`;
+      console.log('Firebase storage upload SUCCESS (native) ->', publicUrl);
+      return publicUrl;
+    } else {
+      console.warn(`Storage REST upload returned status ${uploadResult.status}:`, uploadResult.body);
     }
   } catch (err) {
     console.warn("Firebase storage upload notice:", err);
+  } finally {
+    if (isTempFile) {
+      try {
+        await FileSystem.deleteAsync(localFileToUpload, { idempotent: true });
+      } catch (_) {}
+    }
   }
+
   return dataOrUri;
 };
 
@@ -942,7 +1057,7 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
 
       if (finalUrl) {
         setUploadedImages((prev) => {
-          const filtered = prev.filter(item => !item.startsWith('data:image/'));
+          const filtered = prev.filter(item => item !== finalUrl);
           return [finalUrl, ...filtered];
         });
 
@@ -1505,8 +1620,8 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
     }
 
     setUploadedImages((prev) => {
-      if (prev.includes(trimmed)) return prev;
-      return [...prev, trimmed];
+      const filtered = prev.filter(x => x !== trimmed);
+      return [trimmed, ...filtered];
     });
 
     if (patient?.id && db) {
@@ -1606,7 +1721,8 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         setIsUploadingImage(true);
         try {
           for (const asset of result.assets) {
-            const rawData = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+            const rawData = asset.uri || (asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : '');
+            if (!rawData) continue;
             const cloudUrl = await uploadPrescriptionToStorage(rawData, patient?.id || patient?.patientId || regId);
             await handleAddNewPrescriptionImage(cloudUrl);
           }
@@ -1647,7 +1763,8 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         setIsUploadingImage(true);
         try {
           for (const asset of result.assets) {
-            const rawData = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+            const rawData = asset.uri || (asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : '');
+            if (!rawData) continue;
             const cloudUrl = await uploadPrescriptionToStorage(rawData, patient?.id || patient?.patientId || regId);
             await handleAddNewPrescriptionImage(cloudUrl);
           }
@@ -1714,7 +1831,7 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
         const filePath = parts.join('/');
         return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(filePath)}?alt=media`;
       }
-      const bucketName = 'spiritual-homeopathy-3b552.appspot.com';
+      const bucketName = 'spiritual-homeopathy-3b552.firebasestorage.app';
       const cleanPath = trimmed.startsWith('/') ? trimmed.slice(1) : trimmed;
       return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(cleanPath)}?alt=media`;
     };
@@ -2470,11 +2587,11 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
                         <TouchableOpacity
                           activeOpacity={0.8}
                           onPress={() => setFullPrescriptionPreview(img)}
-                          style={{ width: '100%', height: '100%' }}
+                          style={{ width: 80, height: 80 }}
                         >
                           <Image
                             source={{ uri: img }}
-                            style={{ width: '100%', height: '100%' }}
+                            style={{ width: 80, height: 80, minWidth: 80, minHeight: 80 }}
                             resizeMode="cover"
                           />
                         </TouchableOpacity>
@@ -3149,7 +3266,11 @@ export const PatientFileMobileScreen: React.FC<PatientFileMobileScreenProps> = (
                             onPress={() => setFullPrescriptionPreview(url)}
                             style={{ width: 100, height: 120, borderRadius: 10, overflow: 'hidden', borderWidth: 2, borderColor: '#0284c7' }}
                           >
-                            <Image source={{ uri: url }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                            <Image
+                              source={{ uri: url }}
+                              style={{ width: 100, height: 120, minWidth: 100, minHeight: 120 }}
+                              resizeMode="cover"
+                            />
                             <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(15, 23, 42, 0.82)', paddingVertical: 3 }}>
                               <Text style={{ fontSize: 9.5, color: '#ffffff', fontWeight: '800', textAlign: 'center' }}>Tap to View</Text>
                             </View>

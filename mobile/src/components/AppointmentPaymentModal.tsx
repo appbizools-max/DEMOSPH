@@ -1,15 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Modal, View, Text, StyleSheet, TouchableOpacity,
-  TextInput, ScrollView, Alert, ActivityIndicator, SafeAreaView, Linking, Image, Share, NativeModules
+  TextInput, ScrollView, Alert, ActivityIndicator, SafeAreaView, Linking, Image, Share, NativeModules, Platform
 } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { sendInvoiceWhatsAppNotification, resolveCanonicalBranchId, getBranchPhone } from '@app/shared';
+import * as FileSystem from 'expo-file-system';
+import {
+  sendInvoiceWhatsAppNotification,
+  resolveCanonicalBranchId,
+  getBranchPhone,
+  createRazorpayPaymentQr,
+  checkRazorpayPaymentStatus,
+  QrCodeResult,
+  createRazorpayCardPaymentLink
+} from '@app/shared';
 import {
   getSafeDb, doc, updateDoc, setDoc, getDocs, collection, query, where, arrayUnion, addDoc, onSnapshot, limit
 } from '../utils/firebaseSafe';
-import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref as storageRef, uploadString, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { SH_LOGO_BASE64 } from '../utils/logoBase64';
 import { createPaymentNotificationInFirestore, createFeeDiscountRequestNotificationInFirestore } from '../utils/fcmService';
@@ -32,29 +41,190 @@ const getFirebaseStorage = () => {
   }
 };
 
+// Polyfill global.Blob in React Native to support ArrayBuffer & Uint8Array without throwing
+if (typeof global !== 'undefined' && (global as any).Blob) {
+  try {
+    const OriginalBlob = (global as any).Blob;
+    let supportsUint8 = false;
+    try {
+      new OriginalBlob([new Uint8Array(1)]);
+      supportsUint8 = true;
+    } catch (_) {
+      supportsUint8 = false;
+    }
+
+    if (!supportsUint8) {
+      const u2s = (arr: Uint8Array): string => {
+        let result = '';
+        const chunkSize = 32768;
+        for (let i = 0; i < arr.length; i += chunkSize) {
+          result += String.fromCharCode.apply(null, Array.from(arr.subarray(i, i + chunkSize)));
+        }
+        return result;
+      };
+
+      function PatchedBlob(this: any, parts?: any[], options?: any) {
+        if (Array.isArray(parts)) {
+          parts = parts.map(part => {
+            if (part instanceof ArrayBuffer) {
+              return u2s(new Uint8Array(part));
+            }
+            if (ArrayBuffer.isView(part)) {
+              return u2s(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+            }
+            return part;
+          });
+        }
+        return new OriginalBlob(parts, options);
+      }
+      PatchedBlob.prototype = OriginalBlob.prototype;
+      (global as any).Blob = PatchedBlob;
+    }
+  } catch (e) {
+    console.warn('Blob polyfill notice:', e);
+  }
+}
+
+// Helper to upload images/prescriptions to Firebase Storage and return public HTTPS URLs
 const uploadPrescriptionToStorage = async (dataOrUri: string, patId?: string): Promise<string> => {
   if (!dataOrUri) return '';
   if (dataOrUri.startsWith('http://') || dataOrUri.startsWith('https://')) {
     return dataOrUri;
   }
+
+  const bucket = "spiritual-homeopathy-3b552.firebasestorage.app";
+  const safePatId = (patId || 'unknown').toString().replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  let ext = 'jpg';
+  let contentType = 'image/jpeg';
+  if (dataOrUri.includes('image/png') || dataOrUri.endsWith('.png')) {
+    ext = 'png';
+    contentType = 'image/png';
+  } else if (dataOrUri.includes('image/bmp') || dataOrUri.endsWith('.bmp')) {
+    ext = 'bmp';
+    contentType = 'image/bmp';
+  }
+
+  const filename = `prescriptions/${safePatId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+  const encodedPath = encodeURIComponent(filename);
+
+  // 1. Web environment (Browser Blobs / TypedArrays supported natively)
+  if (Platform.OS === 'web') {
+    try {
+      const storage = getFirebaseStorage();
+      if (storage) {
+        const fileRef = storageRef(storage, filename);
+        if (dataOrUri.startsWith('data:')) {
+          await uploadString(fileRef, dataOrUri, 'data_url');
+          return await getDownloadURL(fileRef);
+        } else {
+          const res = await fetch(dataOrUri);
+          const blob = await res.blob();
+          await uploadBytes(fileRef, blob, { contentType });
+          return await getDownloadURL(fileRef);
+        }
+      }
+    } catch (err) {
+      console.warn("Web storage upload notice:", err);
+    }
+    return dataOrUri;
+  }
+
+  // 2. Mobile (Android / iOS): Native FileSystem direct background streaming upload
+  let localFileToUpload = dataOrUri;
+  let isTempFile = false;
+
   try {
-    const storage = getFirebaseStorage();
-    if (!storage) throw new Error("Firebase Storage not available");
+    if (dataOrUri.startsWith('data:') || (!dataOrUri.startsWith('file://') && !dataOrUri.startsWith('content://'))) {
+      const commaIdx = dataOrUri.indexOf(',');
+      const base64Data = commaIdx !== -1 ? dataOrUri.substring(commaIdx + 1) : dataOrUri;
+      const tempPath = `${FileSystem.cacheDirectory}rx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${ext}`;
+      await FileSystem.writeAsStringAsync(tempPath, base64Data, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      localFileToUpload = tempPath;
+      isTempFile = true;
+    }
 
-    const safePatId = (patId || 'unknown').toString().replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `prescriptions/${safePatId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
-    const fileRef = storageRef(storage, filename);
+    const uploadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o?name=${encodedPath}`;
+    const uploadResult = await FileSystem.uploadAsync(uploadUrl, localFileToUpload, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        'Content-Type': contentType,
+      },
+    });
 
-    if (dataOrUri.startsWith('data:')) {
-      await uploadString(fileRef, dataOrUri, 'data_url');
-      const downloadUrl = await getDownloadURL(fileRef);
-      return downloadUrl;
+    if (uploadResult.status >= 200 && uploadResult.status < 300) {
+      let downloadTokens = '';
+      try {
+        const parsed = JSON.parse(uploadResult.body);
+        downloadTokens = parsed.downloadTokens || '';
+      } catch (_) { }
+      const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media&token=${downloadTokens}`;
+      console.log('Firebase storage upload SUCCESS (native) ->', publicUrl);
+      return publicUrl;
+    } else {
+      console.warn(`Storage REST upload returned status ${uploadResult.status}:`, uploadResult.body);
     }
   } catch (err) {
     console.warn("Firebase storage upload notice:", err);
+  } finally {
+    if (isTempFile) {
+      try {
+        await FileSystem.deleteAsync(localFileToUpload, { idempotent: true });
+      } catch (_) { }
+    }
   }
+
   return dataOrUri;
 };
+
+// Helper to upload generated invoice PDF to Firebase Storage and return public HTTPS URL
+const uploadInvoiceFileToStorage = async (fileUri: string, invCode: string): Promise<string> => {
+  const bucket = "spiritual-homeopathy-3b552.firebasestorage.app";
+  const filename = `invoices/Official_INV_${invCode}.pdf`;
+  const encodedPath = encodeURIComponent(filename);
+
+  if (Platform.OS === 'web') {
+    try {
+      const storage = getFirebaseStorage();
+      if (storage) {
+        const fileRef = storageRef(storage, filename);
+        const res = await fetch(fileUri);
+        const blob = await res.blob();
+        await uploadBytes(fileRef, blob, { contentType: 'application/pdf' });
+        return await getDownloadURL(fileRef);
+      }
+    } catch (e) {
+      console.warn('Web storage invoice upload notice:', e);
+    }
+  }
+
+  try {
+    const uploadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o?name=${encodedPath}`;
+    const uploadResult = await FileSystem.uploadAsync(uploadUrl, fileUri, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        'Content-Type': 'application/pdf',
+      },
+    });
+
+    if (uploadResult.status >= 200 && uploadResult.status < 300) {
+      let downloadTokens = '';
+      try {
+        const parsed = JSON.parse(uploadResult.body);
+        downloadTokens = parsed.downloadTokens || '';
+      } catch (_) { }
+      return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media&token=${downloadTokens}`;
+    }
+  } catch (err) {
+    console.warn('Firebase invoice storage upload notice:', err);
+  }
+  return fileUri;
+};
+
 import { calculateDurationExpiry, getPatientVisitState } from '../utils/patientVisitState';
 import { calculateRealBranchRevenue, syncBranchTargetToFirestore } from '../utils/branchRevenueCalculator';
 import { receptionDataStore } from '../utils/receptionDataStore';
@@ -104,6 +274,161 @@ export interface AppointmentPaymentModalProps {
   setIncludeConsultation?: (val: boolean) => void;
   onPaymentSuccess?: (paymentData: any) => void;
 }
+export const buildOfficialInvoiceHtml = (activeInvoice: any, patientName: string, patientPhone: string) => {
+  const invCode = activeInvoice?.id ? String(activeInvoice.id).substring(0, 8).toUpperCase() : 'RECEIPT';
+  const totalAmount = Number(activeInvoice?.totalPaid || activeInvoice?.targetAmount || 2000).toFixed(2);
+  const docName = activeInvoice?.doctorName || activeInvoice?.doctor || 'Dr. Prashanth k vaidya';
+  const branchName = activeInvoice?.branch || 'KPHB';
+  const appDate = activeInvoice?.appointmentDate || activeInvoice?.date || new Date().toLocaleDateString('en-GB');
+  const appTime = activeInvoice?.timeSlot || activeInvoice?.time || '01:00 PM';
+  const isPkg = Number(activeInvoice?.packageFee) > 0 || activeInvoice?.isPackageMember || Number(activeInvoice?.packageTotalAmount) > 0;
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        @page { size: A4 portrait; margin: 0; }
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 28px 40px; color: #0f172a; margin: 0; background: #fff; line-height: 1.5; box-sizing: border-box; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; margin-bottom: 4px; }
+        .brand-title { color: #0284c7; font-size: 22px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; }
+        .brand-sub { font-size: 12px; color: #475569; margin-top: 3px; font-weight: 600; }
+        .lime-bar { height: 5px; background: #99cc00; width: 100%; margin: 10px 0 20px 0; border-radius: 3px; }
+        .title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .receipt-title { font-size: 20px; font-weight: 900; color: #0f172a; text-transform: uppercase; margin: 0; letter-spacing: 0.5px; }
+        .receipt-badge { background: #e0f2fe; color: #0284c7; padding: 5px 16px; border-radius: 20px; font-weight: 800; font-size: 11.5px; letter-spacing: 0.5px; }
+        .section-head { font-size: 11.5px; font-weight: 800; color: #475569; margin-bottom: 12px; letter-spacing: 0.8px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 36px; margin-bottom: 22px; font-size: 13.5px; }
+        .grid-cell { border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+        .label { font-size: 10.5px; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 3px; letter-spacing: 0.4px; }
+        .val { font-weight: 800; color: #0f172a; font-size: 14px; }
+        .pay-box { background: #e6f7ed; border: 2px dashed #86efac; border-radius: 14px; padding: 18px 24px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
+        .pay-amt { font-size: 32px; font-weight: 900; color: #15803d; margin-top: 3px; }
+        .paid-badge { background: #22c55e; color: #fff; padding: 6px 18px; border-radius: 20px; font-weight: 800; font-size: 13px; display: inline-block; letter-spacing: 0.5px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 22px; font-size: 13.5px; }
+        th { background: #f8fafc; padding: 10px 14px; text-align: left; font-size: 11.5px; font-weight: 800; border-bottom: 1.5px solid #cbd5e1; color: #475569; letter-spacing: 0.4px; }
+        td { padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
+        .meta-info { font-size: 11px; color: #64748b; line-height: 1.6; margin-bottom: 20px; margin-top: 14px; }
+        .footer-bar { background: #99cc00; color: #fff; padding: 10px 16px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; font-weight: 800; margin-top: 24px; flex-wrap: wrap; gap: 8px; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div>
+          <img src="data:image/png;base64,${SH_LOGO_BASE64}" width="260" height="52" style="height: 52px; width: 260px; max-width: 280px; object-fit: contain; display: block;" alt="SPIRITUAL HOMEOPATHY" />
+        </div>
+        <div style="text-align: right; font-size: 11px; font-weight: 700; color: #334155; line-height: 1.4;">
+          <div>spiritualhomeoclinic.com</div>
+          <div style="color: #64748b; font-weight: 500;">support@spiritualhomeoclinic.com</div>
+        </div>
+      </div>
+      <div class="lime-bar"></div>
+      <div class="title-row">
+        <h1 class="receipt-title">PAYMENT RECEIPT</h1>
+        <span class="receipt-badge">RECEIPT</span>
+      </div>
+      <div class="section-head">PATIENT DETAILS</div>
+      <div class="grid">
+        <div class="grid-cell"><div class="label">PATIENT NAME</div><div class="val">${patientName}</div></div>
+        <div class="grid-cell"><div class="label">PHONE NUMBER</div><div class="val">+91 ${patientPhone}</div></div>
+        <div class="grid-cell"><div class="label">CONSULTANT DOCTOR</div><div class="val">${docName}</div></div>
+        <div class="grid-cell"><div class="label">CLINIC BRANCH</div><div class="val">${branchName}</div></div>
+        <div class="grid-cell"><div class="label">APPOINTMENT SCHEDULE</div><div class="val">${appDate} at ${appTime}</div></div>
+        <div class="grid-cell"><div class="label">SPECIALTY</div><div class="val">Homeopathy</div></div>
+      </div>
+      <div class="section-head">PAYMENT INFORMATION</div>
+      <div class="pay-box">
+        <div>
+          <div class="label" style="color: #166534;">TOTAL AMOUNT PAID</div>
+          <div class="pay-amt">₹${totalAmount}</div>
+        </div>
+        <div style="text-align: right;">
+          <span class="paid-badge">PAID ✓</span>
+          <div style="font-size: 11px; font-weight: 800; color: #166534; margin-top: 6px; text-transform: uppercase;">VIA ${activeInvoice?.paymentMode || 'UPI'}</div>
+        </div>
+      </div>
+      <div class="section-head">FEE BREAKDOWN</div>
+      <table>
+        <thead><tr><th>DESCRIPTION</th><th style="text-align: right;">AMOUNT (₹)</th></tr></thead>
+        <tbody>
+          ${(Number(activeInvoice?.packageFee) > 0 || activeInvoice?.isPackageMember || Number(activeInvoice?.packageTotalAmount) > 0)
+      ? `
+                <tr style="background-color: #f0fdf4; border-bottom: 1px solid #e2e8f0;">
+                  <td style="color: #166534; font-weight: 800;">Package Enrollment & Treatment (${activeInvoice?.packageDuration || '3 Months'})</td>
+                  <td style="text-align: right; font-weight: 900; color: #166534;">₹${Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalAmount || activeInvoice?.totalPaid || 0).toFixed(2)}</td>
+                </tr>
+                <tr>
+                  <td style="padding-left: 24px; color: #475569; font-weight: 600;">• Total Package Value</td>
+                  <td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalAmount || activeInvoice?.totalPaid || 0).toFixed(2)}</td>
+                </tr>
+                <tr>
+                  <td style="padding-left: 24px; color: #15803d; font-weight: 700;">• Paid Amount Today</td>
+                  <td style="text-align: right; font-weight: 800; color: #15803d;">₹${Number(activeInvoice?.totalPaid || activeInvoice?.packageFee || 0).toFixed(2)}</td>
+                </tr>
+                <tr style="background-color: #fff7ed; border-bottom: 1.5px solid #cbd5e1;">
+                  <td style="padding-left: 24px; color: #c2410c; font-weight: 800;">• Remaining Balance Due</td>
+                  <td style="text-align: right; font-weight: 900; color: ${Number(activeInvoice?.packageRemainingAmount !== undefined ? activeInvoice?.packageRemainingAmount : Math.max(0, Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalPaid) - Number(activeInvoice?.totalPaid))) <= 0 ? '#15803d' : '#ea580c'};">₹${Number(activeInvoice?.packageRemainingAmount !== undefined ? activeInvoice?.packageRemainingAmount : Math.max(0, Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalPaid) - Number(activeInvoice?.totalPaid))).toFixed(2)}${Number(activeInvoice?.packageRemainingAmount !== undefined ? activeInvoice?.packageRemainingAmount : Math.max(0, Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalPaid) - Number(activeInvoice?.totalPaid))) <= 0 ? ' (Cleared)' : ''}</td>
+                </tr>
+              `
+      : ''
+    }
+          ${activeInvoice?.paymentTypePreset === 'consultation_med'
+      ? `<tr><td>Consultation and Medicine</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
+      : activeInvoice?.paymentTypePreset === 'consultation'
+        ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
+        : activeInvoice?.paymentTypePreset === 'split'
+          ? `
+                ${Number(activeInvoice?.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee).toFixed(2)}</td></tr>` : ''}
+                ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
+            ? activeInvoice.medicines.map((m: any, idx: number) => {
+              const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+              const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
+              const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
+              return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+            }).join('')
+            : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
+              `
+          : (isPkg
+              ? ''
+              : (Number(activeInvoice?.medicineFee) > 0 || (activeInvoice?.medicines && activeInvoice.medicines.length > 0)
+                  ? `
+                    ${Number(activeInvoice?.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee).toFixed(2)}</td></tr>` : ''}
+                    ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
+                      ? activeInvoice.medicines.map((m: any, idx: number) => {
+                        const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                        const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
+                        const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
+                        return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                      }).join('')
+                      : `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>`}
+                  `
+                  : `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${totalAmount}</td></tr>`
+                )
+            )
+    }
+          ${Number(activeInvoice?.dietFee) > 0 ? `<tr><td>Diet & Nutrition Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.dietFee).toFixed(2)}</td></tr>` : ''}
+          ${Number(activeInvoice?.otherCharges) > 0 ? `<tr><td>Other Charges</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.otherCharges).toFixed(2)}</td></tr>` : ''}
+          ${Number(activeInvoice?.discount) > 0 ? `<tr style="color: #ef4444;"><td>Discount Applied</td><td style="text-align: right; font-weight: 700;">- ₹${Number(activeInvoice?.discount).toFixed(2)}</td></tr>` : ''}
+          <tr style="background-color: #f8fafc; border-top: 2px solid #258ec8; font-weight: 800;"><td style="color: #0f172a; text-transform: uppercase;">Total Paid (${activeInvoice?.paymentMode || 'UPI'})</td><td style="text-align: right; color: #166534; font-size: 14px;">₹${totalAmount}</td></tr>
+        </tbody>
+      </table>
+      <div class="meta-info">
+        <div>Payment ID: WALKIN_${(activeInvoice?.paymentMode || 'UPI').toUpperCase().replace(/\s+/g, '_')}</div>
+        <div>Issued At: ${new Date().toLocaleDateString('en-GB')}, ${new Date().toLocaleTimeString()}</div>
+        <div style="text-align: center; margin-top: 12px; color: #94a3b8;">This is a computer generated bill. No signature is required.</div>
+      </div>
+      <div class="footer-bar">
+        <div style="white-space: nowrap;">📞 ${getBranchPhone(activeInvoice?.branch)}</div>
+        <div style="white-space: nowrap;">✉️ support@spiritualhomeoclinic.com</div>
+        <div style="white-space: nowrap;">🌐 spiritualhomeoclinic.com</div>
+        <div style="white-space: nowrap;">📍 ${(activeInvoice?.branch || 'KPHB').toUpperCase()}</div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
 export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = ({
   visible,
   onDismiss,
@@ -160,8 +485,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   const [medicineItems, setMedicineItems] = useState<CheckoutMedicineItem[]>([]);
   const [timingPickerItemIndex, setTimingPickerItemIndex] = useState<number | null>(null);
 
-  // Payment Mode
-  const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('Cash');
+  // Payment Mode (Mandatory - No Default)
+  const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('');
   const [splitMethod1, setSplitMethod1] = useState<string>('Cash');
   const [splitMethod2, setSplitMethod2] = useState<string>('UPI');
   const [splitAmount1, setSplitAmount1] = useState<string>('');
@@ -221,8 +546,10 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   useEffect(() => {
     if (!selectedPatientForPayment || !visible) {
       setUploadedPrescriptionList([]);
+      setSelectedPaymentMode('');
       return;
     }
+    setSelectedPaymentMode('');
     const initialList: string[] = [];
     if (Array.isArray(selectedPatientForPayment.uploadedPrescriptions)) {
       initialList.push(...selectedPatientForPayment.uploadedPrescriptions);
@@ -340,7 +667,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         const newUrls: string[] = [];
         const activeDb = getSafeDb();
         for (const asset of result.assets) {
-          const rawData = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+          const rawData = asset.uri || (asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : '');
+          if (!rawData) continue;
           const cloudUrl = await uploadPrescriptionToStorage(rawData, targetId);
           if (cloudUrl) {
             newUrls.push(cloudUrl);
@@ -390,7 +718,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         const newUrls: string[] = [];
         const activeDb = getSafeDb();
         for (const asset of result.assets) {
-          const rawData = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+          const rawData = asset.uri || (asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : '');
+          if (!rawData) continue;
           const cloudUrl = await uploadPrescriptionToStorage(rawData, targetId);
           if (cloudUrl) {
             newUrls.push(cloudUrl);
@@ -971,7 +1300,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     if (cappedVal > 0) {
       setIncludeConsultFee(true);
     }
-    if (includeMedicineFee && targetAmount > 0) {
+    if (paymentTypePreset !== 'consultation_med' && includeMedicineFee && targetAmount > 0) {
       const mPortion = Math.max(0, targetAmount - cappedVal);
       setMedicineFeeInput(mPortion);
       const count = medicineItems.length > 0 ? medicineItems.length : 1;
@@ -988,6 +1317,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   };
 
   const handleMedicineFeeChange = (val: number) => {
+    if (paymentTypePreset === 'consultation_med') return;
     const safeTarget = targetAmount > 0 ? targetAmount : val;
     const cappedVal = targetAmount > 0 ? Math.min(val, safeTarget) : val;
     setMedicineFeeInput(cappedVal);
@@ -1027,6 +1357,179 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   } else if (!existingActivePackage && paymentTypePreset === 'package') {
     totalAmountDue = Number(packageAdvancePaidInput) || 0;
   }
+
+  // Dynamic Razorpay UPI QR Code State
+  const [upiQrLoading, setUpiQrLoading] = useState<boolean>(false);
+  const [upiQrData, setUpiQrData] = useState<QrCodeResult | null>(null);
+  const [upiQrChecking, setUpiQrChecking] = useState<boolean>(false);
+  const [upiQrPaid, setUpiQrPaid] = useState<boolean>(false);
+
+  const generateUpiQr = async (forceAmount?: number) => {
+    const amt = typeof forceAmount === 'number' ? forceAmount : totalAmountDue;
+    if (amt <= 0) return;
+    setUpiQrLoading(true);
+    setUpiQrPaid(false);
+    try {
+      const pName = selectedPatientForPayment?.patientName || selectedPatientForPayment?.name || 'Patient';
+      const pPhone = selectedPatientForPayment?.phoneNumber || selectedPatientForPayment?.phone || '';
+      const bName = selectedPatientForPayment?.branchName || selectedPatientForPayment?.branch || 'Spiritual Homeopathy';
+      const invId = selectedPatientForPayment?.id || `INV-${Date.now().toString().slice(-6)}`;
+      const result = await createRazorpayPaymentQr({
+        amount: amt,
+        patientName: pName,
+        phone: pPhone,
+        branch: bName,
+        invoiceId: invId,
+        description: `Consultation - ${pName}`
+      });
+      setUpiQrData(result);
+    } catch (e) {
+      console.warn('[UPI QR] Error generating:', e);
+    } finally {
+      setUpiQrLoading(false);
+    }
+  };
+
+  const handleVerifyUpiPayment = async () => {
+    if (!upiQrData?.qrId) {
+      Alert.alert('Notice', 'No active payment ID to check.');
+      return;
+    }
+    setUpiQrChecking(true);
+    try {
+      const res = await checkRazorpayPaymentStatus(upiQrData.qrId);
+      if (res.isPaid) {
+        setUpiQrPaid(true);
+        Alert.alert('✅ Payment Received', `Payment of ₹${res.amountPaid || upiQrData.amount} received successfully via Razorpay UPI! You can now tap "Complete Payment".`);
+      } else {
+        Alert.alert('Payment Pending', 'Payment has not been completed yet. Please ask the patient to approve the UPI transaction in their app.');
+      }
+    } catch (e) {
+      Alert.alert('Check Status', 'Could not verify payment status automatically. If patient has paid, you may proceed.');
+    } finally {
+      setUpiQrChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedPaymentMode === 'UPI / QR Code' && totalAmountDue > 0) {
+      if (!upiQrData || upiQrData.amount !== totalAmountDue) {
+        generateUpiQr(totalAmountDue);
+      }
+    }
+  }, [selectedPaymentMode, totalAmountDue]);
+
+  useEffect(() => {
+    if (selectedPaymentMode !== 'UPI / QR Code' || !upiQrData?.qrId || upiQrPaid) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await checkRazorpayPaymentStatus(upiQrData.qrId!);
+        if (res.isPaid) {
+          setUpiQrPaid(true);
+          clearInterval(interval);
+        }
+      } catch (_) {}
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [selectedPaymentMode, upiQrData?.qrId, upiQrPaid]);
+
+  // Card & Split Razorpay Payment States
+  const [cardPaymentId, setCardPaymentId] = useState<string>('');
+  const [cardLast4, setCardLast4] = useState<string>('');
+  const [cardAuthRef, setCardAuthRef] = useState<string>('');
+  const [cardIsProcessing, setCardIsProcessing] = useState<boolean>(false);
+  const [cardPaidSuccess, setCardPaidSuccess] = useState<boolean>(false);
+
+  // Split specific Razorpay UPI State
+  const [splitUpiQrLoading, setSplitUpiQrLoading] = useState<boolean>(false);
+  const [splitUpiQrData, setSplitUpiQrData] = useState<QrCodeResult | null>(null);
+  const [splitUpiQrPaid, setSplitUpiQrPaid] = useState<boolean>(false);
+
+  // Split amounts
+  const isSplitUpi = selectedPaymentMode === 'Split' && (splitMethod1 === 'UPI' || splitMethod2 === 'UPI');
+  const splitUpiAmount = isSplitUpi ? ((splitMethod1 === 'UPI' ? Number(splitAmount1) : Number(splitAmount2)) || 0) : 0;
+
+  const isSplitCard = selectedPaymentMode === 'Split' && (splitMethod1 === 'Card' || splitMethod2 === 'Card');
+  const splitCardAmount = isSplitCard ? ((splitMethod1 === 'Card' ? Number(splitAmount1) : Number(splitAmount2)) || 0) : 0;
+
+  const generateSplitUpiQr = async (amt: number) => {
+    if (amt <= 0) return;
+    setSplitUpiQrLoading(true);
+    setSplitUpiQrPaid(false);
+    try {
+      const pName = selectedPatientForPayment?.patientName || selectedPatientForPayment?.name || 'Patient';
+      const pPhone = selectedPatientForPayment?.phoneNumber || selectedPatientForPayment?.phone || '';
+      const bName = selectedPatientForPayment?.branchName || selectedPatientForPayment?.branch || 'Spiritual Homeopathy';
+      const invId = selectedPatientForPayment?.id || `INV-${Date.now().toString().slice(-6)}`;
+      const result = await createRazorpayPaymentQr({
+        amount: amt,
+        patientName: pName,
+        phone: pPhone,
+        branch: bName,
+        invoiceId: invId,
+        description: `Split UPI - ${pName}`
+      });
+      setSplitUpiQrData(result);
+    } catch (e) {
+      console.warn('[Split UPI QR] error:', e);
+    } finally {
+      setSplitUpiQrLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSplitUpi && splitUpiAmount > 0) {
+      if (!splitUpiQrData || splitUpiQrData.amount !== splitUpiAmount) {
+        generateSplitUpiQr(splitUpiAmount);
+      }
+    }
+  }, [isSplitUpi, splitUpiAmount]);
+
+  useEffect(() => {
+    if (!isSplitUpi || !splitUpiQrData?.qrId || splitUpiQrPaid) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await checkRazorpayPaymentStatus(splitUpiQrData.qrId!);
+        if (res.isPaid) {
+          setSplitUpiQrPaid(true);
+          clearInterval(interval);
+        }
+      } catch (_) {}
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [isSplitUpi, splitUpiQrData?.qrId, splitUpiQrPaid]);
+
+  const handleLaunchMobileCardPayment = async (targetAmt?: number) => {
+    const amt = typeof targetAmt === 'number' ? targetAmt : (selectedPaymentMode === 'Card' ? totalAmountDue : splitCardAmount);
+    if (amt <= 0) {
+      Alert.alert('Validation Error', 'Please enter a valid amount for Card payment.');
+      return;
+    }
+    setCardIsProcessing(true);
+    try {
+      const pName = selectedPatientForPayment?.patientName || selectedPatientForPayment?.name || 'Patient';
+      const pPhone = selectedPatientForPayment?.phoneNumber || selectedPatientForPayment?.phone || '';
+      const bName = selectedPatientForPayment?.branchName || selectedPatientForPayment?.branch || 'Spiritual Homeopathy';
+      const invId = selectedPatientForPayment?.id || `INV-${Date.now().toString().slice(-6)}`;
+      const res = await createRazorpayCardPaymentLink({
+        amount: amt,
+        patientName: pName,
+        phone: pPhone,
+        branch: bName,
+        invoiceId: invId
+      });
+      if (res.success && res.paymentUrl) {
+        if (res.linkId) setCardPaymentId(res.linkId);
+        Linking.openURL(res.paymentUrl);
+      } else {
+        Alert.alert('Notice', 'Could not generate card payment link.');
+      }
+    } catch (e) {
+      Alert.alert('Notice', 'Could not open card payment.');
+    } finally {
+      setCardIsProcessing(false);
+    }
+  };
 
   const handleSubmitDiscountRequest = async () => {
     if (!selectedPatientForPayment) return;
@@ -1083,9 +1586,9 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         discountInput: 0,
         updatedAt: nowIso
       };
-      await updateDoc(doc(activeDb, 'appointments', targetId), updatePayload).catch(() => {});
-      await updateDoc(doc(activeDb, 'allpatients', targetId), updatePayload).catch(() => {});
-      await updateDoc(doc(activeDb, 'patients', targetId), updatePayload).catch(() => {});
+      await updateDoc(doc(activeDb, 'appointments', targetId), updatePayload).catch(() => { });
+      await updateDoc(doc(activeDb, 'allpatients', targetId), updatePayload).catch(() => { });
+      await updateDoc(doc(activeDb, 'patients', targetId), updatePayload).catch(() => { });
 
       // Send Push & In-App Notification to HR & Admin
       createFeeDiscountRequestNotificationInFirestore({
@@ -1096,7 +1599,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         originalTotalAmount: currentTotalBeforeDiscount,
         reason: discountReason.trim(),
         appointmentId: targetId
-      }).catch(() => {});
+      }).catch(() => { });
 
       Alert.alert(
         '✓ Request Submitted',
@@ -1110,48 +1613,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     }
   };
   const hasPrescription = uploadedPrescriptionList.length > 0 || Boolean(selectedPatientForPayment?.canvasPrescriptionUrl) || Boolean(selectedPatientForPayment?.prescriptionUrl);
-  const handleConfirmCheckout = async () => {
-    if (!selectedPatientForPayment) return;
-    if (!hasPrescription) {
-      Alert.alert(
-        '⚠️ Prescription Required (Mandatory)',
-        'Clinic policy strictly requires a prescription to be uploaded before fee collection. Please take a photo of the prescription or choose it from your gallery to proceed.',
-        [{ text: 'OK' }]
-      );
-      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-      return;
-    }
-    // 1. Mandatory Payment Method Validation
-    if (!isPackageCoveredFully && totalAmountDue > 0) {
-      if (!selectedPaymentMode || selectedPaymentMode.trim() === '') {
-        Alert.alert(
-          '⚠️ Payment Method Required (Mandatory)',
-          'Please select a payment method (Cash, UPI, Card, Net Banking, or Split) before completing the payment.',
-          [{ text: 'OK' }]
-        );
-        return;
-      }
-      if (selectedPaymentMode === 'Split') {
-        const amt1 = Number(splitAmount1) || 0;
-        const amt2 = Number(splitAmount2) || 0;
-        if (!splitMethod1 || !splitMethod2 || amt1 <= 0 || amt2 <= 0) {
-          Alert.alert(
-            '⚠️ Invalid Split Payment',
-            'Please select both payment methods and enter valid positive amounts for both split payment methods.',
-            [{ text: 'OK' }]
-          );
-          return;
-        }
-        if (Math.abs((amt1 + amt2) - totalAmountDue) > 0.01) {
-          Alert.alert(
-            '⚠️ Split Payment Mismatch',
-            `The sum of split amounts (₹${amt1} + ₹${amt2} = ₹${amt1 + amt2}) must equal the total amount due (₹${totalAmountDue}).`,
-            [{ text: 'OK' }]
-          );
-          return;
-        }
-      }
-    }
+  const executeCheckoutProcess = async () => {
     setIsSubmitting(true);
     const paymentModeText =
       selectedPaymentMode === 'Split'
@@ -1222,6 +1684,9 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       hasPrescription: true,
       prescriptionVerified: true,
       prescriptionVerifiedAt: nowIso,
+      cardPaymentId: cardPaymentId || null,
+      cardLast4: cardLast4 || null,
+      cardAuthRef: cardAuthRef || null,
       ...packagePayload,
       updatedAt: nowIso
     };
@@ -1330,6 +1795,57 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         }
       }
 
+      // Build structured invoice line items
+      const mobileInvoiceItems: any[] = [];
+      if (!isPkg && Number(activeConsultFee) > 0) {
+        mobileInvoiceItems.push({
+          description: paymentTypePreset === 'consultation_med' ? 'Consultation and Medicine' : 'Consultation Fee',
+          amount: Number(activeConsultFee)
+        });
+      }
+      if (includeMedicineFee && medicineItems && medicineItems.length > 0) {
+        medicineItems.forEach((m: any) => {
+          mobileInvoiceItems.push({
+            description: `${m.name || 'Medicine'}${m.timing ? ` [${m.timing}]` : ''}`,
+            amount: Number(m.amount || 0)
+          });
+        });
+      } else if (!isPkg && Number(activeMedicineFee) > 0) {
+        mobileInvoiceItems.push({
+          description: `Medicine Fee${finalMedicineDuration ? ` (${finalMedicineDuration})` : ''}`,
+          amount: Number(activeMedicineFee)
+        });
+      }
+      if (!isPkg && Number(activeDietFee) > 0) {
+        mobileInvoiceItems.push({ description: 'Diet & Nutrition Fee', amount: Number(activeDietFee) });
+      }
+      if (isPkg) {
+        mobileInvoiceItems.push({ description: 'Homeopathy Healthcare Package', amount: totalAmountDue });
+      }
+      if (mobileInvoiceItems.length === 0) {
+        mobileInvoiceItems.push({ description: 'Homeopathy Clinical Consultation & Care', amount: totalAmountDue });
+      }
+
+      const completedInvoice = { ...selectedPatientForPayment, ...payload };
+
+      // Generate official clinic invoice PDF using native expo-print
+      let officialPdfUrl: string | undefined = undefined;
+      try {
+        let PrintModule: any = null;
+        try { PrintModule = require('expo-print'); } catch (e) { }
+        if (PrintModule && typeof PrintModule.printToFileAsync === 'function') {
+          const invHtml = buildOfficialInvoiceHtml(completedInvoice, patientName, patientPhone);
+          const pdfFile = await PrintModule.printToFileAsync({ html: invHtml });
+          if (pdfFile && pdfFile.uri) {
+            const invCode = selectedPatientForPayment.id ? String(selectedPatientForPayment.id).substring(0, 8).toUpperCase() : 'RECEIPT';
+            officialPdfUrl = await uploadInvoiceFileToStorage(pdfFile.uri, invCode);
+            console.log('[Mobile] Generated & uploaded official clinic invoice PDF:', officialPdfUrl);
+          }
+        }
+      } catch (printErr) {
+        console.warn('Official PDF generation notice:', printErr);
+      }
+
       // Trigger Leonas WhatsApp Invoice / Payment Receipt Notification
       sendInvoiceWhatsAppNotification({
         patientName: selectedPatientForPayment.patientName || selectedPatientForPayment.name || 'Patient',
@@ -1338,7 +1854,15 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         totalPaid: totalAmountDue,
         paymentMode: paymentModeText,
         branch: selectedPatientForPayment.branch || 'KPHB',
-        doctorName: selectedPatientForPayment.doctorName || selectedPatientForPayment.doctor || selectedPatientForPayment.assignedDoctor || 'Dr. Prashanth K Vaidya'
+        doctorName: selectedPatientForPayment.doctorName || selectedPatientForPayment.doctor || selectedPatientForPayment.assignedDoctor || 'Dr. Prashanth K Vaidya',
+        items: mobileInvoiceItems,
+        pdfUrl: officialPdfUrl
+      }).then(res => {
+        const generatedPdfUrl = (res as any)?.pdfUrl || officialPdfUrl;
+        if (generatedPdfUrl && activeDb) {
+          updateDoc(doc(activeDb, 'appointments', selectedPatientForPayment.id), { invoicePdfUrl: generatedPdfUrl }).catch(() => { });
+          updateDoc(doc(activeDb, 'allpatients', selectedPatientForPayment.id), { invoicePdfUrl: generatedPdfUrl }).catch(() => { });
+        }
       }).catch(err => console.error('WhatsApp invoice notification error:', err));
 
       // Trigger Payment Notification in Firestore for HR (all branches) & Branch Reception
@@ -1351,7 +1875,6 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         invoiceId: selectedPatientForPayment.id,
       }).catch(err => console.error('Payment notification error:', err));
 
-      const completedInvoice = { ...selectedPatientForPayment, ...payload };
       if (onPaymentSuccess) {
         onPaymentSuccess(completedInvoice);
       }
@@ -1388,7 +1911,75 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     }
   };
 
-  if (!visible || !selectedPatientForPayment) return null;
+  const handleConfirmCheckout = async () => {
+    if (!selectedPatientForPayment) return;
+    if (!hasPrescription) {
+      Alert.alert(
+        '⚠️ Prescription Required (Mandatory)',
+        'Clinic policy strictly requires a prescription to be uploaded before fee collection. Please take a photo of the prescription or choose it from your gallery to proceed.',
+        [{ text: 'OK' }]
+      );
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+      return;
+    }
+
+    // 1. Mandatory Payment Method Validation
+    if (!isPackageCoveredFully && totalAmountDue > 0) {
+      if (!selectedPaymentMode || selectedPaymentMode.trim() === '') {
+        Alert.alert(
+          '⚠️ Payment Method Required (Mandatory)',
+          'Please select a payment method (Cash, UPI, Card, Net Banking, or Split) before completing the payment.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      if (selectedPaymentMode === 'Split') {
+        const amt1 = Number(splitAmount1) || 0;
+        const amt2 = Number(splitAmount2) || 0;
+        if (!splitMethod1 || !splitMethod2 || amt1 <= 0 || amt2 <= 0) {
+          Alert.alert(
+            '⚠️ Invalid Split Payment',
+            'Please select both payment methods and enter valid positive amounts for both split payment methods.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+        if (Math.abs((amt1 + amt2) - totalAmountDue) > 0.01) {
+          Alert.alert(
+            '⚠️ Split Payment Mismatch',
+            `The sum of split amounts (₹${amt1} + ₹${amt2} = ₹${amt1 + amt2}) must equal the total amount due (₹${totalAmountDue}).`,
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+      }
+    }
+
+    // 2. Pending HR Discount Warning Popup
+    if (discountRequestStatus === 'pending') {
+      Alert.alert(
+        '⏳ Discount Request Pending with HR',
+        `You have requested a discount of ₹${requestedDiscountAmount || '...'} which is currently pending HR approval.\n\nAre you willing to proceed with full payment now without the discount, or wait for HR action?`,
+        [
+          {
+            text: 'Wait for HR Action',
+            style: 'cancel',
+            onPress: () => { }
+          },
+          {
+            text: 'Proceed Anyway',
+            style: 'destructive',
+            onPress: () => {
+              executeCheckoutProcess();
+            }
+          }
+        ]
+      );
+      return;
+    }
+
+    await executeCheckoutProcess();
+  };
 
   const patientName = selectedPatientForPayment.patientName || selectedPatientForPayment.name || 'Patient';
   const patientPhone = selectedPatientForPayment.phone || selectedPatientForPayment.phoneNumber || 'N/A';
@@ -1561,8 +2152,19 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     <Text style={{ flex: 1, fontSize: 12, color: '#334155', fontWeight: '500' }}>Consultation and Medicine</Text>
                     <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>₹{Number(activeInvoice.consultationFee || activeInvoice.totalPaid || 0).toFixed(2)}</Text>
                   </View>
-                ) : (
+                ) : activeInvoice.paymentTypePreset === 'consultation' ? (
+                  <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
+                    <Text style={{ flex: 1, fontSize: 12, color: '#334155', fontWeight: '500' }}>Consultation Fee</Text>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>₹{Number(activeInvoice.consultationFee || activeInvoice.totalPaid || 0).toFixed(2)}</Text>
+                  </View>
+                ) : activeInvoice.paymentTypePreset === 'split' ? (
                   <>
+                    {Number(activeInvoice.consultationFee) > 0 && (
+                      <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
+                        <Text style={{ flex: 1, fontSize: 12, color: '#334155', fontWeight: '500' }}>Consultation Fee</Text>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>₹{Number(activeInvoice.consultationFee).toFixed(2)}</Text>
+                      </View>
+                    )}
                     {activeInvoice.medicines && activeInvoice.medicines.length > 0 ? (
                       activeInvoice.medicines.map((m: any, idx: number) => {
                         const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
@@ -1587,10 +2189,21 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                         </View>
                       )
                     )}
+                  </>
+                ) : (
+                  <>
                     {Number(activeInvoice.consultationFee) > 0 && (
                       <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
                         <Text style={{ flex: 1, fontSize: 12, color: '#334155', fontWeight: '500' }}>Consultation Fee</Text>
                         <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>₹{Number(activeInvoice.consultationFee).toFixed(2)}</Text>
+                      </View>
+                    )}
+                    {Number(activeInvoice.medicineFee) > 0 && (
+                      <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
+                        <Text style={{ flex: 1, fontSize: 12, color: '#334155', fontWeight: '500' }}>
+                          Medicine Fee{activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}
+                        </Text>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>₹{Number(activeInvoice.medicineFee).toFixed(2)}</Text>
                       </View>
                     )}
                   </>
@@ -1620,9 +2233,9 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                   </View>
                 )}
 
-                <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 11, backgroundColor: '#ffffff' }}>
-                  <Text style={{ flex: 1, fontSize: 12, fontWeight: '700', color: '#0f172a' }}>Payment Mode ({activeInvoice.paymentMode || 'UPI'})</Text>
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: '#0f172a' }}>₹{Number(activeInvoice.totalPaid || 2000).toFixed(2)}</Text>
+                <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 11, backgroundColor: '#f8fafc', borderTopWidth: 1.5, borderTopColor: '#258ec8' }}>
+                  <Text style={{ flex: 1, fontSize: 12, fontWeight: '800', color: '#0f172a', textTransform: 'uppercase' }}>Total Paid ({activeInvoice.paymentMode || 'UPI'})</Text>
+                  <Text style={{ fontSize: 13.5, fontWeight: '900', color: '#166534' }}>₹{Number(activeInvoice.totalPaid || 0).toFixed(2)}</Text>
                 </View>
               </View>
             </View>
@@ -1651,129 +2264,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
             <TouchableOpacity
               style={{ backgroundColor: '#16a34a', paddingVertical: 12, borderRadius: 10, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 }}
               onPress={async () => {
-                const htmlContent = `
-                  <!DOCTYPE html>
-                  <html>
-                  <head>
-                    <meta charset="utf-8">
-                    <style>
-                      @page { size: A4 portrait; margin: 0; }
-                      body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 28px 40px; color: #0f172a; margin: 0; background: #fff; line-height: 1.5; box-sizing: border-box; }
-                      .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; margin-bottom: 4px; }
-                      .brand-title { color: #0284c7; font-size: 22px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; }
-                      .brand-sub { font-size: 12px; color: #475569; margin-top: 3px; font-weight: 600; }
-                      .lime-bar { height: 5px; background: #99cc00; width: 100%; margin: 10px 0 20px 0; border-radius: 3px; }
-                      .title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-                      .receipt-title { font-size: 20px; font-weight: 900; color: #0f172a; text-transform: uppercase; margin: 0; letter-spacing: 0.5px; }
-                      .receipt-badge { background: #e0f2fe; color: #0284c7; padding: 5px 16px; border-radius: 20px; font-weight: 800; font-size: 11.5px; letter-spacing: 0.5px; }
-                      .section-head { font-size: 11.5px; font-weight: 800; color: #475569; margin-bottom: 12px; letter-spacing: 0.8px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
-                      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 36px; margin-bottom: 22px; font-size: 13.5px; }
-                      .grid-cell { border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
-                      .label { font-size: 10.5px; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 3px; letter-spacing: 0.4px; }
-                      .val { font-weight: 800; color: #0f172a; font-size: 14px; }
-                      .pay-box { background: #e6f7ed; border: 2px dashed #86efac; border-radius: 14px; padding: 18px 24px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
-                      .pay-amt { font-size: 32px; font-weight: 900; color: #15803d; margin-top: 3px; }
-                      .paid-badge { background: #22c55e; color: #fff; padding: 6px 18px; border-radius: 20px; font-weight: 800; font-size: 13px; display: inline-block; letter-spacing: 0.5px; }
-                      table { width: 100%; border-collapse: collapse; margin-bottom: 22px; font-size: 13.5px; }
-                      th { background: #f8fafc; padding: 10px 14px; text-align: left; font-size: 11.5px; font-weight: 800; border-bottom: 1.5px solid #cbd5e1; color: #475569; letter-spacing: 0.4px; }
-                      td { padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
-                      .meta-info { font-size: 11px; color: #64748b; line-height: 1.6; margin-bottom: 20px; margin-top: 14px; }
-                      .footer-bar { background: #99cc00; color: #fff; padding: 10px 16px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; font-weight: 800; margin-top: 24px; flex-wrap: wrap; gap: 8px; }
-                    </style>
-                  </head>
-                  <body>
-                    <div class="header">
-                      <div>
-                        <img src="data:image/png;base64,${SH_LOGO_BASE64}" width="260" height="52" style="height: 52px; width: 260px; max-width: 280px; object-fit: contain; display: block;" alt="SPIRITUAL HOMEOPATHY" />
-                      </div>
-                      <div style="text-align: right; font-size: 11px; font-weight: 700; color: #334155; line-height: 1.4;">
-                        <div>spiritualhomeoclinic.com</div>
-                        <div style="color: #64748b; font-weight: 500;">support@spiritualhomeoclinic.com</div>
-                      </div>
-                    </div>
-                    <div class="lime-bar"></div>
-                    <div class="title-row">
-                      <h1 class="receipt-title">PAYMENT RECEIPT</h1>
-                      <span class="receipt-badge">RECEIPT</span>
-                    </div>
-                    <div class="section-head">PATIENT DETAILS</div>
-                    <div class="grid">
-                      <div class="grid-cell"><div class="label">PATIENT NAME</div><div class="val">${patientName}</div></div>
-                      <div class="grid-cell"><div class="label">PHONE NUMBER</div><div class="val">+91 ${patientPhone}</div></div>
-                      <div class="grid-cell"><div class="label">CONSULTANT DOCTOR</div><div class="val">${activeInvoice?.doctorName || activeInvoice?.doctor || 'Dr. Prashanth k vaidya'}</div></div>
-                      <div class="grid-cell"><div class="label">CLINIC BRANCH</div><div class="val">${activeInvoice?.branch || 'Kphb'}</div></div>
-                      <div class="grid-cell"><div class="label">APPOINTMENT SCHEDULE</div><div class="val">${activeInvoice?.appointmentDate || activeInvoice?.date || new Date().toLocaleDateString('en-GB')} at ${activeInvoice?.timeSlot || activeInvoice?.time || '01:00 PM'}</div></div>
-                      <div class="grid-cell"><div class="label">SPECIALTY</div><div class="val">Homeopathy</div></div>
-                    </div>
-                    <div class="section-head">PAYMENT INFORMATION</div>
-                    <div class="pay-box">
-                      <div>
-                        <div class="label" style="color: #166534;">TOTAL AMOUNT PAID</div>
-                        <div class="pay-amt">₹${Number(activeInvoice?.totalPaid || activeInvoice?.targetAmount || 2000).toFixed(2)}</div>
-                      </div>
-                      <div style="text-align: right;">
-                        <span class="paid-badge">PAID ✓</span>
-                        <div style="font-size: 11px; font-weight: 800; color: #166534; margin-top: 6px; text-transform: uppercase;">VIA ${activeInvoice?.paymentMode || 'UPI'}</div>
-                      </div>
-                    </div>
-                    <div class="section-head">FEE BREAKDOWN</div>
-                    <table>
-                      <thead><tr><th>DESCRIPTION</th><th style="text-align: right;">AMOUNT (₹)</th></tr></thead>
-                        ${(Number(activeInvoice?.packageFee) > 0 || activeInvoice?.isPackageMember || Number(activeInvoice?.packageTotalAmount) > 0)
-                    ? `
-                            <tr style="background-color: #f0fdf4; border-bottom: 1px solid #e2e8f0;">
-                              <td style="color: #166534; font-weight: 800;">Package Enrollment & Treatment (${activeInvoice?.packageDuration || '3 Months'})</td>
-                              <td style="text-align: right; font-weight: 900; color: #166534;">₹${Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalAmount || activeInvoice?.totalPaid || 0).toFixed(2)}</td>
-                            </tr>
-                            <tr>
-                              <td style="padding-left: 24px; color: #475569; font-weight: 600;">• Total Package Value</td>
-                              <td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalAmount || activeInvoice?.totalPaid || 0).toFixed(2)}</td>
-                            </tr>
-                            <tr>
-                              <td style="padding-left: 24px; color: #15803d; font-weight: 700;">• Paid Amount Today</td>
-                              <td style="text-align: right; font-weight: 800; color: #15803d;">₹${Number(activeInvoice?.totalPaid || activeInvoice?.packageFee || 0).toFixed(2)}</td>
-                            </tr>
-                            <tr style="background-color: #fff7ed; border-bottom: 1.5px solid #cbd5e1;">
-                              <td style="padding-left: 24px; color: #c2410c; font-weight: 800;">• Remaining Balance Due</td>
-                              <td style="text-align: right; font-weight: 900; color: ${Number(activeInvoice?.packageRemainingAmount !== undefined ? activeInvoice?.packageRemainingAmount : Math.max(0, Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalPaid) - Number(activeInvoice?.totalPaid))) <= 0 ? '#15803d' : '#ea580c'};">₹${Number(activeInvoice?.packageRemainingAmount !== undefined ? activeInvoice?.packageRemainingAmount : Math.max(0, Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalPaid) - Number(activeInvoice?.totalPaid))).toFixed(2)}${Number(activeInvoice?.packageRemainingAmount !== undefined ? activeInvoice?.packageRemainingAmount : Math.max(0, Number(activeInvoice?.packageTotalAmount || activeInvoice?.totalPaid) - Number(activeInvoice?.totalPaid))) <= 0 ? ' (Cleared)' : ''}</td>
-                            </tr>
-                          `
-                    : ''
-                  }
-                        ${activeInvoice?.paymentTypePreset === 'consultation_med'
-                    ? `<tr><td>Consultation and Medicine</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee || activeInvoice?.totalPaid || 0).toFixed(2)}</td></tr>`
-                    : `
-                            ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
-                       ? activeInvoice.medicines.map((m: any, idx: number) => {
-                         const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
-                         const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
-                         const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                         return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
-                       }).join('')
-                       : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
-                            ${Number(activeInvoice?.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee).toFixed(2)}</td></tr>` : ''}
-                          `}
-                        ${Number(activeInvoice?.dietFee) > 0 ? `<tr><td>Diet & Nutrition Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.dietFee).toFixed(2)}</td></tr>` : ''}
-                        ${Number(activeInvoice?.otherCharges) > 0 ? `<tr><td>Other Charges</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.otherCharges).toFixed(2)}</td></tr>` : ''}
-                        ${Number(activeInvoice?.discount) > 0 ? `<tr style="color: #ef4444;"><td>Discount Applied</td><td style="text-align: right; font-weight: 700;">- ₹${Number(activeInvoice?.discount).toFixed(2)}</td></tr>` : ''}
-                        ${(!activeInvoice?.medicineFee && !activeInvoice?.consultationFee && !activeInvoice?.dietFee && !activeInvoice?.otherCharges && activeInvoice?.paymentTypePreset !== 'consultation_med') ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.totalPaid || 2000).toFixed(2)}</td></tr>` : ''}
-                        <tr style="font-weight: 800;"><td>Payment Mode (${activeInvoice?.paymentMode || 'UPI'})</td><td style="text-align: right;">₹${Number(activeInvoice?.totalPaid || 2000).toFixed(2)}</td></tr>
-                      </tbody>
-                    </table>
-                    <div class="meta-info">
-                      <div>Payment ID: WALKIN_${(activeInvoice?.paymentMode || 'UPI').toUpperCase().replace(/\s+/g, '_')}</div>
-                      <div>Issued At: ${new Date().toLocaleDateString('en-GB')}, ${new Date().toLocaleTimeString()}</div>
-                      <div style="text-align: center; margin-top: 12px; color: #94a3b8;">This is a computer generated bill. No signature is required.</div>
-                    </div>
-                    <div class="footer-bar">
-                      <div style="white-space: nowrap;">📞 ${getBranchPhone(activeInvoice?.branch)}</div>
-                      <div style="white-space: nowrap;">✉️ support@spiritualhomeoclinic.com</div>
-                      <div style="white-space: nowrap;">🌐 spiritualhomeoclinic.com</div>
-                      <div style="white-space: nowrap;">📍 ${(activeInvoice?.branch || 'KPHB').toUpperCase()}</div>
-                    </div>
-                  </body>
-                  </html>
-                `;
+                const htmlContent = buildOfficialInvoiceHtml(activeInvoice, patientName, patientPhone);
                 try {
                   let PrintModule: any = null;
                   let SharingModule: any = null;
@@ -2563,40 +3054,54 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     />
                   </View>
                 </View>
-
                 {/* 2. Prescribed Medicines Fee */}
                 <View style={[
                   styles.feeCard,
-                  includeMedicineFee && styles.feeCardActive,
-                  includeMedicineFee && { flexDirection: 'column', alignItems: 'stretch' }
+                  paymentTypePreset === 'consultation_med' && { opacity: 0.55, backgroundColor: '#f8fafc', borderColor: '#e2e8f0' },
+                  paymentTypePreset !== 'consultation_med' && includeMedicineFee && styles.feeCardActive,
+                  paymentTypePreset !== 'consultation_med' && includeMedicineFee && { flexDirection: 'column', alignItems: 'stretch' }
                 ]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                     <TouchableOpacity
-                      style={styles.feeCardCheckRow}
-                      onPress={() => setIncludeMedicineFee(!includeMedicineFee)}
-                      activeOpacity={0.8}
+                      style={[styles.feeCardCheckRow, paymentTypePreset === 'consultation_med' && { opacity: 0.6 }]}
+                      onPress={() => {
+                        if (paymentTypePreset === 'consultation_med') return;
+                        setIncludeMedicineFee(!includeMedicineFee);
+                      }}
+                      disabled={paymentTypePreset === 'consultation_med'}
+                      activeOpacity={paymentTypePreset === 'consultation_med' ? 1 : 0.8}
                     >
                       <Ionicons
-                        name={includeMedicineFee ? "checkmark-circle" : "ellipse-outline"}
+                        name={paymentTypePreset === 'consultation_med' ? "remove-circle-outline" : (includeMedicineFee ? "checkmark-circle" : "ellipse-outline")}
                         size={24}
-                        color={includeMedicineFee ? "#258ec8" : "#cbd5e1"}
+                        color={paymentTypePreset === 'consultation_med' ? "#94a3b8" : (includeMedicineFee ? "#258ec8" : "#cbd5e1")}
                       />
                       <View style={{ flex: 1, marginLeft: 10 }}>
-                        <Text style={styles.feeTitle}>
-                          Prescribed Medicines
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={[styles.feeTitle, paymentTypePreset === 'consultation_med' && { color: '#64748b' }]}>
+                            Prescribed Medicines
+                          </Text>
+                          {paymentTypePreset === 'consultation_med' && (
+                            <View style={{ backgroundColor: '#f1f5f9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#cbd5e1' }}>
+                              <Text style={{ fontSize: 9.5, fontWeight: '800', color: '#64748b' }}>DISABLED</Text>
+                            </View>
+                          )}
+                        </View>
                         <Text style={styles.feeSubtext}>
-                          Prescribed Remedies / Pharmacy Fee
+                          {paymentTypePreset === 'consultation_med'
+                            ? 'Bundled into Consultation & Medicine Fee'
+                            : 'Prescribed Remedies / Pharmacy Fee'}
                         </Text>
                       </View>
                     </TouchableOpacity>
-                    <View style={styles.feeInputWrapper}>
-                      <Text style={styles.rupeeSymbolSmall}>₹</Text>
+                    <View style={[styles.feeInputWrapper, paymentTypePreset === 'consultation_med' && { backgroundColor: '#f1f5f9', borderColor: '#e2e8f0' }]}>
+                      <Text style={[styles.rupeeSymbolSmall, paymentTypePreset === 'consultation_med' && { color: '#94a3b8' }]}>₹</Text>
                       <TextInput
-                        style={styles.feeNumberInput}
+                        style={[styles.feeNumberInput, paymentTypePreset === 'consultation_med' && { color: '#94a3b8' }]}
                         keyboardType="numeric"
-                        value={medicineFeeInput === 0 ? '' : String(medicineFeeInput)}
-                        placeholder="0"
+                        editable={paymentTypePreset !== 'consultation_med'}
+                        value={paymentTypePreset === 'consultation_med' ? '' : (medicineFeeInput === 0 ? '' : String(medicineFeeInput))}
+                        placeholder={paymentTypePreset === 'consultation_med' ? 'Bundled' : '0'}
                         placeholderTextColor="#94a3b8"
                         onChangeText={(v) => handleMedicineFeeChange(Number(v) || 0)}
                       />
@@ -2604,7 +3109,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                   </View>
 
                   {/* Duration selector & Add Medicine list */}
-                  {includeMedicineFee && (
+                  {paymentTypePreset !== 'consultation_med' && includeMedicineFee && (
                     <View style={{
                       marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#f1f5f9'
                     }}>
@@ -2947,7 +3452,15 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
             )}
 
             {/* Payment Method Selector */}
-            <Text style={[styles.sectionHeading, { marginTop: 18 }]}>Select Payment Method</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 4, gap: 6 }}>
+              <Text style={styles.sectionHeading}>Select Payment Method</Text>
+              <Text style={{ fontSize: 11, fontWeight: '800', color: '#ef4444' }}>* (Mandatory)</Text>
+            </View>
+            {!selectedPaymentMode && !isPackageCoveredFully && totalAmountDue > 0 && (
+              <Text style={{ fontSize: 11.5, color: '#d97706', fontWeight: '700', marginBottom: 8 }}>
+                ⚠️ Please tap an option below to select how the patient is paying:
+              </Text>
+            )}
             <View style={styles.paymentMethodGrid}>
               {['Cash', 'UPI / QR Code', 'Card', 'Split', 'Send Pay to app'].map((mode) => {
                 const isActive = selectedPaymentMode === mode;
@@ -2972,6 +3485,190 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                 );
               })}
             </View>
+
+            {/* Dynamic Razorpay UPI QR Code Section */}
+            {selectedPaymentMode === 'UPI / QR Code' && totalAmountDue > 0 && (
+              <View style={styles.upiQrContainer}>
+                <View style={styles.upiQrHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="qr-code-outline" size={18} color="#0284c7" />
+                    <Text style={styles.upiQrTitle}>Razorpay Dynamic UPI QR</Text>
+                  </View>
+                  <View style={styles.upiQrLiveBadge}>
+                    <View style={styles.upiQrGreenDot} />
+                    <Text style={styles.upiQrLiveBadgeText}>LIVE</Text>
+                  </View>
+                </View>
+
+                {upiQrLoading ? (
+                  <View style={{ paddingVertical: 28, alignItems: 'center' }}>
+                    <ActivityIndicator size="large" color="#0284c7" />
+                    <Text style={{ marginTop: 8, fontSize: 12, fontWeight: '700', color: '#64748b' }}>
+                      Generating dynamic QR for ₹{totalAmountDue.toLocaleString('en-IN')}...
+                    </Text>
+                  </View>
+                ) : upiQrData?.imageUrl ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 6 }}>
+                    {upiQrPaid ? (
+                      <View style={{
+                        backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac',
+                        padding: 14, borderRadius: 10, width: '100%', alignItems: 'center', marginBottom: 10
+                      }}>
+                        <Ionicons name="checkmark-circle" size={32} color="#16a34a" />
+                        <Text style={{ fontSize: 14, fontWeight: '800', color: '#15803d', marginTop: 4 }}>
+                          Payment Received: ₹{totalAmountDue.toLocaleString('en-IN')}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#166534', marginTop: 2, textAlign: 'center' }}>
+                          Verified via Razorpay UPI. You may now complete the payment below.
+                        </Text>
+                      </View>
+                    ) : (
+                      <>
+                        <View style={styles.qrImageWrapper}>
+                          <Image
+                            source={{ uri: upiQrData.imageUrl }}
+                            style={{ width: 190, height: 190, borderRadius: 8 }}
+                            resizeMode="contain"
+                          />
+                        </View>
+                        <Text style={styles.upiQrAmountText}>
+                          ₹{totalAmountDue.toLocaleString('en-IN')}
+                        </Text>
+                        <Text style={styles.upiQrInstructions}>
+                          Scan with Google Pay, PhonePe, Paytm, BHIM or any UPI App
+                        </Text>
+                      </>
+                    )}
+
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, width: '100%' }}>
+                      <TouchableOpacity
+                        onPress={() => generateUpiQr(totalAmountDue)}
+                        disabled={upiQrLoading}
+                        style={[styles.upiSecondaryBtn, { flex: 1 }]}
+                      >
+                        <Ionicons name="refresh-outline" size={14} color="#0284c7" />
+                        <Text style={styles.upiSecondaryBtnText}>Refresh QR</Text>
+                      </TouchableOpacity>
+
+                      {upiQrData.paymentUrl ? (
+                        <TouchableOpacity
+                          onPress={() => {
+                            if (upiQrData.paymentUrl) {
+                              Share.share({ message: `Payment Link for ${selectedPatientForPayment?.patientName || 'Patient'}: ${upiQrData.paymentUrl}` });
+                            }
+                          }}
+                          style={[styles.upiSecondaryBtn, { flex: 1 }]}
+                        >
+                          <Ionicons name="share-social-outline" size={14} color="#0284c7" />
+                          <Text style={styles.upiSecondaryBtnText}>Share Link</Text>
+                        </TouchableOpacity>
+                      ) : null}
+
+                      <TouchableOpacity
+                        onPress={handleVerifyUpiPayment}
+                        disabled={upiQrChecking || upiQrPaid}
+                        style={[styles.upiPrimaryBtn, { flex: 1.2 }, upiQrPaid && { backgroundColor: '#16a34a' }]}
+                      >
+                        {upiQrChecking ? (
+                          <ActivityIndicator size="small" color="#ffffff" />
+                        ) : (
+                          <>
+                            <Ionicons name={upiQrPaid ? "checkmark-circle" : "shield-checkmark-outline"} size={14} color="#ffffff" />
+                            <Text style={styles.upiPrimaryBtnText}>{upiQrPaid ? "Verified ✓" : "Check Status"}</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, color: '#ef4444', fontWeight: '700' }}>Could not generate QR Code</Text>
+                    <TouchableOpacity onPress={() => generateUpiQr(totalAmountDue)} style={{ marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#0284c7', borderRadius: 6 }}>
+                      <Text style={{ fontSize: 12, color: '#fff', fontWeight: '700' }}>Try Again</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Dedicated Razorpay Card Payment Card */}
+            {selectedPaymentMode === 'Card' && totalAmountDue > 0 && (
+              <View style={[styles.upiQrContainer, { borderColor: '#86efac', backgroundColor: '#f8fafc' }]}>
+                <View style={styles.upiQrHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="card-outline" size={18} color="#16a34a" />
+                    <Text style={[styles.upiQrTitle, { color: '#15803d' }]}>Razorpay Card Gateway</Text>
+                  </View>
+                  <View style={[styles.upiQrLiveBadge, { backgroundColor: '#ecfdf5', borderColor: '#a7f3d0' }]}>
+                    <View style={styles.upiQrGreenDot} />
+                    <Text style={styles.upiQrLiveBadgeText}>LIVE GATEWAY</Text>
+                  </View>
+                </View>
+
+                <View style={{ alignItems: 'center', paddingVertical: 10 }}>
+                  <Text style={styles.upiQrAmountText}>
+                    ₹{totalAmountDue.toLocaleString('en-IN')}
+                  </Text>
+                  <Text style={[styles.upiQrInstructions, { marginBottom: 12 }]}>
+                    Accept all Visa, MasterCard, RuPay & Amex cards via secure Razorpay checkout
+                  </Text>
+
+                  <TouchableOpacity
+                    onPress={() => handleLaunchMobileCardPayment(totalAmountDue)}
+                    disabled={cardIsProcessing}
+                    style={[styles.upiPrimaryBtn, { backgroundColor: '#16a34a', width: '100%', paddingVertical: 11 }]}
+                  >
+                    {cardIsProcessing ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <>
+                        <Ionicons name="card-outline" size={16} color="#ffffff" />
+                        <Text style={styles.upiPrimaryBtnText}>Pay ₹{totalAmountDue.toLocaleString('en-IN')} via Card</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Manual POS Slip Entry */}
+                  <View style={{ width: '100%', marginTop: 14, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e2e8f0' }}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748b', marginBottom: 6 }}>
+                      Or Record Card Swipe (POS Machine Slip):
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 10, color: '#475569', fontWeight: '700' }}>Last 4 Digits</Text>
+                        <TextInput
+                          maxLength={4}
+                          keyboardType="numeric"
+                          placeholder="e.g. 1338"
+                          placeholderTextColor="#94a3b8"
+                          value={cardLast4}
+                          onChangeText={t => setCardLast4(t.replace(/\D/g, ''))}
+                          style={{
+                            backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#cbd5e1',
+                            borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5, fontSize: 12,
+                            fontWeight: '700', color: '#0f172a', marginTop: 2
+                          }}
+                        />
+                      </View>
+                      <View style={{ flex: 1.5 }}>
+                        <Text style={{ fontSize: 10, color: '#475569', fontWeight: '700' }}>Auth / Slip Reference</Text>
+                        <TextInput
+                          placeholder="EZ2026... / Bank Ref"
+                          placeholderTextColor="#94a3b8"
+                          value={cardAuthRef}
+                          onChangeText={setCardAuthRef}
+                          style={{
+                            backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#cbd5e1',
+                            borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5, fontSize: 12,
+                            fontWeight: '600', color: '#0f172a', marginTop: 2
+                          }}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            )}
 
             {/* Split Options - Any Combination */}
             {selectedPaymentMode === 'Split' && (
@@ -3125,6 +3822,155 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     </Text>
                   )}
                 </View>
+
+                {/* Split Dynamic Razorpay UPI QR Card */}
+                {isSplitUpi && splitUpiAmount > 0 && (
+                  <View style={{
+                    marginTop: 6,
+                    backgroundColor: '#ffffff',
+                    borderRadius: 10,
+                    borderWidth: 1.5,
+                    borderColor: '#7dd3fc',
+                    padding: 10,
+                    alignItems: 'center'
+                  }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <Ionicons name="qr-code-outline" size={15} color="#0284c7" />
+                        <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#0369a1' }}>
+                          Split UPI QR: ₹{splitUpiAmount.toLocaleString('en-IN')}
+                        </Text>
+                      </View>
+                      <View style={{ backgroundColor: '#ecfdf5', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, borderWidth: 1, borderColor: '#a7f3d0' }}>
+                        <Text style={{ fontSize: 9.5, fontWeight: '800', color: '#059669' }}>DIRECT UPI</Text>
+                      </View>
+                    </View>
+
+                    {splitUpiQrLoading ? (
+                      <View style={{ paddingVertical: 14, alignItems: 'center' }}>
+                        <ActivityIndicator size="small" color="#0284c7" />
+                        <Text style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>Generating QR for ₹{splitUpiAmount}...</Text>
+                      </View>
+                    ) : splitUpiQrData?.imageUrl ? (
+                      <View style={{ alignItems: 'center', width: '100%' }}>
+                        {splitUpiQrPaid ? (
+                          <View style={{ backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac', borderRadius: 8, padding: 8, width: '100%', alignItems: 'center', marginBottom: 6 }}>
+                            <Ionicons name="checkmark-circle" size={22} color="#16a34a" />
+                            <Text style={{ fontSize: 12, fontWeight: '800', color: '#15803d', marginTop: 2 }}>
+                              UPI Portion Received: ₹{splitUpiAmount}
+                            </Text>
+                          </View>
+                        ) : (
+                          <>
+                            <View style={{ backgroundColor: '#ffffff', padding: 6, borderRadius: 8, borderWidth: 1, borderColor: '#cbd5e1', marginBottom: 4 }}>
+                              <Image source={{ uri: splitUpiQrData.imageUrl }} style={{ width: 130, height: 130, borderRadius: 6 }} resizeMode="contain" />
+                            </View>
+                            <Text style={{ fontSize: 10.5, color: '#64748b', textAlign: 'center', marginBottom: 6 }}>
+                              Scan with GPay, PhonePe, Paytm (No Redirect)
+                            </Text>
+                          </>
+                        )}
+                        <View style={{ flexDirection: 'row', gap: 6, width: '100%' }}>
+                          <TouchableOpacity
+                            onPress={() => generateSplitUpiQr(splitUpiAmount)}
+                            style={{ flex: 1, paddingVertical: 6, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#bae6fd', borderRadius: 6, alignItems: 'center', justifyContent: 'center' }}
+                          >
+                            <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#0284c7' }}>Refresh</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={async () => {
+                              if (!splitUpiQrData?.qrId) return;
+                              const res = await checkRazorpayPaymentStatus(splitUpiQrData.qrId);
+                              if (res.isPaid) {
+                                setSplitUpiQrPaid(true);
+                                Alert.alert('✅ Verified', `UPI Split portion of ₹${splitUpiAmount} received!`);
+                              } else {
+                                Alert.alert('Notice', 'UPI payment not yet received.');
+                              }
+                            }}
+                            style={{ flex: 1.2, paddingVertical: 6, backgroundColor: splitUpiQrPaid ? '#16a34a' : '#0284c7', borderRadius: 6, alignItems: 'center', justifyContent: 'center' }}
+                          >
+                            <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#ffffff' }}>{splitUpiQrPaid ? 'Verified ✓' : 'Check Status'}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+
+                {/* Split Razorpay Card Payment Card */}
+                {isSplitCard && splitCardAmount > 0 && (
+                  <View style={{
+                    marginTop: 6,
+                    backgroundColor: '#ffffff',
+                    borderRadius: 10,
+                    borderWidth: 1.5,
+                    borderColor: '#86efac',
+                    padding: 10
+                  }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <Ionicons name="card-outline" size={15} color="#16a34a" />
+                        <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#15803d' }}>
+                          Split Card Payment: ₹{splitCardAmount.toLocaleString('en-IN')}
+                        </Text>
+                      </View>
+                      <View style={{ backgroundColor: '#dcfce7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, borderWidth: 1, borderColor: '#86efac' }}>
+                        <Text style={{ fontSize: 9.5, fontWeight: '800', color: '#15803d' }}>RAZORPAY</Text>
+                      </View>
+                    </View>
+
+                    <TouchableOpacity
+                      onPress={() => handleLaunchMobileCardPayment(splitCardAmount)}
+                      disabled={cardIsProcessing}
+                      style={{
+                        backgroundColor: '#16a34a', paddingVertical: 8, borderRadius: 6,
+                        alignItems: 'center', justifyContent: 'center', marginBottom: 6
+                      }}
+                    >
+                      {cardIsProcessing ? (
+                        <ActivityIndicator size="small" color="#ffffff" />
+                      ) : (
+                        <Text style={{ fontSize: 11.5, fontWeight: '800', color: '#ffffff' }}>
+                          Pay ₹{splitCardAmount.toLocaleString('en-IN')} with Card
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <View style={{ flexDirection: 'row', gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#f1f5f9' }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 9.5, color: '#64748b', fontWeight: '700' }}>Card Last 4</Text>
+                        <TextInput
+                          maxLength={4}
+                          keyboardType="numeric"
+                          placeholder="1338"
+                          placeholderTextColor="#94a3b8"
+                          value={cardLast4}
+                          onChangeText={t => setCardLast4(t.replace(/\D/g, ''))}
+                          style={{
+                            backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1',
+                            borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3, fontSize: 11,
+                            fontWeight: '700', color: '#0f172a', marginTop: 2
+                          }}
+                        />
+                      </View>
+                      <View style={{ flex: 1.5 }}>
+                        <Text style={{ fontSize: 9.5, color: '#64748b', fontWeight: '700' }}>POS Auth / Slip Ref</Text>
+                        <TextInput
+                          placeholder="EZ2026... / Bank Ref"
+                          placeholderTextColor="#94a3b8"
+                          value={cardAuthRef}
+                          onChangeText={setCardAuthRef}
+                          style={{
+                            backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1',
+                            borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3, fontSize: 11,
+                            fontWeight: '600', color: '#0f172a', marginTop: 2
+                          }}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                )}
               </View>
             )}
 
@@ -3966,5 +4812,111 @@ const styles = StyleSheet.create({
     color: '#475569',
     fontWeight: '700',
     fontSize: 13.5
+  },
+  upiQrContainer: {
+    marginTop: 10,
+    marginBottom: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#7dd3fc',
+    padding: 14,
+    shadowColor: '#0284c7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2
+  },
+  upiQrHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    marginBottom: 10
+  },
+  upiQrTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0369a1'
+  },
+  upiQrLiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ecfdf5',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+    gap: 4
+  },
+  upiQrGreenDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10b981'
+  },
+  upiQrLiveBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#059669',
+    letterSpacing: 0.5
+  },
+  qrImageWrapper: {
+    backgroundColor: '#ffffff',
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2
+  },
+  upiQrAmountText: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#0f172a',
+    marginTop: 10
+  },
+  upiQrInstructions: {
+    fontSize: 11.5,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 3,
+    paddingHorizontal: 12
+  },
+  upiSecondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#bae6fd',
+    paddingVertical: 9,
+    borderRadius: 8
+  },
+  upiSecondaryBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284c7'
+  },
+  upiPrimaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: '#0284c7',
+    paddingVertical: 9,
+    borderRadius: 8
+  },
+  upiPrimaryBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#ffffff'
   }
 });

@@ -463,6 +463,16 @@ export const EmployeeDailyWorksScreen: React.FC<EmployeeDailyWorksScreenProps> =
                   <Text style={styles.metricCellKey}>Video</Text>
                 </View>
               </View>
+
+              {/* Notes / Remarks Strip */}
+              {r.isSubmitted && (r.todayReport?.notes || r.todayReport?.tasksSummary) ? (
+                <View style={styles.notesStrip}>
+                  <Text style={styles.notesLabel}>📝 Notes:</Text>
+                  <Text style={styles.notesVal}>
+                    {r.todayReport?.notes || r.todayReport?.tasksSummary}
+                  </Text>
+                </View>
+              ) : null}
             </View>
           ))
         )
@@ -838,6 +848,25 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginTop: 1,
     textAlign: 'center',
+  },
+  notesStrip: {
+    marginTop: 8,
+    padding: 8,
+    backgroundColor: '#f8fafc',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  notesLabel: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: '#64748b',
+    marginBottom: 2,
+  },
+  notesVal: {
+    fontSize: 11,
+    color: '#1e293b',
+    lineHeight: 15,
   },
   emptyCard: {
     backgroundColor: '#ffffff',

@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Modal } from 'react-native';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  getSafeDb, collection, onSnapshot, addDoc, updateDoc, doc, deleteDoc
+  getSafeDb, collection, onSnapshot, addDoc, updateDoc, setDoc, doc, deleteDoc
 } from '../../utils/firebaseSafe';
-import { resolveCanonicalBranchId, BRANCHES } from '@app/shared';
+import { resolveCanonicalBranchId, BRANCHES, DEFAULT_STAFF_MEMBERS } from '@app/shared';
 import { DoctorTimingsScreen } from './DoctorTimings/DoctorTimingsScreen';
 import { ManageBranchesScreen } from './ManageBranches/ManageBranchesScreen';
 import { AttendanceRosterScreen } from '../HR/AttendanceRoster/AttendanceRosterScreen';
@@ -47,25 +48,44 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   }, [currentTab]);
   const [staffCategory, setStaffCategory] = useState<'staff' | 'reception' | 'doctors' | 'hr'>('staff');
 
-  const DEFAULT_STAFF = [
-    { name: 'Anil Kumar M', role: 'Regular Staff', branch: 'KPHB', phone: '7338260802', mobile: '7338260802', hours: '10.5 hrs/day', salary: '₹22,000' },
-    { name: 'Ashwini Begari', role: 'Regular Staff', branch: 'Chandanagar', phone: '6302121265', mobile: '6302121265', hours: '8.5 hrs/day', salary: '₹17,000' },
-    { name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', phone: '9874563210', mobile: '9874563210', hours: '9.5 hrs/day', salary: '₹17,000' },
-    { name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', phone: '9652180003', mobile: '9652180003', hours: '8 hrs/day', salary: '₹15,000' },
-    { name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', phone: '8125384387', mobile: '8125384387', hours: '10 hrs/day', salary: '₹18,000' },
-    { name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', phone: '9876543212', mobile: '9876543212', hours: '8 hrs/day', salary: '₹14,000' },
-    { name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '7890123456', mobile: '7890123456', hours: '10.5 hrs/day', salary: '₹14,000' },
-  ];
+  interface StaffItem {
+    id?: string;
+    name: string;
+    phone: string;
+    mobile: string;
+    role: string;
+    branch: string;
+    shift?: string;
+    hours: string;
+    salary: string;
+    shiftType?: string;
+    email?: string;
+    password?: string;
+  }
 
-  const [liveStaffMembers, setLiveStaffMembers] = useState(DEFAULT_STAFF);
+  const [liveStaffMembers, setLiveStaffMembers] = useState<StaffItem[]>(DEFAULT_STAFF_MEMBERS as StaffItem[]);
 
   useEffect(() => {
+    // 1. Instant load from local AsyncStorage
+    AsyncStorage.getItem('@sph_cached_staff_members').then(raw => {
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setLiveStaffMembers(parsed);
+          }
+        } catch (e) {}
+      }
+    }).catch(() => {});
+
+    // 2. Background live sync from Firestore
     if (!db) return;
     const colRef = collection(db, 'staff');
     const unsub = onSnapshot(colRef, (snap) => {
       if (!snap.empty) {
         const loaded = snap.docs.map(d => {
           const data = d.data();
+          const cleanName = (data.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
           return {
             id: d.id,
             name: data.name || 'Staff Member',
@@ -75,10 +95,16 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
             branch: data.branch || 'KPHB',
             shift: data.shift || '10:00 AM - 08:30 PM',
             hours: data.hours || '8.5 hrs/day',
-            salary: data.salary || '₹18,000'
+            salary: data.salary || '₹18,000',
+            email: data.email || (cleanName ? `${cleanName}@sph.com` : ''),
+            password: data.password || 'email123',
+            loginTime: data.loginTime,
+            logoutTime: data.logoutTime,
+            shiftType: data.shiftType
           };
         });
         setLiveStaffMembers(loaded);
+        AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(loaded)).catch(() => {});
       }
     }, (err) => console.warn('Firestore mobile staff listener error:', err));
     return () => unsub();
@@ -101,7 +127,11 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
                 console.warn('Error deleting staff:', e);
               }
             }
-            setLiveStaffMembers(prev => prev.filter(s => (s as any).id !== staffId && s.name !== staffName));
+            setLiveStaffMembers(prev => {
+              const updated = prev.filter(s => (s as any).id !== staffId && s.name !== staffName);
+              AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(updated)).catch(() => {});
+              return updated;
+            });
             Alert.alert('Deleted', `${staffName} has been deleted and their login access is revoked.`);
           }
         }
@@ -181,10 +211,15 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
     );
   };
 
-  // Add Staff Modal state
+  // Add / Edit Staff Modal state
   const [showAddStaffModal, setShowAddStaffModal] = useState(false);
+  const [showEditStaffModal, setShowEditStaffModal] = useState(false);
+  const [editingStaffId, setEditingStaffId] = useState('');
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffPhone, setNewStaffPhone] = useState('');
+  const [newStaffEmail, setNewStaffEmail] = useState('');
+  const [newStaffPassword, setNewStaffPassword] = useState('email123');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [newStaffBranch, setNewStaffBranch] = useState('KPHB');
   const [newStaffSalary, setNewStaffSalary] = useState('');
   const [staffShiftType, setStaffShiftType] = useState<'Single Strict' | 'Multi Strict'>('Single Strict');
@@ -222,6 +257,116 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
     return staffShiftSlots.map(s => `${s.loginTime || '10:00 AM'} - ${s.logoutTime || '08:30 PM'}`).join(' & ');
   };
 
+  const handleOpenAddStaff = () => {
+    setEditingStaffId('');
+    setNewStaffName('');
+    setNewStaffPhone('');
+    setNewStaffEmail('');
+    setNewStaffPassword('email123');
+    setShowStaffPassword(false);
+    setNewStaffBranch('KPHB');
+    setNewStaffSalary('');
+    setStaffShiftType('Single Strict');
+    setStaffShiftSlots([{ loginTime: '10:00 AM', logoutTime: '08:30 PM' }]);
+    setShowAddStaffModal(true);
+  };
+
+  const handleOpenEditStaff = (s: StaffItem) => {
+    setEditingStaffId(s.id || '');
+    setNewStaffName(s.name || '');
+    setNewStaffPhone(s.phone || s.mobile || '');
+    const cleanName = (s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    setNewStaffEmail(s.email || (cleanName ? `${cleanName}@sph.com` : ''));
+    setNewStaffPassword(s.password || 'email123');
+    setShowStaffPassword(false);
+    setNewStaffBranch(s.branch || 'KPHB');
+    setNewStaffSalary(s.salary ? s.salary.replace(/[^0-9]/g, '') : '18000');
+    setStaffShiftType(s.shiftType === 'Multi Strict' ? 'Multi Strict' : 'Single Strict');
+    if (s.shift && s.shift.includes('&')) {
+      const parts = s.shift.split('&').map((p: string) => {
+        const [loginTime, logoutTime] = p.split('-').map((t: string) => t.trim());
+        return { loginTime: loginTime || '10:00 AM', logoutTime: logoutTime || '08:30 PM' };
+      });
+      setStaffShiftSlots(parts);
+    } else if (s.shift && s.shift.includes('-')) {
+      const [loginTime, logoutTime] = s.shift.split('-').map((t: string) => t.trim());
+      setStaffShiftSlots([{ loginTime: loginTime || '10:00 AM', logoutTime: logoutTime || '08:30 PM' }]);
+    } else {
+      setStaffShiftSlots([{ loginTime: '10:00 AM', logoutTime: '08:30 PM' }]);
+    }
+    setShowEditStaffModal(true);
+  };
+
+  const handleSaveNewStaff = async () => {
+    if (!newStaffName.trim() || !newStaffPhone.trim()) {
+      Alert.alert('Required Fields', 'Please enter staff name and mobile number.');
+      return;
+    }
+    const cleanName = newStaffName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    const emailToSave = newStaffEmail.trim().toLowerCase() || (cleanName ? `${cleanName}@sph.com` : '');
+    const passwordToSave = newStaffPassword.trim() || 'email123';
+    const calculatedHours = getCalculatedDailyHours();
+    const formattedShift = getFormattedShiftString();
+    const formattedSalary = newStaffSalary.trim() ? `₹${newStaffSalary.trim().replace(/^₹/, '')}` : '₹18,000';
+
+    const staffData: StaffItem = {
+      name: newStaffName.trim(),
+      phone: newStaffPhone.trim(),
+      mobile: newStaffPhone.trim(),
+      email: emailToSave,
+      password: passwordToSave,
+      role: 'Regular Staff',
+      branch: newStaffBranch,
+      shiftType: staffShiftType,
+      shift: formattedShift,
+      hours: calculatedHours,
+      salary: formattedSalary
+    };
+
+    if (showEditStaffModal && editingStaffId && db) {
+      try {
+        await setDoc(doc(db, 'staff', editingStaffId), staffData, { merge: true });
+        setLiveStaffMembers(prev => {
+          const updated = prev.map(s => s.id === editingStaffId ? { ...s, ...staffData, id: editingStaffId } : s);
+          AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
+        Alert.alert('Updated', `Staff Member ${staffData.name} updated successfully.`);
+      } catch (e) {
+        console.warn('Error updating staff:', e);
+      }
+      setShowEditStaffModal(false);
+      setEditingStaffId('');
+    } else {
+      const newStaffDoc = { ...staffData, createdAt: new Date().toISOString() };
+      if (db) {
+        try {
+          const docRef = await addDoc(collection(db, 'staff'), newStaffDoc);
+          staffData.id = docRef.id;
+        } catch (e) {
+          console.warn('Error saving staff:', e);
+        }
+      }
+      setLiveStaffMembers(prev => {
+        const updated = [staffData, ...prev];
+        AsyncStorage.setItem('@sph_cached_staff_members', JSON.stringify(updated)).catch(() => {});
+        return updated;
+      });
+      setShowAddStaffModal(false);
+      Alert.alert('Saved', `Staff Member ${staffData.name} added successfully.`);
+    }
+
+    setNewStaffName('');
+    setNewStaffPhone('');
+    setNewStaffEmail('');
+    setNewStaffPassword('email123');
+    setNewStaffSalary('');
+    setStaffShiftType('Single Strict');
+    setStaffShiftSlots([
+      { loginTime: '10:00 AM', logoutTime: '08:30 PM' }
+    ]);
+  };
+
   // Add Doctor Modal state
   const [showAddDoctorModal, setShowAddDoctorModal] = useState(false);
   const [showEditDoctorModal, setShowEditDoctorModal] = useState(false);
@@ -242,46 +387,6 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
     setNewDocHours(d.hours && d.hours !== '-' ? d.hours : '10 hrs/day');
     setNewDocSalary(d.salary && d.salary !== '-' ? d.salary : '₹95,000');
     setShowEditDoctorModal(true);
-  };
-
-  const handleSaveNewStaff = async () => {
-    if (!newStaffName.trim() || !newStaffPhone.trim()) {
-      Alert.alert('Required Fields', 'Please enter staff name and mobile number.');
-      return;
-    }
-    const calculatedHours = getCalculatedDailyHours();
-    const formattedShift = getFormattedShiftString();
-    const formattedSalary = newStaffSalary.trim() ? `₹${newStaffSalary.trim().replace(/^₹/, '')}` : '₹18,000';
-
-    const staffData = {
-      name: newStaffName.trim(),
-      phone: newStaffPhone.trim(),
-      mobile: newStaffPhone.trim(),
-      role: 'Regular Staff',
-      branch: newStaffBranch,
-      shiftType: staffShiftType,
-      shift: formattedShift,
-      hours: calculatedHours,
-      salary: formattedSalary,
-      createdAt: new Date().toISOString()
-    };
-    if (db) {
-      try {
-        await addDoc(collection(db, 'staff'), staffData);
-      } catch (e) {
-        console.warn('Error saving staff:', e);
-      }
-    }
-    setLiveStaffMembers(prev => [staffData, ...prev]);
-    setNewStaffName('');
-    setNewStaffPhone('');
-    setNewStaffSalary('');
-    setStaffShiftType('Single Strict');
-    setStaffShiftSlots([
-      { loginTime: '10:00 AM', logoutTime: '08:30 PM' }
-    ]);
-    setShowAddStaffModal(false);
-    Alert.alert('Saved', `Staff Member ${staffData.name} added successfully.`);
   };
 
   const handleSaveNewDoctor = async () => {
@@ -1356,7 +1461,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
             <Text style={{ fontSize: 18, fontWeight: '800', color: '#0f172a' }}>Staff Management</Text>
             <TouchableOpacity
               style={{ backgroundColor: '#258ec8', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 }}
-              onPress={() => setShowAddStaffModal(true)}
+              onPress={handleOpenAddStaff}
             >
               <Text style={{ color: '#ffffff', fontSize: 11.5, fontWeight: '800' }}>+ Add Staff</Text>
             </TouchableOpacity>
@@ -1400,29 +1505,62 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
               </View>
 
               {liveStaffMembers.map(s => (
-                <View key={(s as any).id || s.name} style={{ backgroundColor: '#ffffff', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                <View key={s.id || s.name} style={{ backgroundColor: '#ffffff', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Text style={{ fontSize: 13.5, fontWeight: '800', color: '#0f172a' }}>{s.name} ({s.branch})</Text>
-                    <TouchableOpacity
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 3,
-                        backgroundColor: '#fef2f2',
-                        paddingHorizontal: 8,
-                        paddingVertical: 4,
-                        borderRadius: 6,
-                        borderWidth: 1,
-                        borderColor: '#fee2e2'
-                      }}
-                      onPress={() => handleDeleteStaff((s as any).id, s.name)}
-                    >
-                      <Ionicons name="trash-outline" size={12} color="#ef4444" />
-                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#ef4444' }}>Delete</Text>
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <TouchableOpacity
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 3,
+                          backgroundColor: '#eff6ff',
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                          borderRadius: 6,
+                          borderWidth: 1,
+                          borderColor: '#bfdbfe'
+                        }}
+                        onPress={() => handleOpenEditStaff(s)}
+                      >
+                        <Ionicons name="pencil-outline" size={12} color="#1d4ed8" />
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#1d4ed8' }}>Edit</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 3,
+                          backgroundColor: '#fef2f2',
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                          borderRadius: 6,
+                          borderWidth: 1,
+                          borderColor: '#fee2e2'
+                        }}
+                        onPress={() => handleDeleteStaff(s.id, s.name)}
+                      >
+                        <Ionicons name="trash-outline" size={12} color="#ef4444" />
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: '#ef4444' }}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                  {(s as any).phone && (s as any).phone !== '-' && (
-                    <Text style={{ fontSize: 11.5, color: '#258ec8', fontWeight: '600', marginTop: 4 }}>Phone: +91 {(s as any).phone}</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                    {s.email ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#f0f9ff', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 1, borderColor: '#bae6fd' }}>
+                        <Ionicons name="mail-outline" size={11} color="#0284c7" />
+                        <Text style={{ fontSize: 11, color: '#0284c7', fontWeight: '700' }}>{s.email}</Text>
+                      </View>
+                    ) : null}
+                    {s.password ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#f8fafc', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                        <Ionicons name="key-outline" size={11} color="#64748b" />
+                        <Text style={{ fontSize: 11, color: '#475569', fontWeight: '700' }}>{s.password}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  {s.phone && s.phone !== '-' && (
+                    <Text style={{ fontSize: 11.5, color: '#64748b', fontWeight: '600', marginTop: 4 }}>Phone: +91 {s.phone}</Text>
                   )}
                   <View style={{ gap: 4, marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#f1f5f9' }}>
                     <Text style={{ fontSize: 11.5, color: '#258ec8', fontWeight: '700' }}>Shift: {(s as any).shift || '10:00 AM - 08:30 PM'}</Text>
@@ -1645,13 +1783,13 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
         </View>
       )}
 
-      {/* ADD STAFF MODAL */}
-      <Modal visible={showAddStaffModal} transparent animationType="slide">
+      {/* ADD / EDIT STAFF MODAL */}
+      <Modal visible={showAddStaffModal || showEditStaffModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { maxHeight: '85%' }]}>
             <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Add New Staff Member</Text>
-              <TouchableOpacity onPress={() => setShowAddStaffModal(false)}>
+              <Text style={styles.modalTitle}>{showEditStaffModal ? '✏️ Edit Staff Member' : 'Add New Staff Member'}</Text>
+              <TouchableOpacity onPress={() => { setShowAddStaffModal(false); setShowEditStaffModal(false); }}>
                 <Ionicons name="close" size={20} color="#64748b" />
               </TouchableOpacity>
             </View>
@@ -1691,6 +1829,51 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
                     <Text style={[styles.chipBtnText, newStaffBranch === br && styles.chipBtnTextActive]}>{br}</Text>
                   </TouchableOpacity>
                 ))}
+              </View>
+
+              {/* Staff Login Credentials (Directly below Branch Assignment) */}
+              <View style={{ backgroundColor: '#f8fafc', borderRadius: 12, padding: 12, borderWidth: 1.5, borderColor: '#e2e8f0', marginTop: 10 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={{ fontSize: 12.5, fontWeight: '800', color: '#0f172a' }}>🔐 Staff Login Credentials</Text>
+                  <View style={{ backgroundColor: '#dbeafe', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: '#1e40af' }}>Regular Staff Only</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.fieldLabel}>Staff Login Email ID *</Text>
+                <View style={styles.inputBox}>
+                  <TextInput
+                    style={styles.inputText}
+                    placeholder="e.g. anil@sph.com"
+                    placeholderTextColor="#94a3b8"
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    value={newStaffEmail}
+                    onChangeText={setNewStaffEmail}
+                  />
+                </View>
+
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                  <Text style={styles.fieldLabel}>Staff Login Password *</Text>
+                  <TouchableOpacity onPress={() => setShowStaffPassword(!showStaffPassword)}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#258ec8' }}>
+                      {showStaffPassword ? 'Hide' : 'Show'} Password
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.inputBox}>
+                  <TextInput
+                    style={styles.inputText}
+                    placeholder="Standard default: email123"
+                    placeholderTextColor="#94a3b8"
+                    secureTextEntry={!showStaffPassword}
+                    value={newStaffPassword}
+                    onChangeText={setNewStaffPassword}
+                  />
+                </View>
+                <Text style={{ fontSize: 10.5, color: '#64748b', marginTop: 4 }}>
+                  Default password is email123. HR/Admin can edit ID & password at any time.
+                </Text>
               </View>
 
               {/* Salary & Work Schedule Box */}
@@ -1850,7 +2033,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
               </View>
 
               <TouchableOpacity style={styles.saveBtn} onPress={handleSaveNewStaff}>
-                <Text style={styles.saveBtnText}>Save Staff Member</Text>
+                <Text style={styles.saveBtnText}>{showEditStaffModal ? 'Update Staff Member' : 'Save Staff Member'}</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>

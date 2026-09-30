@@ -11,7 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 export interface NotificationItem {
   id: string;
-  type?: 'booking' | 'payment' | 'staff_login' | 'staff_logout' | 'staff_report' | string;
+  type?: 'booking' | 'payment' | 'staff_login' | 'staff_logout' | 'staff_report' | 'staff_punch_in' | 'staff_punch_out' | string;
   title?: string;
   body?: string;
   patientName?: string;
@@ -27,8 +27,15 @@ export interface NotificationItem {
   paymentMode?: string;
   loginTime?: string;
   logoutTime?: string;
+  punchInTime?: string;
+  punchOutTime?: string;
+  workingHours?: string;
+  locationAddress?: string;
   totalCalls?: number | string;
   followUps?: number | string;
+  photoCount?: number;
+  status?: string;
+  rejectReason?: string;
   createdAt?: string;
 }
 
@@ -116,6 +123,26 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
           tagStyle: styles.logoutTypeTag,
           tagTextStyle: styles.logoutTypeTagText,
         };
+      case 'staff_punch_in':
+        return {
+          iconName: 'finger-print-outline' as const,
+          iconColor: isRead ? '#64748b' : '#16a34a',
+          circleStyle: isRead ? styles.iconCircleRead : styles.iconCirclePayment,
+          title: item.staffName || 'Staff Member',
+          tagText: 'PUNCH IN',
+          tagStyle: styles.punchInTypeTag,
+          tagTextStyle: styles.punchInTypeTagText,
+        };
+      case 'staff_punch_out':
+        return {
+          iconName: 'hand-left-outline' as const,
+          iconColor: isRead ? '#64748b' : '#dc2626',
+          circleStyle: isRead ? styles.iconCircleRead : styles.iconCircleRejected,
+          title: item.staffName || 'Staff Member',
+          tagText: 'PUNCH OUT',
+          tagStyle: styles.punchOutTypeTag,
+          tagTextStyle: styles.punchOutTypeTagText,
+        };
       case 'staff_report':
         return {
           iconName: 'document-text-outline' as const,
@@ -125,6 +152,36 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
           tagText: 'REPORT',
           tagStyle: styles.reportTypeTag,
           tagTextStyle: styles.reportTypeTagText,
+        };
+      case 'cleaning_submission':
+        return {
+          iconName: 'images-outline' as const,
+          iconColor: isRead ? '#64748b' : '#0284c7',
+          circleStyle: isRead ? styles.iconCircleRead : styles.iconCircleCleaning,
+          title: item.title || `${item.branch || 'Branch'} Cleaning Photos`,
+          tagText: 'CLEANING',
+          tagStyle: styles.cleaningTypeTag,
+          tagTextStyle: styles.cleaningTypeTagText,
+        };
+      case 'cleaning_approved':
+        return {
+          iconName: 'checkmark-circle-outline' as const,
+          iconColor: isRead ? '#64748b' : '#16a34a',
+          circleStyle: isRead ? styles.iconCircleRead : styles.iconCirclePayment,
+          title: item.title || `${item.branch || 'Branch'} Cleaning Approved`,
+          tagText: 'APPROVED',
+          tagStyle: styles.paymentTypeTag,
+          tagTextStyle: styles.paymentTypeTagText,
+        };
+      case 'cleaning_rejected':
+        return {
+          iconName: 'alert-circle-outline' as const,
+          iconColor: isRead ? '#64748b' : '#dc2626',
+          circleStyle: isRead ? styles.iconCircleRead : styles.iconCircleRejected,
+          title: item.title || `${item.branch || 'Branch'} Cleaning Rejected`,
+          tagText: 'REJECTED',
+          tagStyle: styles.rejectedTypeTag,
+          tagTextStyle: styles.rejectedTypeTagText,
         };
       default:
         return {
@@ -228,12 +285,27 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
                 </Text>
 
                 {/* Details Tags */}
-                {(item.amount != null || item.appointmentTime || item.branch || item.doctorName || item.paymentMode || item.loginTime || item.logoutTime || item.totalCalls || item.followUps) && (
+                {(item.amount != null || item.appointmentTime || item.branch || item.doctorName || item.paymentMode || item.loginTime || item.logoutTime || item.totalCalls || item.followUps || item.photoCount || item.status) && (
                   <View style={styles.tagsContainer}>
                     {item.amount != null && item.amount !== '' ? (
                       <View style={styles.tagAmount}>
                         <Ionicons name="wallet-outline" size={10} color="#16a34a" />
                         <Text style={styles.tagTextAmount}>₹{Number(item.amount || 0).toLocaleString('en-IN')}</Text>
+                      </View>
+                    ) : null}
+
+                    {item.photoCount ? (
+                      <View style={styles.tagBlue}>
+                        <Ionicons name="images-outline" size={10} color="#0284c7" />
+                        <Text style={styles.tagTextBlue}>{item.photoCount} Photos</Text>
+                      </View>
+                    ) : null}
+
+                    {item.status ? (
+                      <View style={item.status === 'approved' ? styles.tagGreen : item.status === 'rejected' ? styles.tagAmber : styles.tagBlue}>
+                        <Text style={item.status === 'approved' ? styles.tagTextGreen : item.status === 'rejected' ? styles.tagTextAmber : styles.tagTextBlue}>
+                          {item.status.toUpperCase()}
+                        </Text>
                       </View>
                     ) : null}
 
@@ -255,6 +327,34 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
                       <View style={styles.tagAmber}>
                         <Ionicons name="log-out-outline" size={10} color="#d97706" />
                         <Text style={styles.tagTextAmber}>Out: {item.logoutTime}</Text>
+                      </View>
+                    ) : null}
+
+                    {item.punchInTime ? (
+                      <View style={styles.tagGreen}>
+                        <Ionicons name="finger-print-outline" size={10} color="#059669" />
+                        <Text style={styles.tagTextGreen}>In: {item.punchInTime}</Text>
+                      </View>
+                    ) : null}
+
+                    {item.punchOutTime ? (
+                      <View style={styles.tagRed}>
+                        <Ionicons name="hand-left-outline" size={10} color="#dc2626" />
+                        <Text style={styles.tagTextRed}>Out: {item.punchOutTime}</Text>
+                      </View>
+                    ) : null}
+
+                    {item.workingHours ? (
+                      <View style={styles.tagBlue}>
+                        <Ionicons name="time-outline" size={10} color="#0284c7" />
+                        <Text style={styles.tagTextBlue}>Worked: {item.workingHours}</Text>
+                      </View>
+                    ) : null}
+
+                    {item.locationAddress ? (
+                      <View style={styles.tag}>
+                        <Ionicons name="navigate-outline" size={10} color="#64748b" />
+                        <Text style={styles.tagTextSecondary} numberOfLines={1}>{item.locationAddress}</Text>
                       </View>
                     ) : null}
 
@@ -414,6 +514,12 @@ const styles = StyleSheet.create({
   iconCircleUnread: {
     backgroundColor: '#e0f2fe',
   },
+  iconCircleCleaning: {
+    backgroundColor: '#e0f2fe',
+  },
+  iconCircleRejected: {
+    backgroundColor: '#fee2e2',
+  },
   iconCirclePayment: {
     backgroundColor: '#dcfce7',
   },
@@ -428,6 +534,28 @@ const styles = StyleSheet.create({
   },
   iconCircleRead: {
     backgroundColor: '#f1f5f9',
+  },
+  cleaningTypeTag: {
+    backgroundColor: '#e0f2fe',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  cleaningTypeTagText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#0369a1',
+  },
+  rejectedTypeTag: {
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  rejectedTypeTagText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#dc2626',
   },
   bookingTypeTag: {
     backgroundColor: '#e0f2fe',
@@ -472,6 +600,28 @@ const styles = StyleSheet.create({
     fontSize: 8.5,
     fontWeight: '800',
     color: '#d97706',
+  },
+  punchInTypeTag: {
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  punchInTypeTagText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#15803d',
+  },
+  punchOutTypeTag: {
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  punchOutTypeTagText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    color: '#dc2626',
   },
   reportTypeTag: {
     backgroundColor: '#e0e7ff',
@@ -608,6 +758,38 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#059669',
+  },
+  tagRed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#fef2f2',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  tagTextRed: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#dc2626',
+  },
+  tagBlue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#f0f9ff',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#bae6fd',
+  },
+  tagTextBlue: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#0284c7',
   },
   tagTextPrimary: {
     fontSize: 10,

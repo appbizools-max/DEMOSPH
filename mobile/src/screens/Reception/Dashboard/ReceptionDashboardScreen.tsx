@@ -204,10 +204,19 @@ const isBranchMatching = (b1: string, b2: string): boolean => {
 };
 
 const isMatchingBranch = (app: any, activeBranch?: string): boolean => {
-  if (!activeBranch || activeBranch === 'All Branches' || activeBranch.toLowerCase().includes('all')) return true;
-  const appBranch = app.branch || app.branchName || app.targetBranch || app.branchId || app.assignedBranch || app.registrationId || app.regId;
-  if (!appBranch) return false;
-  return isBranchMatching(String(appBranch), String(activeBranch));
+  if (!activeBranch || activeBranch === 'All Branches' || activeBranch === 'all' || activeBranch.toLowerCase().trim() === 'all branches') {
+    return true;
+  }
+  const canonicalActive = resolveCanonicalBranchId(activeBranch);
+  if (!canonicalActive) return true;
+
+  const rawApp = app.branch || app.branchName || app.targetBranch || app.branchId || app.assignedBranch;
+  const canonicalApp = resolveCanonicalBranchId(rawApp) || resolveCanonicalBranchId(app.registrationId || app.regId);
+
+  if (canonicalApp) {
+    return canonicalApp === canonicalActive;
+  }
+  return isBranchMatching(String(rawApp || ''), String(activeBranch));
 };
 
 const getCleanRegId = (app: any, index: number) => {
