@@ -9,15 +9,15 @@ interface TargetProgressUIProps {
 }
 
 export const TargetProgressUI: React.FC<TargetProgressUIProps> = React.memo(({
-  monthlyTarget = 100000,
-  targetReached = 75000,
+  monthlyTarget = 0,
+  targetReached = 0,
   branchName,
 }) => {
   const targetNum = Number(monthlyTarget) || 0;
   const reachedNum = Number(targetReached) || 0;
-  const remaining = Math.max(targetNum - reachedNum, 0);
+  const remaining = targetNum > 0 ? Math.max(targetNum - reachedNum, 0) : 0;
   const percentage = targetNum > 0 ? Math.min(Math.round((reachedNum / targetNum) * 100), 100) : 0;
-  const isReached = reachedNum >= targetNum;
+  const isReached = targetNum > 0 && reachedNum >= targetNum;
 
   // Dynamic Theme Colors
   const containerBg = isReached ? '#f0fdf4' : '#ffffff';
@@ -35,7 +35,12 @@ export const TargetProgressUI: React.FC<TargetProgressUIProps> = React.memo(({
             {branchName ? `${branchName} Target` : 'Monthly Target'}
           </Text>
         </View>
-        {isReached ? (
+        {targetNum === 0 ? (
+          <View style={[styles.badgeNormal, { backgroundColor: '#f1f5f9' }]}>
+            <Feather name="clock" size={12} color="#64748b" style={{ marginRight: 4 }} />
+            <Text style={[styles.badgeNormalText, { color: '#64748b' }]}>Target Not Set</Text>
+          </View>
+        ) : isReached ? (
           <View style={styles.badgeSuccess}>
             <Feather name="award" size={12} color="#15803d" style={{ marginRight: 4 }} />
             <Text style={styles.badgeSuccessText}>Target Reached!</Text>

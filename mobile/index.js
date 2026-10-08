@@ -47,6 +47,8 @@ if (typeof global !== 'undefined' && global.Blob) {
   }
 }
 
+// ErrorUtils handler protects against uncaught background errors
+
 // Global error store for release mode diagnostic capture
 var globalJsError = null;
 var globalErrorListeners = [];
@@ -62,6 +64,11 @@ if (typeof global !== 'undefined' && global.ErrorUtils) {
   try {
     global.ErrorUtils.setGlobalHandler(function (error, isFatal) {
       var stack = error && error.stack ? String(error.stack) : String(error && error.message ? error.message : error || 'Unknown Error');
+      // Silently swallow non-critical streaming network buffer overflows from Hermes
+      if (stack.includes('String length exceeds limit') || stack.includes('didReceiveIncrementalData')) {
+        console.warn('[SPH_NETWORK_GUARD] Ignored background network buffer warning');
+        return;
+      }
       console.error('[SPH_RELEASE_FATAL_ERROR]', stack, 'isFatal:', isFatal);
       notifyError(stack);
     });

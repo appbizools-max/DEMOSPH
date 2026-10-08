@@ -44,7 +44,7 @@ if (getRNMinorVersion() >= 75) {
   }
 }
 
-rootProject.name = 'Spiritual Homeo'
+rootProject.name = 'Spiritual Homeo Staff'
 
 dependencyResolutionManagement {
   versionCatalogs {

@@ -102,7 +102,7 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
   // 2. Listen to submissions
   useEffect(() => {
     if (!db) return;
-    const qSub = query(collection(db, 'branch_cleaning_submissions'), limit(50));
+    const qSub = query(collection(db, 'branch_cleaning_submissions'), limit(15));
     const unsub = onSnapshot(qSub, (snap) => {
       const list: CleaningSubmission[] = snap.docs.map(d => ({
         id: d.id,
@@ -113,7 +113,11 @@ export const BranchCleaningScreen: React.FC<BranchCleaningScreenProps> = ({
       setLoading(false);
       AsyncStorage.getItem('@sph_cleaning_screen_cache').then(raw => {
         const old = raw ? JSON.parse(raw) : {};
-        AsyncStorage.setItem('@sph_cleaning_screen_cache', JSON.stringify({ ...old, submissions: list.slice(0, 30) })).catch(() => {});
+        const lightList = list.slice(0, 8).map(item => ({
+          ...item,
+          photos: (item.photos || []).slice(0, 1),
+        }));
+        AsyncStorage.setItem('@sph_cleaning_screen_cache', JSON.stringify({ ...old, submissions: lightList })).catch(() => {});
       }).catch(() => {});
     }, (err) => {
       console.warn('Mobile submissions listener error:', err);

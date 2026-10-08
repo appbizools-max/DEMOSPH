@@ -6,7 +6,7 @@ import {
 import { Ionicons, Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
-  getSafeDb, collection, doc, onSnapshot, addDoc, query, where
+  getSafeDb, collection, doc, onSnapshot, addDoc, query, where, limit
 } from '../../../utils/firebaseSafe';
 import {
   CleaningSchedule, CleaningSubmission, normalizeBranchName,
@@ -72,7 +72,7 @@ export const CleaningPhotosScreen: React.FC<CleaningPhotosScreenProps> = ({
     if (!db) return;
     setLoading(true);
     const colRef = collection(db, 'branch_cleaning_submissions');
-    const q = query(colRef, where('branch', '==', branch));
+    const q = query(colRef, where('branch', '==', branch), limit(10));
     const unsub = onSnapshot(q, (snap) => {
       const list: CleaningSubmission[] = snap.docs.map(d => ({
         id: d.id,

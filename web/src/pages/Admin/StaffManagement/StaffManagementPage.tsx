@@ -1,19 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { UserCheck, Building2, Clock, Phone, Plus, Trash2, Edit2, X } from 'lucide-react';
+import { UserCheck, Building2, Clock, Phone, Plus, Trash2, Edit2, X, Mail, Eye, EyeOff } from 'lucide-react';
 import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc } from 'firebase/firestore';
-import { db } from '@app/shared';
+import { db, DEFAULT_STAFF_MEMBERS } from '@app/shared';
 
 export const StaffManagementPage: React.FC = () => {
-  const DEFAULT_STAFF = [
-    { id: '1', name: 'M. Anil Kumar', role: 'Regular Staff', branch: 'KPHB', phone: '73382 60802', hours: '10.5 hrs/day', shift: '10:00 AM - 08:30 PM', salary: '₹22,000' },
-    { id: '2', name: 'Begari Ashwini', role: 'Regular Staff', branch: 'Chandanagar', phone: '63021 21265', hours: '8.5 hrs/day', shift: '10:00 AM - 06:30 PM', salary: '₹17,000' },
-    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', phone: '98745 63210', hours: '9.5 hrs/day', shift: '09:30 AM - 07:00 PM', salary: '₹17,000' },
-    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', phone: '96521 80003', hours: '8 hrs/day', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', salary: '₹15,000' },
-    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', phone: '81253 84387', hours: '10 hrs/day', shift: '10:00 AM - 08:00 PM', salary: '₹18,000' },
-    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', phone: '98765 43212', hours: '8 hrs/day', shift: '10:00 AM - 06:00 PM', salary: '₹14,000' },
-    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', phone: '78901 23456', hours: '10.5 hrs/day', shift: '10:00 AM - 08:30 PM', salary: '₹14,000' },
-  ];
-
   const DEFAULT_DOCTORS = [
     { id: 'doc-prashanth', name: 'Dr. Prashanth K Vaidya', role: 'Head Doctor', category: 'Head Doctor', phone: '8125260176', mobile: '8125260176', branch: 'KPHB Branch', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹1,50,000' },
     { id: 'doc-jobedah', name: 'Dr. Jobedah Parveez', role: 'Head Doctor', category: 'Head Doctor', phone: '9903119766', mobile: '9903119766', branch: 'Nallagandla Branch', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹1,40,000' },
@@ -21,7 +11,16 @@ export const StaffManagementPage: React.FC = () => {
     { id: 'doc-ramakrishna', name: 'Dr. Ramakrishna Chanduri', role: 'Head Doctor', category: 'Head Doctor', phone: '1111111111', mobile: '1111111111', branch: 'Dilshuknagar Branch', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹1,45,000' },
   ];
 
-  const [staffList, setStaffList] = useState<any[]>(DEFAULT_STAFF);
+  const [staffList, setStaffList] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem('sph_cached_staff_members');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    return DEFAULT_STAFF_MEMBERS;
+  });
   const [doctorsList, setDoctorsList] = useState<any[]>(DEFAULT_DOCTORS);
 
   // Staff Modal States
@@ -31,6 +30,9 @@ export const StaffManagementPage: React.FC = () => {
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffPhone, setNewStaffPhone] = useState('');
   const [newStaffBranch, setNewStaffBranch] = useState('KPHB');
+  const [newStaffEmail, setNewStaffEmail] = useState('');
+  const [newStaffPassword, setNewStaffPassword] = useState('email123');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [newStaffShift, setNewStaffShift] = useState('10:00 AM - 08:30 PM');
   const [newStaffHours, setNewStaffHours] = useState('10.5 hrs/day');
   const [newStaffSalary, setNewStaffSalary] = useState('₹18,000');
@@ -49,7 +51,7 @@ export const StaffManagementPage: React.FC = () => {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 1. Staff Listener
+  // 1. Staff Listener (Background Live Sync + Local Cache Update)
   useEffect(() => {
     if (!db) return;
     const colRef = collection(db, 'staff');
@@ -57,18 +59,24 @@ export const StaffManagementPage: React.FC = () => {
       if (!snap.empty) {
         const loaded = snap.docs.map(d => {
           const data = d.data();
+          const fallbackEmail = `${(data.name || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
           return {
             id: d.id,
             name: data.name || 'Staff Member',
             role: data.role || 'Regular Staff',
             branch: data.branch || 'KPHB',
             phone: data.mobile || data.phone || '-',
+            email: data.email || fallbackEmail,
+            password: data.password || 'email123',
             hours: data.hours || '8 hrs/day',
             shift: data.shift || '10:00 AM - 06:00 PM',
             salary: data.salary || '₹18,000'
           };
         });
         setStaffList(loaded);
+        try {
+          localStorage.setItem('sph_cached_staff_members', JSON.stringify(loaded));
+        } catch (e) {}
       }
     }, (err) => console.warn('Firestore staff listener error:', err));
     return () => unsub();
@@ -119,7 +127,11 @@ export const StaffManagementPage: React.FC = () => {
       if (staffId && db) {
         await deleteDoc(doc(db, 'staff', staffId));
       }
-      setStaffList(prev => prev.filter(s => s.id !== staffId && s.name !== staffName));
+      setStaffList(prev => {
+        const updated = prev.filter(s => s.id !== staffId && s.name !== staffName);
+        try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+        return updated;
+      });
       alert(`Staff member ${staffName} deleted. Login access revoked.`);
     } catch (err: any) {
       console.error('Error deleting staff:', err);
@@ -132,6 +144,9 @@ export const StaffManagementPage: React.FC = () => {
     setNewStaffName(staff.name);
     setNewStaffPhone(staff.phone || staff.mobile || '');
     setNewStaffBranch(staff.branch || 'KPHB');
+    const fallbackEmail = `${(staff.name || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
+    setNewStaffEmail(staff.email || fallbackEmail);
+    setNewStaffPassword(staff.password || 'email123');
     setNewStaffShift(staff.shift || '10:00 AM - 08:30 PM');
     setNewStaffHours(staff.hours || '10.5 hrs/day');
     setNewStaffSalary(staff.salary || '₹18,000');
@@ -148,11 +163,16 @@ export const StaffManagementPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       const cleanPhone = newStaffPhone.trim().replace(/\D/g, '');
+      const cleanEmail = (newStaffEmail.trim() || `${newStaffName.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`).toLowerCase();
+      const cleanPassword = newStaffPassword.trim() || 'email123';
+
       const staffDoc = {
         name: newStaffName.trim(),
         mobile: cleanPhone,
         phone: cleanPhone,
         branch: newStaffBranch,
+        email: cleanEmail,
+        password: cleanPassword,
         shift: newStaffShift.trim() || '10:00 AM - 08:30 PM',
         hours: newStaffHours.trim() || '10.5 hrs/day',
         salary: newStaffSalary.trim().startsWith('₹') ? newStaffSalary.trim() : `₹${newStaffSalary.trim()}`,
@@ -162,22 +182,36 @@ export const StaffManagementPage: React.FC = () => {
 
       if (showEditStaffModal && editingStaffId && db) {
         await updateDoc(doc(db, 'staff', editingStaffId), staffDoc);
-        setStaffList(prev => prev.map(s => s.id === editingStaffId ? { id: editingStaffId, ...staffDoc } : s));
+        setStaffList(prev => {
+          const updated = prev.map(s => s.id === editingStaffId ? { id: editingStaffId, ...staffDoc } : s);
+          try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+          return updated;
+        });
         setShowEditStaffModal(false);
-        alert(`Staff member ${staffDoc.name} updated successfully!`);
+        alert(`Staff member ${staffDoc.name} updated successfully! Login credentials: ${staffDoc.email} / ${staffDoc.password}`);
       } else {
         if (db) {
           const docRef = await addDoc(collection(db, 'staff'), { ...staffDoc, createdAt: new Date().toISOString() });
-          setStaffList(prev => [{ id: docRef.id, ...staffDoc }, ...prev]);
+          setStaffList(prev => {
+            const updated = [{ id: docRef.id, ...staffDoc }, ...prev];
+            try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+            return updated;
+          });
         } else {
-          setStaffList(prev => [{ id: Date.now().toString(), ...staffDoc }, ...prev]);
+          setStaffList(prev => {
+            const updated = [{ id: Date.now().toString(), ...staffDoc }, ...prev];
+            try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+            return updated;
+          });
         }
         setShowAddStaffModal(false);
-        alert(`Staff member ${staffDoc.name} added successfully! They can now log in using SMS OTP.`);
+        alert(`Staff member ${staffDoc.name} added successfully! Login credentials: ${staffDoc.email} / ${staffDoc.password}`);
       }
 
       setNewStaffName('');
       setNewStaffPhone('');
+      setNewStaffEmail('');
+      setNewStaffPassword('email123');
       setNewStaffSalary('₹18,000');
     } catch (err: any) {
       console.error('Error saving staff:', err);
@@ -355,6 +389,8 @@ export const StaffManagementPage: React.FC = () => {
               onClick={() => {
                 setNewStaffName('');
                 setNewStaffPhone('');
+                setNewStaffEmail('');
+                setNewStaffPassword('email123');
                 setNewStaffSalary('₹18,000');
                 setShowAddStaffModal(true);
               }}
@@ -426,9 +462,20 @@ export const StaffManagementPage: React.FC = () => {
                     </button>
                   </div>
                 </div>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11.5px !important', color: '#64748b', marginBottom: '6px' }}>
-                  <Phone size={12} color="#0284c7" /> +91 {s.phone}
-                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginBottom: '6px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11.5px !important', color: '#64748b' }}>
+                    <Phone size={12} color="#0284c7" /> +91 {s.phone}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11.5px !important', color: '#334155' }}>
+                    <Mail size={12} color="#0284c7" />
+                    <span style={{ fontWeight: 600 }}>{s.email || `${(s.name || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`}</span>
+                    <span style={{ color: '#94a3b8' }}>•</span>
+                    <span style={{ color: '#64748b' }}>Pass:</span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 800, background: '#f1f5f9', padding: '1px 5px', borderRadius: '4px', color: '#0f172a' }}>
+                      {s.password || 'email123'}
+                    </span>
+                  </span>
+                </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', fontSize: '11px !important', paddingTop: '6px', borderTop: '1px solid #f1f5f9' }}>
                   <div style={{ color: '#16a34a', fontWeight: 700 }}>
                     {s.shift && s.shift.includes('|') ? (
@@ -743,6 +790,78 @@ export const StaffManagementPage: React.FC = () => {
                   <option value="Dilshuknagar">Dilshuknagar Branch</option>
                   <option value="Chandanagar">Chandanagar Branch</option>
                 </select>
+              </div>
+
+              {/* STAFF LOGIN CREDENTIALS (Email ID & Password) - DIRECTLY BELOW CLINIC BRANCH */}
+              <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Mail size={14} color="#0284c7" /> Staff Login Credentials (Email & Password)
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>
+                    Staff Login Email ID *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. anil@sph.com"
+                    value={newStaffEmail}
+                    onChange={e => setNewStaffEmail(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '13px',
+                      color: '#0f172a',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                      background: '#ffffff'
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>
+                    Staff Login Password * (Standard default: email123)
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showStaffPassword ? 'text' : 'password'}
+                      required
+                      placeholder="email123"
+                      value={newStaffPassword}
+                      onChange={e => setNewStaffPassword(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '9px 12px',
+                        paddingRight: '36px',
+                        borderRadius: '8px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '13px',
+                        color: '#0f172a',
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                        background: '#ffffff'
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowStaffPassword(!showStaffPassword)}
+                      style={{
+                        position: 'absolute',
+                        right: '8px',
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: '#64748b'
+                      }}
+                    >
+                      {showStaffPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>

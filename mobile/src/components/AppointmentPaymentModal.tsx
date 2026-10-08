@@ -1400,7 +1400,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       const res = await checkRazorpayPaymentStatus(upiQrData.qrId);
       if (res.isPaid) {
         setUpiQrPaid(true);
-        Alert.alert('✅ Payment Received', `Payment of ₹${res.amountPaid || upiQrData.amount} received successfully via Razorpay UPI! You can now tap "Complete Payment".`);
+        executeCheckoutProcess();
       } else {
         Alert.alert('Payment Pending', 'Payment has not been completed yet. Please ask the patient to approve the UPI transaction in their app.');
       }
@@ -1427,6 +1427,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         if (res.isPaid) {
           setUpiQrPaid(true);
           clearInterval(interval);
+          executeCheckoutProcess();
         }
       } catch (_) {}
     }, 4000);
@@ -1896,13 +1897,15 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         }
       }
 
-      // Show frontend popup modal with Patient Name, Amount Paid, and Payment Mode
-      setPaymentSuccessPopup({
-        patientName: selectedPatientForPayment.patientName || selectedPatientForPayment.name || 'Patient',
-        totalPaid: totalAmountDue,
-        paymentMode: paymentModeText,
-        completedInvoice
-      });
+      // Close payment modal immediately so receptionist returns to dashboard
+      onDismiss();
+
+      // Show immediate confirmation alert with clear confirmation
+      Alert.alert(
+        '✅ Appointment Completed & Closed',
+        `Payment of ₹${totalAmountDue.toLocaleString('en-IN')} received via ${paymentModeText} for ${selectedPatientForPayment.patientName || selectedPatientForPayment.name || 'Patient'}.\n\nAppointment is now marked as Completed in Dashboard.`,
+        [{ text: 'OK', style: 'default' }]
+      );
     } catch (err) {
       console.error("Error completing checkout:", err);
       Alert.alert("Error", "Failed to complete payment checkout. Please try again.");
@@ -3540,15 +3543,31 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                       </>
                     )}
 
-                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, width: '100%' }}>
+                    <View style={{ flexDirection: 'row', gap: 6, marginTop: 12, width: '100%' }}>
                       <TouchableOpacity
                         onPress={() => generateUpiQr(totalAmountDue)}
                         disabled={upiQrLoading}
                         style={[styles.upiSecondaryBtn, { flex: 1 }]}
                       >
                         <Ionicons name="refresh-outline" size={14} color="#0284c7" />
-                        <Text style={styles.upiSecondaryBtnText}>Refresh QR</Text>
+                        <Text style={styles.upiSecondaryBtnText}>Refresh</Text>
                       </TouchableOpacity>
+
+                      {upiQrData.paymentUrl ? (
+                        <TouchableOpacity
+                          onPress={() => {
+                            if (upiQrData.paymentUrl) {
+                              Linking.openURL(upiQrData.paymentUrl).catch(() => {
+                                Share.share({ message: `Payment Link for ${selectedPatientForPayment?.patientName || 'Patient'}: ${upiQrData.paymentUrl}` });
+                              });
+                            }
+                          }}
+                          style={[styles.upiSecondaryBtn, { flex: 1.1, backgroundColor: '#f0f9ff', borderColor: '#0284c7' }]}
+                        >
+                          <Ionicons name="open-outline" size={14} color="#0284c7" />
+                          <Text style={[styles.upiSecondaryBtnText, { color: '#0284c7', fontWeight: '800' }]}>Open Link</Text>
+                        </TouchableOpacity>
+                      ) : null}
 
                       {upiQrData.paymentUrl ? (
                         <TouchableOpacity
@@ -3560,7 +3579,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                           style={[styles.upiSecondaryBtn, { flex: 1 }]}
                         >
                           <Ionicons name="share-social-outline" size={14} color="#0284c7" />
-                          <Text style={styles.upiSecondaryBtnText}>Share Link</Text>
+                          <Text style={styles.upiSecondaryBtnText}>Share</Text>
                         </TouchableOpacity>
                       ) : null}
 
@@ -3574,7 +3593,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                         ) : (
                           <>
                             <Ionicons name={upiQrPaid ? "checkmark-circle" : "shield-checkmark-outline"} size={14} color="#ffffff" />
-                            <Text style={styles.upiPrimaryBtnText}>{upiQrPaid ? "Verified ✓" : "Check Status"}</Text>
+                            <Text style={styles.upiPrimaryBtnText}>{upiQrPaid ? "Verified ✓" : "Check"}</Text>
                           </>
                         )}
                       </TouchableOpacity>

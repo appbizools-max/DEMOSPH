@@ -684,6 +684,9 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     };
   }, []);
 
+  const WEB_BOOK_APPT_DRAFT_KEY = '@sph_web_book_appointment_draft';
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [hasDraft, setHasDraft] = useState(false);
   const [patientName, setPatientName] = useState('');
   const [diseases, setDiseases] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -721,15 +724,19 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
     const clean = String(rawPhone).replace(/\D/g, '').slice(-10);
     if (clean.length < 10) return [];
 
+    const seenDocIds = new Set<string>();
     const profilesMap = new Map();
 
     const processDoc = (data: any, docId: string) => {
       if (!data) return;
-      const pName = data.fullName || data.patientName || data.name || data.patient_name;
-      const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || '';
+      if (docId && seenDocIds.has(docId)) return;
+      if (docId) seenDocIds.add(docId);
+
+      const pName = data.fullName || data.patientName || data.name || data.patient_name || data.patient || data.patient_fullName || data.displayName || '';
+      const docPhone = data.phone || data.patientPhone || data.phoneNumber || data.mobile || data.contact || data.contactNumber || data.mobileNumber || data.tel || '';
       const cleanDocPhone = String(docPhone).replace(/\D/g, '').slice(-10);
       if (pName && cleanDocPhone === clean) {
-        const rawReg = data.regNo || data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid || data.customId;
+        const rawReg = data.regNo || data.registrationId || data.registration_id || data.regId || data.regID || data.patientId || data.uhid || data.customId || data.id;
         const originalBranch = data.branchName || data.branch || data.targetBranch || '';
         let regId = '';
         const isValidReg = rawReg && typeof rawReg === 'string' && rawReg.trim().length > 0 && rawReg.trim().length <= 25 && !/^[a-zA-Z0-9]{20,32}$/.test(rawReg.trim()) && !rawReg.trim().toLowerCase().startsWith('temp_') && !rawReg.trim().toLowerCase().startsWith('app_');
@@ -737,7 +744,8 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
           regId = rawReg.trim().toUpperCase();
         }
 
-        const personKey = `${pName.trim().toLowerCase()}_${cleanDocPhone}`;
+        const normalizedName = pName.trim().replace(/^(mr|mrs|ms|dr|master)\.?\s+/i, '').trim().toLowerCase();
+        const personKey = `${normalizedName}_${cleanDocPhone}`;
         if (!profilesMap.has(personKey)) {
           if (!regId) {
             const shortcut = getBranchShortcut(originalBranch || currentBranch);
@@ -755,7 +763,7 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
             patientType: 'revisit',
             isNewPatient: false,
             isExistingProfile: true,
-            collectionName: 'patients',
+            collectionName: data.collectionName || 'patients',
             branchName: originalBranch || '',
             homeBranch: originalBranch || ''
           });
@@ -777,28 +785,57 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
 
     // 1. Search in-memory state & cache instantly (0ms)
     try {
+      const storePool = receptionDataStore.getAllCollectionsPool() || [];
+      storePool.forEach(p => processDoc(p, p?.id || p?.docId));
+
+      const storeAppts = receptionDataStore.getAppointments() || [];
+      storeAppts.forEach(a => processDoc(a, a?.id || a?.docId));
+
+      const storePkg = receptionDataStore.getPackageMembers() || [];
+      storePkg.forEach(m => processDoc(m, m?.id || m?.docId));
+
       (allPatientsList || []).forEach(p => processDoc(p, p?.id));
       (patientsList || []).forEach(p => processDoc(p, p?.id));
       (existingAppointments || []).forEach(a => processDoc(a, a?.id));
       (GLOBAL_WEB_ALLPATIENTS_CACHE || []).forEach(p => processDoc(p, p?.id));
       (GLOBAL_WEB_PATIENTS_CACHE || []).forEach(p => processDoc(p, p?.id));
-    } catch (e) { }
+    } catch (e) {
+      console.warn("In-memory phone search notice:", e);
+    }
 
-    // 2. Query Firestore collections with a 1.5s max timeout safety
+    // 2. Query Firestore collections with multi-variant phone search & safe timeout
     const safeQuery = (q: any) => Promise.race([
-      getDocs(q).catch(() => ({ docs: [] })),
-      new Promise(res => setTimeout(() => res({ docs: [] }), 1500))
+      getDocs(q).catch((err) => {
+        console.warn('[Phone Query] Collection query error:', err);
+        return { docs: [] };
+      }),
+      new Promise(res => setTimeout(() => res({ docs: [] }), 2500))
     ]);
 
-    try {
-      const [snapAll, snapPatients, snapAppts, snapProfiles] = await Promise.all([
-        safeQuery(query(collection(db, 'allpatients'), where('phone', '==', clean), limit(20))),
-        safeQuery(query(collection(db, 'patients'), where('phone', '==', clean), limit(20))),
-        safeQuery(query(collection(db, 'appointments'), where('phone', '==', clean), limit(20))),
-        safeQuery(query(collection(db, 'patient_profiles'), where('phone', '==', clean), limit(20)))
-      ]);
+    const phoneVariants = Array.from(new Set([
+      clean,
+      `+91${clean}`,
+      `+91 ${clean}`,
+      `+91-${clean}`,
+      `0${clean}`,
+      `${clean.slice(0, 5)} ${clean.slice(5)}`,
+      `+91 ${clean.slice(0, 5)} ${clean.slice(5)}`
+    ])).filter(Boolean);
 
-      [snapAll, snapPatients, snapAppts, snapProfiles].forEach((snap: any) => {
+    try {
+      const queryPromises = [
+        safeQuery(query(collection(db, 'allpatients'), where('phone', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'allpatients'), where('patientPhone', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'patients'), where('phone', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'patients'), where('patientPhone', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'appointments'), where('phone', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'appointments'), where('patientPhone', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'appointments'), where('phoneNumber', 'in', phoneVariants), limit(25))),
+        safeQuery(query(collection(db, 'patient_profiles'), where('phone', 'in', phoneVariants), limit(25)))
+      ];
+
+      const snapshots = await Promise.all(queryPromises);
+      snapshots.forEach((snap: any) => {
         if (!snap || snap.empty || !snap.forEach) return;
         snap.forEach((docSnap: any) => {
           processDoc(docSnap.data(), docSnap.id);
@@ -887,6 +924,76 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   const [selectedDoctor, setSelectedDoctor] = useState('');
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('');
   const [clockModalOpen, setClockModalOpen] = useState(false);
+
+  // Restore form draft on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(WEB_BOOK_APPT_DRAFT_KEY);
+      if (saved) {
+        const draft = JSON.parse(saved);
+        if (draft && (draft.patientName || draft.phoneNumber || draft.diseases || draft.selectedDoctor)) {
+          if (draft.patientName) setPatientName(draft.patientName);
+          if (draft.phoneNumber) setPhoneNumber(draft.phoneNumber);
+          if (draft.emailAddress) setEmailAddress(draft.emailAddress);
+          if (draft.diseases) setDiseases(draft.diseases);
+          if (draft.marketingSource) setMarketingSource(draft.marketingSource);
+          if (draft.consultationMode) setConsultationMode(draft.consultationMode);
+          if (draft.selectedDoctor) setSelectedDoctor(draft.selectedDoctor);
+          if (draft.appointmentDate) setAppointmentDate(draft.appointmentDate);
+          if (draft.selectedTimeSlot) setSelectedTimeSlot(draft.selectedTimeSlot);
+          if (draft.patientData) setPatientData(draft.patientData);
+          setDraftRestored(true);
+          setHasDraft(true);
+        }
+      }
+    } catch (_) {}
+  }, []);
+
+  // Auto-save form draft on change
+  useEffect(() => {
+    if (!patientName && !phoneNumber && !diseases && !selectedDoctor && !emailAddress) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      const draft = {
+        patientName,
+        phoneNumber,
+        emailAddress,
+        diseases,
+        marketingSource,
+        consultationMode,
+        selectedDoctor,
+        appointmentDate,
+        selectedTimeSlot,
+        patientData,
+        savedAt: new Date().toISOString()
+      };
+      try {
+        localStorage.setItem(WEB_BOOK_APPT_DRAFT_KEY, JSON.stringify(draft));
+        setHasDraft(true);
+      } catch (_) {}
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [patientName, phoneNumber, emailAddress, diseases, marketingSource, consultationMode, selectedDoctor, appointmentDate, selectedTimeSlot, patientData]);
+
+  const clearFormAndDraft = () => {
+    setPatientName('');
+    setDiseases('');
+    setPhoneNumber('');
+    setEmailAddress('');
+    setMarketingSource('Select Source');
+    setSelectedDoctor('');
+    setSelectedTimeSlot('');
+    setPatientSearchTerm('');
+    setActiveSearchQuery('');
+    setShowSuggestions(false);
+    setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
+    setDraftRestored(false);
+    setHasDraft(false);
+    try {
+      localStorage.removeItem(WEB_BOOK_APPT_DRAFT_KEY);
+    } catch (_) {}
+  };
 
   // Firestore Live Doctors List
   const [allDoctorsList, setAllDoctorsList] = useState<Doctor[]>(DEFAULT_DOCTORS_SEED);
@@ -1030,10 +1137,10 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   const [liveSearchResults, setLiveSearchResults] = useState<any[]>([]);
   const [isSearchingLive, setIsSearchingLive] = useState(false);
 
-  // 1. Realtime listener for appointments (today's queue and all recent bookings)
+  // 1. Realtime listener for appointments (today's queue and recent bookings)
   useEffect(() => {
     try {
-      const appColRef = query(collection(db, 'appointments'), limit(2500));
+      const appColRef = query(collection(db, 'appointments'), limit(250));
       const unsubscribe = onSnapshot(appColRef, (snapshot) => {
         const appList: any[] = [];
         snapshot.forEach((snap) => {
@@ -1049,7 +1156,7 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
   // 2. Realtime listener for allpatients (reception directory)
   useEffect(() => {
     try {
-      const allPatColRef = query(collection(db, 'allpatients'), limit(2500));
+      const allPatColRef = query(collection(db, 'allpatients'), limit(250));
       const unsubscribe = onSnapshot(allPatColRef, (snapshot) => {
         const list: any[] = [];
         snapshot.forEach((snap) => {
@@ -2020,23 +2127,11 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
       setTimeout(() => setBookingSuccess(false), 4000);
 
       // Complete Form & Search Reset to eliminate post-booking lag
-      setPatientName('');
-      setDiseases('');
-      setPhoneNumber('');
-      setEmailAddress('');
-      setMarketingSource('Select Source');
-      setSelectedDoctor('');
-      setSelectedTimeSlot('');
-      setPatientSearchTerm('');
-      setActiveSearchQuery('');
-      setShowSuggestions(false);
-      setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
+      clearFormAndDraft();
     } catch (err) {
       setBookingSuccess(true);
       setTimeout(() => setBookingSuccess(false), 4000);
-      setPatientSearchTerm('');
-      setActiveSearchQuery('');
-      setShowSuggestions(false);
+      clearFormAndDraft();
     } finally {
       setIsSubmitting(false);
     }
@@ -2055,7 +2150,67 @@ export const BookAppointmentPage: React.FC<BookAppointmentPageProps> = ({
             Schedule patient consultation for <strong style={{ color: '#258ec8' }}>{currentBranch}</strong> on <strong style={{ color: '#0f172a' }}>{selectedDayName} ({appointmentDate})</strong>
           </p>
         </div>
+
+        {hasDraft && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              background: '#f0fdf4',
+              color: '#16a34a',
+              border: '1px solid #bbf7d0',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: 700,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <CheckCircle2 size={14} /> Auto-Saved Draft
+            </span>
+            <button
+              type="button"
+              onClick={clearFormAndDraft}
+              style={{
+                background: '#fee2e2',
+                border: '1px solid #fca5a5',
+                color: '#dc2626',
+                padding: '6px 12px',
+                borderRadius: '20px',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: 'pointer'
+              }}
+            >
+              Clear Form
+            </button>
+          </div>
+        )}
       </div>
+
+      {draftRestored && (
+        <div style={{
+          background: '#eff6ff',
+          border: '1px solid #bfdbfe',
+          color: '#1d4ed8',
+          padding: '12px 18px',
+          borderRadius: '16px',
+          marginBottom: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: '13px',
+          fontWeight: 600
+        }}>
+          <span>📋 Restored unsaved appointment details from your last session.</span>
+          <button
+            type="button"
+            onClick={() => setDraftRestored(false)}
+            style={{ background: 'none', border: 'none', color: '#1d4ed8', fontWeight: 700, cursor: 'pointer' }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {bookingSuccess && (
         <div style={{

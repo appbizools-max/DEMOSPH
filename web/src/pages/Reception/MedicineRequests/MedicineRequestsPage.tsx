@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Pill, Printer, Plus, Trash2, RotateCcw, Check, Save } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Pill, Printer, Plus, Trash2, RotateCcw, Check, Save, MapPin, Lock } from 'lucide-react';
 import { db, getBranchPhone } from '@app/shared';
 import { collection, addDoc } from 'firebase/firestore';
 import { SH_LOGO_BASE64 } from '../../../utils/logoBase64';
@@ -35,7 +35,7 @@ const BRANCH_OPTIONS = [
 ];
 
 export interface MedicineRequest {
-  id?: string;
+  id: string;
   patientName: string;
   phone: string;
   age: string;
@@ -52,15 +52,48 @@ export interface MedicineRequest {
 
 interface MedicineRequestsPageProps {
   currentBranch?: string;
+  userRole?: string;
   onNavigate?: (tab: string, data?: any) => void;
 }
 
-export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ currentBranch = 'KPHB Branch' }) => {
+export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ currentBranch, userRole, onNavigate }) => {
+  const getInitialBranch = () => {
+    if (currentBranch && currentBranch !== 'All Branches') return currentBranch;
+    try {
+      const saved = localStorage.getItem('@sph_auth_session');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.branchName && parsed.branchName !== 'All Branches') {
+          return parsed.branchName;
+        }
+      }
+    } catch (_) {}
+    return currentBranch || 'KPHB Branch';
+  };
+
   const [patientName, setPatientName] = useState('');
   const [phone, setPhone] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('Mr.');
-  const [branch, setBranch] = useState(currentBranch);
+  const [branch, setBranch] = useState(getInitialBranch);
+  const isAdmin = userRole === 'admin' || userRole === 'hr';
+
+  useEffect(() => {
+    if (currentBranch && currentBranch !== 'All Branches') {
+      setBranch(currentBranch);
+    } else {
+      try {
+        const saved = localStorage.getItem('@sph_auth_session');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?.branchName && parsed.branchName !== 'All Branches') {
+            setBranch(parsed.branchName);
+          }
+        }
+      } catch (_) {}
+    }
+  }, [currentBranch]);
+
   const [totalAmount, setTotalAmount] = useState<number>(0);
   const [duration, setDuration] = useState('');
 
@@ -69,6 +102,78 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   ]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Persistent Draft State
+  const MEDICINE_REQUEST_WEB_DRAFT_KEY = '@sph_web_medicine_request_draft';
+  const [hasRestoredDraft, setHasRestoredDraft] = useState(false);
+  const [isDraftLoaded, setIsDraftLoaded] = useState(false);
+
+  // 1. Restore draft on mount
+  useEffect(() => {
+    try {
+      const savedDraft = localStorage.getItem(MEDICINE_REQUEST_WEB_DRAFT_KEY);
+      if (savedDraft) {
+        const d = JSON.parse(savedDraft);
+        if (d && (d.patientName || d.phone || d.age || d.duration || Number(d.totalAmount) > 0 || (d.medicines && d.medicines.some((m: any) => m.name)))) {
+          if (d.patientName !== undefined) setPatientName(d.patientName);
+          if (d.phone !== undefined) setPhone(d.phone);
+          if (d.age !== undefined) setAge(d.age);
+          if (d.gender !== undefined) setGender(d.gender);
+          if (d.totalAmount !== undefined) setTotalAmount(Number(d.totalAmount) || 0);
+          if (d.duration !== undefined) setDuration(d.duration);
+          if (Array.isArray(d.medicines) && d.medicines.length > 0) setMedicines(d.medicines);
+          if (d.branch && (!currentBranch || currentBranch === 'All Branches')) {
+            setBranch(d.branch);
+          }
+          setHasRestoredDraft(true);
+        }
+      }
+    } catch (_) {}
+    setIsDraftLoaded(true);
+  }, []);
+
+  // 2. Auto-save draft on every change
+  useEffect(() => {
+    if (!isDraftLoaded) return;
+    const hasData = Boolean(
+      patientName.trim() ||
+      phone.trim() ||
+      age.trim() ||
+      duration.trim() ||
+      totalAmount > 0 ||
+      medicines.some(m => m.name && m.name.trim().length > 0)
+    );
+
+    if (hasData) {
+      const payload = {
+        patientName,
+        phone,
+        age,
+        gender,
+        branch,
+        totalAmount,
+        duration,
+        medicines,
+        savedAt: new Date().toISOString()
+      };
+      try {
+        localStorage.setItem(MEDICINE_REQUEST_WEB_DRAFT_KEY, JSON.stringify(payload));
+      } catch (_) {}
+    } else {
+      try {
+        localStorage.removeItem(MEDICINE_REQUEST_WEB_DRAFT_KEY);
+      } catch (_) {}
+    }
+  }, [isDraftLoaded, patientName, phone, age, gender, branch, totalAmount, duration, medicines]);
+
+  const hasAnyData = Boolean(
+    patientName.trim() ||
+    phone.trim() ||
+    age.trim() ||
+    duration.trim() ||
+    totalAmount > 0 ||
+    medicines.some(m => m.name && m.name.trim().length > 0)
+  );
 
   const handleAddMedicineRow = () => {
     setMedicines(prev => [...prev, { name: '', timing: '' }]);
@@ -92,11 +197,15 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setPhone('');
     setAge('');
     setGender('Mr.');
-    setBranch(currentBranch);
+    setBranch(getInitialBranch());
     setTotalAmount(0);
     setDuration('');
     setMedicines([{ name: '', timing: '' }]);
     setSaveSuccess(false);
+    setHasRestoredDraft(false);
+    try {
+      localStorage.removeItem(MEDICINE_REQUEST_WEB_DRAFT_KEY);
+    } catch (_) {}
   };
 
   // --- Print PDF Function matching Official Clinic Certificate & Letterhead ---
@@ -522,6 +631,23 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {hasAnyData && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              backgroundColor: '#f0fdf4',
+              color: '#15803d',
+              border: '1px solid #bbf7d0',
+              padding: '7px 12px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 700
+            }}>
+              <Check size={13} color="#16a34a" /> Auto-Saved Draft
+            </span>
+          )}
+
           <button
             type="button"
             onClick={handleClearForm}
@@ -590,6 +716,32 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
         </div>
       </div>
 
+      {/* Draft Restored Banner */}
+      {hasRestoredDraft && (
+        <div style={{
+          backgroundColor: '#eff6ff',
+          border: '1px solid #bfdbfe',
+          borderRadius: '12px',
+          padding: '12px 18px',
+          marginBottom: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#0369a1', fontSize: '13px', fontWeight: 700 }}>
+            <Pill size={16} color="#0284c7" />
+            <span>Draft Restored — your previously entered form progress is preserved.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setHasRestoredDraft(false)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', fontSize: '14px', fontWeight: 700 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Main Form Container */}
       <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '18px', padding: '28px', boxShadow: '0 4px 16px rgba(0,0,0,0.03)' }}>
         
@@ -654,16 +806,52 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
 
           <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 110px', gap: '12px', marginBottom: '14px' }}>
             <div>
-              <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Branch Name</label>
-              <select
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' as any, outline: 'none', cursor: 'pointer', background: '#fff' }}
-              >
-                {BRANCH_OPTIONS.map(b => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
+              <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>
+                Branch Name {isAdmin ? '(Select Branch)' : '(Locked)'}
+              </label>
+              {isAdmin ? (
+                <div style={{ position: 'relative' }}>
+                  <select
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px 9px 34px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '13px',
+                      background: '#ffffff',
+                      color: '#0f172a',
+                      fontWeight: 800,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {BRANCH_OPTIONS.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                  <MapPin size={15} color="#258ec8" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+                </div>
+              ) : (
+                <div style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '13px',
+                  boxSizing: 'border-box' as any,
+                  background: '#f8fafc',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  color: '#0f172a',
+                  fontWeight: 800
+                }}>
+                  <MapPin size={15} color="#258ec8" />
+                  <span>{branch}</span>
+                  <Lock size={13} color="#64748b" style={{ marginLeft: 'auto' }} />
+                </div>
+              )}
             </div>
 
             <div>

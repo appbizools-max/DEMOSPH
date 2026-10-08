@@ -215,8 +215,8 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
     };
 
     try {
-      // 1. Subscribe to allpatients
-      const unsubPatSnap = onSnapshot(collection(db, 'allpatients'), (snap) => {
+      // 1. Subscribe to allpatients (capped to protect quota)
+      const unsubPatSnap = onSnapshot(query(collection(db, 'allpatients'), limit(300)), (snap) => {
         const list: PatientRecord[] = [];
         snap.forEach(docSnap => {
           const item = mapDocToPatient(docSnap.id, docSnap.data(), 'allpatients');
@@ -231,8 +231,8 @@ export const AllPatientsPage: React.FC<AllPatientsPageProps> = ({ currentBranch 
         mergeAndSet();
       });
 
-      // 2. Subscribe to appointments
-      unsubApp = onSnapshot(collection(db, 'appointments'), (snap) => {
+      // 2. Subscribe to appointments (capped to protect quota)
+      unsubApp = onSnapshot(query(collection(db, 'appointments'), limit(300)), (snap) => {
         const list: PatientRecord[] = [];
         snap.forEach(docSnap => {
           const item = mapDocToPatient(docSnap.id, docSnap.data(), 'appointments');

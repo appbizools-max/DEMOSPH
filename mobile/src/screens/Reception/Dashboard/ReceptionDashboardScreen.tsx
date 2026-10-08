@@ -39,18 +39,14 @@ interface ReceptionDashboardScreenProps {
 }
 
 const DEFAULT_BRANCH_TARGETS: Record<string, { monthlyTarget: number; targetReached: number }> = {
-  kphb: { monthlyTarget: 1200000, targetReached: 980000 },
-  nallagandla: { monthlyTarget: 1000000, targetReached: 840000 },
-  dilshuknagar: { monthlyTarget: 1400000, targetReached: 1150000 },
-  chandanagar: { monthlyTarget: 900000, targetReached: 720000 },
+  kphb: { monthlyTarget: 0, targetReached: 0 },
+  nallagandla: { monthlyTarget: 0, targetReached: 0 },
+  dilshuknagar: { monthlyTarget: 0, targetReached: 0 },
+  chandanagar: { monthlyTarget: 0, targetReached: 0 },
 };
 
 const getBranchDefaultTarget = (bName: string) => {
-  const norm = (bName || '').toLowerCase();
-  if (norm.includes('kphb') || norm.includes('kukatpally')) return DEFAULT_BRANCH_TARGETS.kphb;
-  if (norm.includes('nalla') || norm.includes('nallagandla')) return DEFAULT_BRANCH_TARGETS.nallagandla;
-  if (norm.includes('chanda') || norm.includes('chnr') || norm.includes('chandanagar')) return DEFAULT_BRANCH_TARGETS.chandanagar;
-  return DEFAULT_BRANCH_TARGETS.dilshuknagar;
+  return { monthlyTarget: 0, targetReached: 0 };
 };
 
 const getTodayDateStr = () => {
@@ -167,7 +163,7 @@ const isMatchingDate = (app: any, targetDate: string): boolean => {
       const pd = String(parsed.getDate()).padStart(2, '0');
       if (`${pd}-${pm}-${py}` === targetDate) return true;
     }
-  } catch (_) {}
+  } catch (_) { }
 
   return false;
 };
@@ -681,16 +677,17 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
 
   useEffect(() => {
     const hasData = liveAppointments.length > 0;
-    const diff = Math.abs(realBranchResult.targetReached - branchTarget.targetReached);
-    if (hasData && diff >= 1 && realBranchResult.targetReached > 0) {
+    // Only update and sync to Firestore if realBranchResult is GREATER than branchTarget.targetReached
+    // This protects the true monthly branch target from being overwritten by an incomplete local appointments subset
+    if (hasData && realBranchResult.targetReached > (branchTarget.targetReached || 0)) {
       setBranchTarget(prev => ({
         ...prev,
         targetReached: realBranchResult.targetReached,
-        monthlyTarget: realBranchResult.monthlyTarget,
+        monthlyTarget: realBranchResult.monthlyTarget || prev.monthlyTarget,
       }));
       syncBranchTargetToFirestore(realBranchResult.branchName, realBranchResult.targetReached, realBranchResult.monthlyTarget).catch(() => { });
     }
-  }, [realBranchResult.targetReached, realBranchResult.monthlyTarget, realBranchResult.branchName, liveAppointments.length]);
+  }, [realBranchResult.targetReached, realBranchResult.monthlyTarget, realBranchResult.branchName, branchTarget.targetReached, liveAppointments.length]);
 
   // Subscribe to real-time Firestore doctors collection
   useEffect(() => {
@@ -1171,9 +1168,9 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
       {/* Target Progress Card */}
       <View style={{ paddingHorizontal: 10, marginTop: 8 }}>
         <TargetProgressUI
-          branchName={realBranchResult.branchName}
-          monthlyTarget={realBranchResult.monthlyTarget}
-          targetReached={Math.max(realBranchResult.targetReached, branchTarget.targetReached || 0)}
+          branchName={branchTarget.branchName || realBranchResult.branchName}
+          monthlyTarget={branchTarget.monthlyTarget || realBranchResult.monthlyTarget}
+          targetReached={Math.max(branchTarget.targetReached || 0, realBranchResult.targetReached || 0)}
         />
       </View>
 
@@ -1926,8 +1923,9 @@ export const ReceptionDashboardScreen: React.FC<ReceptionDashboardScreenProps> =
             setSelectedPatientForPayment(null);
           }}
           selectedPatientForPayment={selectedPatientForPayment}
-          onPaymentSuccess={() => {
-            // Keep modal open to show payment success popup and allow invoice viewing
+          onPaymentSuccess={(completedApp) => {
+            setPaymentModalOpen(false);
+            setSelectedPatientForPayment(null);
           }}
         />
       )}

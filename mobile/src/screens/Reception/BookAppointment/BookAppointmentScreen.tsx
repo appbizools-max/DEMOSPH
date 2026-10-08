@@ -671,8 +671,9 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       setSelectedBranch(normalizeToClinicBranch(currentBranch));
     }
   }, [currentBranch, isHR]);
-
   // Section 1: Patient Details
+  const BOOK_APPT_DRAFT_KEY = '@sph_book_appointment_draft';
+  const [draftRestored, setDraftRestored] = useState(false);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [patientName, setPatientName] = useState('');
   const [diseases, setDiseases] = useState('');
@@ -906,6 +907,81 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
   const [selectedDoctor, setSelectedDoctor] = useState('');
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('');
   const [clockModalOpen, setClockModalOpen] = useState(false);
+  const [hasDraft, setHasDraft] = useState(false);
+
+  // Restore form draft on initial mount
+  useEffect(() => {
+    const restoreDraft = async () => {
+      try {
+        const saved = await AsyncStorage.getItem(BOOK_APPT_DRAFT_KEY);
+        if (saved) {
+          const draft = JSON.parse(saved);
+          if (draft && (draft.patientName || draft.phoneNumber || draft.diseases || draft.selectedDoctor)) {
+            if (draft.patientName) setPatientName(draft.patientName);
+            if (draft.phoneNumber) setPhoneNumber(draft.phoneNumber);
+            if (draft.emailAddress) setEmailAddress(draft.emailAddress);
+            if (draft.diseases) setDiseases(draft.diseases);
+            if (draft.marketingSource) setMarketingSource(draft.marketingSource);
+            if (draft.consultationMode) setConsultationMode(draft.consultationMode);
+            if (draft.selectedDoctor) setSelectedDoctor(draft.selectedDoctor);
+            if (draft.appointmentDate) setAppointmentDate(draft.appointmentDate);
+            if (draft.selectedTimeSlot) setSelectedTimeSlot(draft.selectedTimeSlot);
+            if (draft.patientData) setPatientData(draft.patientData);
+            setDraftRestored(true);
+            setHasDraft(true);
+          }
+        }
+      } catch (e) {
+        console.warn('Draft restore error:', e);
+      }
+    };
+    restoreDraft();
+  }, []);
+
+  // Auto-save form draft on changes
+  useEffect(() => {
+    if (!patientName && !phoneNumber && !diseases && !selectedDoctor && !emailAddress) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      const draft = {
+        patientName,
+        phoneNumber,
+        emailAddress,
+        diseases,
+        marketingSource,
+        consultationMode,
+        selectedDoctor,
+        appointmentDate,
+        selectedTimeSlot,
+        patientData,
+        savedAt: new Date().toISOString()
+      };
+      AsyncStorage.setItem(BOOK_APPT_DRAFT_KEY, JSON.stringify(draft)).then(() => {
+        setHasDraft(true);
+      }).catch(() => { });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [patientName, phoneNumber, emailAddress, diseases, marketingSource, consultationMode, selectedDoctor, appointmentDate, selectedTimeSlot, patientData]);
+
+  const clearFormAndDraft = async () => {
+    setPatientName('');
+    setDiseases('');
+    setPhoneNumber('');
+    setEmailAddress('');
+    setMarketingSource('Select Source');
+    setSelectedDoctor('');
+    setSelectedTimeSlot('');
+    setPatientSearchTerm('');
+    setDebouncedSearchTerm('');
+    setShowSuggestions(false);
+    setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
+    setDraftRestored(false);
+    setHasDraft(false);
+    try {
+      await AsyncStorage.removeItem(BOOK_APPT_DRAFT_KEY);
+    } catch (_) { }
+  };
 
   // Firestore Live Doctors List
   const [allDoctorsList, setAllDoctorsList] = useState<Doctor[]>(() => GLOBAL_MOBILE_DOCTORS_CACHE.length > 0 ? GLOBAL_MOBILE_DOCTORS_CACHE : DEFAULT_DOCTORS_SEED);
@@ -1902,17 +1978,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       }).catch(err => console.warn('FCM booking notification notice:', err));
 
       // Complete Form & Search Reset
-      setPatientName('');
-      setDiseases('');
-      setPhoneNumber('');
-      setEmailAddress('');
-      setMarketingSource('Select Source');
-      setSelectedDoctor('');
-      setSelectedTimeSlot('');
-      setPatientSearchTerm('');
-      setDebouncedSearchTerm('');
-      setShowSuggestions(false);
-      setPatientData({ phone: '', fullName: '', patientName: '', patientId: '', regID: '', source: '' });
+      await clearFormAndDraft();
       Keyboard.dismiss();
 
       // Navigate back cleanly to dashboard (NO in-app popup!)
@@ -1923,14 +1989,7 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       }
     } catch (err) {
       console.warn('Booking offline notice:', err);
-      setPatientName('');
-      setDiseases('');
-      setPhoneNumber('');
-      setEmailAddress('');
-      setSelectedDoctor('');
-      setPatientSearchTerm('');
-      setDebouncedSearchTerm('');
-      setShowSuggestions(false);
+      await clearFormAndDraft();
       Keyboard.dismiss();
       if (onNavigate) {
         onNavigate('reception_dashboard');
@@ -1949,7 +2008,42 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
       showsVerticalScrollIndicator={false}
       nestedScrollEnabled={true}
     >
-
+      {/* DRAFT RESTORED BANNER */}
+      {draftRestored && (
+        <View style={{
+          backgroundColor: '#eff6ff',
+          borderColor: '#93c5fd',
+          borderWidth: 1.5,
+          borderRadius: 14,
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          marginVertical: 10,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10
+        }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+            <Ionicons name="document-text" size={18} color="#0284c7" />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#0369a1', flex: 1 }}>
+              Restored unsaved appointment details from previous session.
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={clearFormAndDraft}
+            style={{
+              backgroundColor: '#fee2e2',
+              borderColor: '#fca5a5',
+              borderWidth: 1,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 8
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#dc2626' }}>Clear</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* CARD 1: PATIENT DETAILS */}
       <View style={[styles.card, { zIndex: (marketingExpanded || modeExpanded || (showSuggestions && patientSuggestions.length > 0)) ? 1000 : 1 }]}>
@@ -1958,6 +2052,23 @@ export const BookAppointmentScreen: React.FC<BookAppointmentScreenProps> = ({
             <Text style={styles.badgeNumberText}>1</Text>
           </View>
           <Text style={styles.cardTitle}>Patient Details</Text>
+          {hasDraft && (
+            <View style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              backgroundColor: '#f0fdf4',
+              borderColor: '#86efac',
+              borderWidth: 1,
+              paddingHorizontal: 7,
+              paddingVertical: 2,
+              borderRadius: 6,
+              marginLeft: 8
+            }}>
+              <Ionicons name="checkmark-circle" size={12} color="#16a34a" />
+              <Text style={{ fontSize: 10, fontWeight: '800', color: '#16a34a' }}>Draft Saved</Text>
+            </View>
+          )}
           <View style={styles.cardHeaderLine} />
         </View>
 

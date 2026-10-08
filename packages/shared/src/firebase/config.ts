@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth, signOut, initializeAuth } from 'firebase/auth';
-import { getFirestore, Firestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, Firestore } from 'firebase/firestore';
 import { FirebaseConfigOptions } from '../types';
 import { getRNAuthPersistence } from './persistence';
 
@@ -49,7 +49,13 @@ export function initFirebase(customConfig?: FirebaseConfigOptions) {
       } else {
         auth = getAuth(app);
       }
-      db = getFirestore(app);
+      try {
+        db = initializeFirestore(app, {
+          experimentalForceLongPolling: true,
+        });
+      } catch {
+        db = getFirestore(app);
+      }
     }
     return { app, auth, db };
   } catch (err) {

@@ -40,10 +40,11 @@ let _mobileDb: Firestore | null = null;
 export function getSafeDb(): Firestore {
   if (_mobileDb) return _mobileDb;
   try {
-    const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+    const existing = getApps().find(a => a.name === 'sphMobileApp');
+    const app = existing || initializeApp(firebaseConfig, 'sphMobileApp');
     try {
       _mobileDb = initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true,
+        experimentalForceLongPolling: true,
       });
     } catch {
       _mobileDb = getFirestore(app);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { StyleSheet, Text, View, SafeAreaView, TouchableOpacity, Platform, Alert, BackHandler, ScrollView, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -131,6 +131,19 @@ function MainApp() {
   const [selectedPatient, setSelectedPatient] = useState<any>(null);
   const [checkoutPatient, setCheckoutPatient] = useState<any>(null);
 
+  // Keep-Alive Tab State Preservation across all screens
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(['reception_dashboard']));
+
+  useEffect(() => {
+    if (activeTab) {
+      setVisitedTabs(prev => {
+        const next = new Set(prev);
+        next.add(activeTab);
+        return next;
+      });
+    }
+  }, [activeTab]);
+
   // Notification State & Persistent Read Tracking
   const [readNotiIds, setReadNotiIds] = useState<Set<string>>(new Set());
   const [recentNotifications, setRecentNotifications] = useState<any[]>([]);
@@ -205,9 +218,22 @@ function MainApp() {
     }, (err) => console.warn('Mobile cleaning sched error:', err));
 
     const subColRef = collection(activeDb, 'branch_cleaning_submissions');
-    const q = query(subColRef, where('branch', '==', normBranch));
+    const q = query(subColRef, where('branch', '==', normBranch), limit(5));
     const unsubSubs = onSnapshot(q, (snap) => {
-      const list: CleaningSubmission[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+      const list: CleaningSubmission[] = snap.docs.map(d => {
+        const data = d.data() as any;
+        return {
+          id: d.id,
+          branch: data.branch,
+          assignedDate: data.assignedDate,
+          submittedAt: data.submittedAt,
+          submittedBy: data.submittedBy,
+          status: data.status,
+          rejectReason: data.rejectReason,
+          notes: data.notes,
+          photos: [], // Omit massive base64 images from root state to preserve Hermes memory
+        };
+      });
       setCleaningSubmissions(list);
     }, (err) => console.warn('Mobile cleaning subs error:', err));
 
@@ -226,8 +252,13 @@ function MainApp() {
 
   const isCleaningBlocked = cleaningLockout.isBlocked;
 
+  // Clear Checkout handler
+  const handleClearCheckout = useCallback(() => {
+    setCheckoutPatient(null);
+  }, []);
+
   // Navigation Stack Helper
-  const navigateToTab = (newTab: string, patientData?: any) => {
+  const navigateToTab = useCallback((newTab: string, patientData?: any) => {
     if (isCleaningBlocked && newTab !== 'reception_cleaning') {
       Alert.alert(
         'Action Required: Cleaning Overdue',
@@ -243,12 +274,14 @@ function MainApp() {
     if (patientData) {
       setSelectedPatient(patientData);
     }
-    if (target === activeTab && !patientData) return;
-    setTabHistory(prev => [...prev, activeTab]);
-    setActiveTab(target);
-  };
+    setActiveTab(prev => {
+      if (target === prev && !patientData) return prev;
+      setTabHistory(h => [...h, prev]);
+      return target;
+    });
+  }, [isCleaningBlocked, userRole]);
 
-  const handleGoBack = (): boolean => {
+  const handleGoBack = useCallback((): boolean => {
     if (tabHistory.length > 0) {
       const prevTab = tabHistory[tabHistory.length - 1];
       setTabHistory(prev => prev.slice(0, -1));
@@ -260,7 +293,7 @@ function MainApp() {
       return true;
     }
     return false;
-  };
+  }, [tabHistory, activeTab, userRole]);
 
   // Hardware Back Button Listener (Native Android Back Press)
   useEffect(() => {
@@ -405,29 +438,27 @@ function MainApp() {
         const currentList: any[] = [];
         const myBranchKey = normalizeBranchKey(branchName || '');
         const isHR = userRole === 'admin' || userRole === 'hr' || String(userRole).toLowerCase().includes('admin') || String(userRole).toLowerCase().includes('hr') || branchName === 'All Branches' || branchName === 'Admin Control Hub';
+        const isReception = (
+          userRole === 'reception' ||
+          String(userRole).toLowerCase().includes('reception') ||
+          String(userRole).toLowerCase().includes('front') ||
+          String(userRole).toLowerCase().includes('desk') ||
+          String(userRole).toLowerCase().includes('billing')
+        );
 
         snapshot.docs.forEach((docSnap) => {
           const noti = docSnap.data() as any;
           const targetKey = normalizeBranchKey(noti.branch || noti.targetBranch || '');
           const isBranchMatch = !targetKey || !myBranchKey || targetKey === myBranchKey;
 
-          const isBranchStaffOrReception = (
-            userRole === 'reception' ||
-            userRole === 'staff' ||
-            String(userRole).toLowerCase().includes('reception') ||
-            String(userRole).toLowerCase().includes('front') ||
-            String(userRole).toLowerCase().includes('desk') ||
-            String(userRole).toLowerCase().includes('billing')
-          ) && isBranchMatch;
+          const isBranchReception = isReception && isBranchMatch;
 
           const cleanDocName = (userName || '').toLowerCase();
           const notiDocName = (noti.doctorName || '').toLowerCase();
-          const isDoctor = userRole === 'doctor' && (
+          const isDoctorMatch = userRole === 'doctor' && (
             (notiDocName && (cleanDocName.includes(notiDocName) || notiDocName.includes(cleanDocName))) ||
             isBranchMatch
           );
-
-          const isStaff = userRole === 'staff' && isBranchMatch;
 
           let shouldInclude = false;
           if (noti.type === 'staff_login' || noti.type === 'staff_logout' || noti.type === 'staff_punch_in' || noti.type === 'staff_punch_out') {
@@ -435,21 +466,23 @@ function MainApp() {
           } else if (noti.type === 'staff_report') {
             const isMatchingStaff = userRole === 'staff' && (
               (noti.staffName && userName.toLowerCase().includes(noti.staffName.toLowerCase())) ||
-              noti.staffId === staffId ||
-              isStaff
+              noti.staffId === staffId
             );
             shouldInclude = isHR || isMatchingStaff;
           } else if (noti.type === 'cleaning_submission') {
             // Clinic cleaning uploaded: HR / Admin and Branch Reception get notified
-            shouldInclude = isHR || isBranchStaffOrReception;
+            shouldInclude = isHR || isBranchReception;
           } else if (noti.type === 'cleaning_approved' || noti.type === 'cleaning_rejected') {
             // Cleaning approval/rejection: Branch Reception and HR/Admin get notified
-            shouldInclude = isHR || isBranchStaffOrReception;
-          } else if (noti.type === 'payment' || noti.type === 'booking' || noti.title?.toLowerCase().includes('appointment') || noti.title?.toLowerCase().includes('booked')) {
-            // Bookings & Payments: HR gets all branches, Branch staff & reception get their branch
-            shouldInclude = isHR || isBranchStaffOrReception;
+            shouldInclude = isHR || isBranchReception;
+          } else if (noti.type === 'payment') {
+            // Payments: Only HR / Admin (all branches) and Reception of that branch. Regular staff & doctors NEVER get payments.
+            shouldInclude = isHR || isBranchReception;
+          } else if (noti.type === 'booking' || noti.title?.toLowerCase().includes('appointment') || noti.title?.toLowerCase().includes('booked')) {
+            // Bookings: HR gets all branches, Branch Reception gets their branch, Doctor gets assigned booking. Regular staff NEVER gets bookings.
+            shouldInclude = isHR || isBranchReception || isDoctorMatch;
           } else {
-            shouldInclude = isHR || isBranchStaffOrReception || isDoctor || isStaff;
+            shouldInclude = isHR || isBranchReception || isDoctorMatch;
           }
 
           if (shouldInclude) {
@@ -473,23 +506,14 @@ function MainApp() {
             const targetKey = normalizeBranchKey(noti.branch || noti.targetBranch || '');
             const isBranchMatch = !targetKey || !myBranchKey || targetKey === myBranchKey;
 
-            const isBranchStaffOrReception = (
-              userRole === 'reception' ||
-              userRole === 'staff' ||
-              String(userRole).toLowerCase().includes('reception') ||
-              String(userRole).toLowerCase().includes('front') ||
-              String(userRole).toLowerCase().includes('desk') ||
-              String(userRole).toLowerCase().includes('billing')
-            ) && isBranchMatch;
+            const isBranchReception = isReception && isBranchMatch;
 
             const cleanDocName = (userName || '').toLowerCase();
             const notiDocName = (noti.doctorName || '').toLowerCase();
-            const isDoctor = userRole === 'doctor' && (
+            const isDoctorMatch = userRole === 'doctor' && (
               (notiDocName && (cleanDocName.includes(notiDocName) || notiDocName.includes(cleanDocName))) ||
               isBranchMatch
             );
-
-            const isStaff = userRole === 'staff' && isBranchMatch;
 
             let shouldNotify = false;
             if (noti.type === 'staff_login' || noti.type === 'staff_logout' || noti.type === 'staff_punch_in' || noti.type === 'staff_punch_out') {
@@ -497,24 +521,37 @@ function MainApp() {
             } else if (noti.type === 'staff_report') {
               const isMatchingStaff = userRole === 'staff' && (
                 (noti.staffName && userName.toLowerCase().includes(noti.staffName.toLowerCase())) ||
-                noti.staffId === staffId ||
-                isStaff
+                noti.staffId === staffId
               );
               shouldNotify = isHR || isMatchingStaff;
             } else if (noti.type === 'cleaning_submission') {
               // Clinic cleaning uploaded: notify HR / Admin and Branch Reception
-              shouldNotify = isHR || isBranchStaffOrReception;
+              shouldNotify = isHR || isBranchReception;
             } else if (noti.type === 'cleaning_approved' || noti.type === 'cleaning_rejected') {
               // Cleaning approval / rejection: notify Branch Reception and HR/Admin
-              shouldNotify = isHR || isBranchStaffOrReception;
-            } else if (noti.type === 'payment' || noti.type === 'booking' || noti.title?.toLowerCase().includes('appointment') || noti.title?.toLowerCase().includes('booked')) {
-              // Bookings & Payments: HR gets all branches, Branch staff & reception get their branch
-              shouldNotify = isHR || isBranchStaffOrReception;
+              shouldNotify = isHR || isBranchReception;
+            } else if (noti.type === 'payment') {
+              // Payments: Only HR / Admin (all branches) and Reception of that branch. Regular staff & doctors NEVER get payments.
+              shouldNotify = isHR || isBranchReception;
+            } else if (noti.type === 'booking' || noti.title?.toLowerCase().includes('appointment') || noti.title?.toLowerCase().includes('booked')) {
+              // Bookings: HR gets all branches, Branch Reception gets their branch, Doctor gets assigned booking. Regular staff NEVER gets bookings.
+              shouldNotify = isHR || isBranchReception || isDoctorMatch;
             } else {
-              shouldNotify = isHR || isBranchStaffOrReception || isDoctor || isStaff;
+              shouldNotify = isHR || isBranchReception || isDoctorMatch;
             }
 
-            if (shouldNotify) {
+            // Freshness check: only sound/show alert if notification was created within last 3 minutes
+            let isFresh = true;
+            try {
+              const notiTime = noti.createdAt
+                ? (typeof noti.createdAt.toDate === 'function' ? noti.createdAt.toDate().getTime() : new Date(noti.createdAt).getTime())
+                : Date.now();
+              if (notiTime && !isNaN(notiTime)) {
+                isFresh = (Date.now() - notiTime) < 180000;
+              }
+            } catch (_) { }
+
+            if (shouldNotify && isFresh) {
               const notiTitle = noti.title || (
                 noti.type === 'staff_punch_in' ? '🟢 Staff Punched In' :
                   noti.type === 'staff_punch_out' ? '🔴 Staff Punched Out' :
@@ -543,7 +580,7 @@ function MainApp() {
               triggerSystemPushNotification(notiTitle, notiBody, noti).catch(() => { });
 
               // For Branch Reception, also show immediate in-app Alert when cleaning is Approved or Rejected
-              if (isBranchStaffOrReception) {
+              if (isBranchReception) {
                 if (noti.type === 'cleaning_approved') {
                   Alert.alert('Cleaning Approved ✅', notiBody);
                 } else if (noti.type === 'cleaning_rejected') {
@@ -561,7 +598,7 @@ function MainApp() {
     } catch (e) {
       console.warn('Notification listener setup notice:', e);
     }
-  }, [userRole, branchName, userName, activeTab]);
+  }, [userRole, branchName, userName, activeTab === 'auth', isLoadingSession]);
 
   const handleLoginSuccess = async (data: LoginSuccessData) => {
     const resolvedName = data.role === 'doctor'
@@ -692,131 +729,172 @@ function MainApp() {
       );
     }
 
-    if (activeTab === 'reception_medicines') {
-      return <MedicineRequestsScreen />;
-    }
+    const isDocEmployee = (userName || '').toLowerCase().includes('padma');
+    const resolvedDocName = resolveStrictDoctorName(userName || branchPhone, userName);
 
-    if (activeTab === 'hr') {
-      return <HRScreen />;
-    }
+    const isExternalOverlay = (
+      activeTab === 'patient_file' ||
+      activeTab === 'reception_patient_file' ||
+      activeTab === 'reception_book' ||
+      activeTab === 'reception_medicines' ||
+      activeTab === 'medicine_requests'
+    );
 
-    if (activeTab === 'reception_book') {
-      return <BookAppointmentScreen currentBranch={branchName} userRole={userRole} onNavigate={(tab: string) => navigateToTab(tab)} onBack={handleGoBack} />;
-    }
+    // Keep-Alive Tab State Preservation for ALL screens across all roles
+    return (
+      <View style={{ flex: 1 }}>
+        {/* Admin Dashboard */}
+        {userRole === 'admin' && (
+          <View style={{ flex: 1, display: (!isExternalOverlay && activeTab !== 'hr') ? 'flex' : 'none' }}>
+            <AdminScreen currentTab={activeTab} onNavigateTab={navigateToTab} />
+          </View>
+        )}
 
-    if (activeTab === 'patient_file' || activeTab === 'reception_patient_file') {
-      return (
-        <PatientFileMobileScreen
-          patient={selectedPatient}
-          currentBranch={branchName}
-          doctorName={userRole === 'doctor'
-            ? resolveStrictDoctorName(branchPhone, userName)
-            : sanitizeDoctorName(selectedPatient?.doctorName || selectedPatient?.doctor, branchName)}
-          isDoctor={userRole === 'doctor'}
-          onBack={handleGoBack}
-          onSaveConsultation={(payload) => {
-            const fullPatient = { ...selectedPatient, ...payload };
-            if (userRole === 'doctor') {
-              // Doctor consultation completed: close patient file immediately and return to doctor queue
-              setSelectedPatient(null);
-              setActiveTab('doctor');
-              Alert.alert('Consultation Completed', `Prescription saved & ${fullPatient.patientName || 'patient'} sent to Reception for Fee Collection!`);
-            } else {
-              // Reception / Staff: close patient file and directly open fee collection modal for this person!
-              setSelectedPatient(null);
-              setCheckoutPatient(fullPatient);
-              setActiveTab('reception_dashboard');
-            }
-          }}
-        />
-      );
-    }
+        {/* HR Portal */}
+        {(userRole === 'hr' || (userRole === 'admin' && (visitedTabs.has('hr') || activeTab === 'hr'))) && (
+          <View style={{ flex: 1, display: (userRole === 'hr' ? !isExternalOverlay : activeTab === 'hr') ? 'flex' : 'none' }}>
+            <HRScreen currentTab={activeTab} onNavigateTab={navigateToTab} />
+          </View>
+        )}
 
-    if (userRole === 'admin') {
-      return <AdminScreen currentTab={activeTab} onNavigateTab={navigateToTab} />;
-    }
+        {/* Doctor Portal */}
+        {userRole === 'doctor' && (
+          <View style={{ flex: 1, display: !isExternalOverlay ? 'flex' : 'none' }}>
+            <DoctorScreen
+              doctorCategory={isDocEmployee ? 'Employee Doctor' : 'Head Doctor'}
+              doctorName={resolvedDocName}
+              onLogout={handleSignOut}
+              onNavigateTab={navigateToTab}
+            />
+          </View>
+        )}
 
-    if (userRole === 'hr') {
-      return <HRScreen currentTab={activeTab} onNavigateTab={navigateToTab} />;
-    }
+        {/* Staff Portal */}
+        {userRole === 'staff' && (
+          <View style={{ flex: 1, display: !isExternalOverlay ? 'flex' : 'none' }}>
+            <StaffScreen
+              staffId={staffId || ''}
+              staffName={userName || 'Staff Member'}
+              branchName={branchName || 'SPH Clinic'}
+              onLogout={handleSignOut}
+            />
+          </View>
+        )}
 
-    if (userRole === 'doctor') {
-      const resolvedDocName = resolveStrictDoctorName(userName || branchPhone, userName);
-      const isEmployee = resolvedDocName.toLowerCase().includes('padma');
-      return (
-        <DoctorScreen
-          doctorCategory={isEmployee ? 'Employee Doctor' : 'Head Doctor'}
-          doctorName={resolvedDocName}
-          onLogout={handleSignOut}
-          onNavigateTab={navigateToTab}
-        />
-      );
-    }
+        {/* Patient File View */}
+        {(visitedTabs.has('patient_file') || visitedTabs.has('reception_patient_file') || activeTab === 'patient_file' || activeTab === 'reception_patient_file') && selectedPatient && (
+          <View style={{ flex: 1, display: (activeTab === 'patient_file' || activeTab === 'reception_patient_file') ? 'flex' : 'none' }}>
+            <PatientFileMobileScreen
+              patient={selectedPatient}
+              currentBranch={branchName}
+              doctorName={userRole === 'doctor'
+                ? resolveStrictDoctorName(branchPhone, userName)
+                : sanitizeDoctorName(selectedPatient?.doctorName || selectedPatient?.doctor, branchName)}
+              isDoctor={userRole === 'doctor'}
+              onBack={handleGoBack}
+              onSaveConsultation={(payload) => {
+                const fullPatient = { ...selectedPatient, ...payload };
+                if (userRole === 'doctor') {
+                  setSelectedPatient(null);
+                  setActiveTab('doctor');
+                  Alert.alert('Consultation Completed', `Prescription saved & ${fullPatient.patientName || 'patient'} sent to Reception for Fee Collection!`);
+                } else {
+                  setSelectedPatient(null);
+                  setCheckoutPatient(fullPatient);
+                  setActiveTab('reception_dashboard');
+                }
+              }}
+            />
+          </View>
+        )}
 
-    if (userRole === 'staff') {
-      return (
-        <StaffScreen
-          staffId={staffId || ''}
-          staffName={userName || 'Staff Member'}
-          branchName={branchName || 'SPH Clinic'}
-          onLogout={handleSignOut}
-        />
-      );
-    }
+        {/* Reception Dashboard */}
+        {userRole === 'reception' && (
+          <View style={{ flex: 1, display: (activeTab === 'reception' || activeTab === 'reception_dashboard' || !visitedTabs.has(activeTab)) ? 'flex' : 'none' }}>
+            <ReceptionDashboardScreen
+              currentBranch={branchName}
+              onNavigate={navigateToTab}
+              initialPatientForCheckout={checkoutPatient}
+              onClearInitialCheckout={handleClearCheckout}
+            />
+          </View>
+        )}
 
-    switch (activeTab) {
-      // Reception Modules
-      case 'reception':
-      case 'reception_dashboard':
-        return (
-          <ReceptionDashboardScreen
-            currentBranch={branchName}
-            onNavigate={navigateToTab}
-            initialPatientForCheckout={checkoutPatient}
-            onClearInitialCheckout={() => setCheckoutPatient(null)}
-          />
-        );
-      case 'reception_patients':
-        return <AllPatientsScreen onNavigate={navigateToTab} currentBranch={branchName} />;
-      case 'reception_followups':
-        return <FollowUpsScreen onNavigate={navigateToTab} currentBranch={branchName} branchId={currentUser.branchId} />;
-      case 'reception_billing':
-        return <ProductBillingScreen />;
-      case 'reception_medicines':
-      case 'medicine_requests':
-        return <MedicineRequestsScreen branchName={branchName} currentBranch={branchName} />;
-      case 'reception_noshow':
-        return <DoctorNoShowScreen currentBranch={branchName} />;
-      case 'reception_shiprocket':
-        return <ShiprocketScreen />;
-      case 'reception_media':
-        return <MediaManagerScreen />;
-      case 'reception_cleaning':
-        return (
-          <CleaningPhotosScreen
-            currentBranch={branchName}
-            isOverdueLocked={isCleaningBlocked}
-            onSubmittedSuccess={() => setActiveTab('reception_cleaning')}
-          />
-        );
-      case 'branch_cleaning':
-      case 'admin_cleaning':
-      case 'cleaning':
-        return (
+        {/* Book Appointment Screen */}
+        {(visitedTabs.has('reception_book') || activeTab === 'reception_book') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_book' ? 'flex' : 'none' }}>
+            <BookAppointmentScreen currentBranch={branchName} userRole={userRole} onNavigate={(tab: string) => navigateToTab(tab)} onBack={handleGoBack} />
+          </View>
+        )}
+
+        {/* Medicine Requests Screen */}
+        {(visitedTabs.has('reception_medicines') || visitedTabs.has('medicine_requests') || activeTab === 'reception_medicines' || activeTab === 'medicine_requests') && (
+          <View style={{ flex: 1, display: (activeTab === 'reception_medicines' || activeTab === 'medicine_requests') ? 'flex' : 'none' }}>
+            <MedicineRequestsScreen branchName={branchName} currentBranch={branchName} userRole={userRole} />
+          </View>
+        )}
+
+        {/* All Patients Screen */}
+        {(visitedTabs.has('reception_patients') || activeTab === 'reception_patients') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_patients' ? 'flex' : 'none' }}>
+            <AllPatientsScreen onNavigate={navigateToTab} currentBranch={branchName} />
+          </View>
+        )}
+
+        {/* Follow Ups Screen */}
+        {(visitedTabs.has('reception_followups') || activeTab === 'reception_followups') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_followups' ? 'flex' : 'none' }}>
+            <FollowUpsScreen onNavigate={navigateToTab} currentBranch={branchName} branchId={currentUser.branchId} />
+          </View>
+        )}
+
+        {/* Product Billing Screen */}
+        {(visitedTabs.has('reception_billing') || activeTab === 'reception_billing') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_billing' ? 'flex' : 'none' }}>
+            <ProductBillingScreen />
+          </View>
+        )}
+
+        {/* Doctor No Show Screen */}
+        {(visitedTabs.has('reception_noshow') || activeTab === 'reception_noshow') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_noshow' ? 'flex' : 'none' }}>
+            <DoctorNoShowScreen currentBranch={branchName} />
+          </View>
+        )}
+
+        {/* Shiprocket Screen */}
+        {(visitedTabs.has('reception_shiprocket') || activeTab === 'reception_shiprocket') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_shiprocket' ? 'flex' : 'none' }}>
+            <ShiprocketScreen />
+          </View>
+        )}
+
+        {/* Media Manager Screen */}
+        {(visitedTabs.has('reception_media') || activeTab === 'reception_media') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_media' ? 'flex' : 'none' }}>
+            <MediaManagerScreen />
+          </View>
+        )}
+
+        {/* Cleaning Photos Screen */}
+        {(visitedTabs.has('reception_cleaning') || activeTab === 'reception_cleaning') && (
+          <View style={{ flex: 1, display: activeTab === 'reception_cleaning' ? 'flex' : 'none' }}>
+            <CleaningPhotosScreen
+              currentBranch={branchName}
+              isOverdueLocked={isCleaningBlocked}
+              onSubmittedSuccess={() => setActiveTab('reception_cleaning')}
+            />
+          </View>
+        )}
+
+        {/* Branch Cleaning Admin Screen (for Reception role navigating to cleaning review) */}
+        {(userRole !== 'admin' && userRole !== 'hr') && (activeTab === 'branch_cleaning' || activeTab === 'admin_cleaning' || activeTab === 'cleaning') && (
           <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
             <BranchCleaningScreen onBack={handleGoBack} role={(userRole as any) === 'hr' ? 'hr' : 'admin'} />
           </View>
-        );
-      default:
-        return (
-          <ReceptionDashboardScreen
-            currentBranch={branchName}
-            onNavigate={navigateToTab}
-            initialPatientForCheckout={checkoutPatient}
-            onClearInitialCheckout={() => setCheckoutPatient(null)}
-          />
-        );
-    }
+        )}
+      </View>
+    );
   };
 
   // Admin Bottom Nav Items: Dashboard, Requests, Leaves, Book Appt, Logout

@@ -8,15 +8,15 @@ interface TargetProgressWebUIProps {
 }
 
 export const TargetProgressWebUI: React.FC<TargetProgressWebUIProps> = ({
-  monthlyTarget = 100000,
-  targetReached = 75000,
+  monthlyTarget = 0,
+  targetReached = 0,
   branchName,
 }) => {
   const targetNum = Number(monthlyTarget) || 0;
   const reachedNum = Number(targetReached) || 0;
-  const remaining = Math.max(targetNum - reachedNum, 0);
+  const remaining = targetNum > 0 ? Math.max(targetNum - reachedNum, 0) : 0;
   const percentage = targetNum > 0 ? Math.min(Math.round((reachedNum / targetNum) * 100), 100) : 0;
-  const isReached = reachedNum >= targetNum;
+  const isReached = targetNum > 0 && reachedNum >= targetNum;
 
   return (
     <div style={{
@@ -38,7 +38,11 @@ export const TargetProgressWebUI: React.FC<TargetProgressWebUIProps> = ({
             {branchName ? `${branchName} Target` : 'Monthly Target'}
           </h3>
         </div>
-        {isReached ? (
+        {targetNum === 0 ? (
+          <span style={{ backgroundColor: '#f1f5f9', color: '#64748b', padding: '4px 10px', borderRadius: '8px', fontSize: '0.78rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+            Target Not Set
+          </span>
+        ) : isReached ? (
           <span style={{ backgroundColor: '#dcfce7', color: '#15803d', padding: '4px 10px', borderRadius: '8px', fontSize: '0.78rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
             <Award size={14} /> 🏆 Target Reached!
           </span>

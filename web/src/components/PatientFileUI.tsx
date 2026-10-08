@@ -854,7 +854,7 @@ export const PatientFileUI: React.FC<PatientFileUIProps> = ({
         const filePath = parts.join('/');
         return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(filePath)}?alt=media`;
       }
-      const bucketName = 'spiritual-homeopathy-3b552.appspot.com';
+      const bucketName = 'spiritual-homeopathy-3b552.firebasestorage.app';
       const cleanPath = trimmed.startsWith('/') ? trimmed.slice(1) : trimmed;
       return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(cleanPath)}?alt=media`;
     };

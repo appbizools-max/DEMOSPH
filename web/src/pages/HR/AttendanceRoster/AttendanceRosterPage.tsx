@@ -634,6 +634,13 @@ export const AttendanceRosterPage: React.FC = () => {
                         <Video size={13} /> {rep.videoReviews ?? 0} Video Reviews
                       </span>
                     </div>
+
+                    {(rep.notes || rep.tasksSummary) && (
+                      <div style={{ marginTop: '8px', padding: '8px 12px', background: '#ffffff', borderRadius: '8px', border: '1px dashed #cbd5e1', fontSize: '12px', color: '#334155' }}>
+                        <span style={{ fontWeight: 700, color: '#0f172a' }}>📝 Work Notes / Remarks: </span>
+                        <span>{rep.notes || rep.tasksSummary}</span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

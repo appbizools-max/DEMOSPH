@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ScrollView, Platform, Modal, FlatList } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { Feather, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
@@ -28,7 +29,6 @@ export interface MedicineItem {
   name: string;
   timing: string;
 }
-
 const BRANCH_OPTIONS = [
   'KPHB Branch',
   'Nallagandla Branch',
@@ -39,21 +39,41 @@ const BRANCH_OPTIONS = [
 export interface MobileMedicineRequestsScreenProps {
   branchName?: string;
   currentBranch?: string;
+  userRole?: string;
 }
 
 const PREFIX_OPTIONS = ['Mr.', 'Mrs.', 'Ms.', 'Master', 'Dr.'];
 
 export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreenProps> = ({
-  branchName = 'KPHB Branch',
-  currentBranch = 'KPHB Branch'
+  branchName,
+  currentBranch,
+  userRole
 }) => {
-  const initialBranch = branchName || currentBranch || 'KPHB Branch';
+  const initialBranch = branchName || currentBranch || '';
   const [selectedBranch, setSelectedBranch] = useState(initialBranch);
+  const isAdmin = userRole === 'admin' || userRole === 'hr';
 
   useEffect(() => {
     const active = branchName || currentBranch;
-    if (active) {
+    if (active && active !== 'All Branches') {
       setSelectedBranch(active);
+    } else {
+      AsyncStorage.getItem('@sph_clinic_mobile_auth_session').then(saved => {
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (parsed?.branchName && parsed.branchName !== 'All Branches') {
+              setSelectedBranch(parsed.branchName);
+            } else if (!selectedBranch) {
+              setSelectedBranch('KPHB Branch');
+            }
+          } catch (_) {
+            if (!selectedBranch) setSelectedBranch('KPHB Branch');
+          }
+        } else if (!selectedBranch) {
+          setSelectedBranch('KPHB Branch');
+        }
+      });
     }
   }, [branchName, currentBranch]);
 
@@ -72,6 +92,80 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   const [activeTimingIndex, setActiveTimingIndex] = useState(-1);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
 
+  // Persistent Draft State
+  const MEDICINE_REQUEST_DRAFT_KEY = '@sph_medicine_request_draft';
+  const [hasRestoredDraft, setHasRestoredDraft] = useState(false);
+  const [isDraftLoaded, setIsDraftLoaded] = useState(false);
+
+  // Restore draft on screen mount
+  useEffect(() => {
+    const restoreDraft = async () => {
+      try {
+        const savedDraft = await AsyncStorage.getItem(MEDICINE_REQUEST_DRAFT_KEY);
+        if (savedDraft) {
+          const d = JSON.parse(savedDraft);
+          if (d && (d.patientName || d.phone || d.patientAge || d.duration || Number(d.totalAmount) > 0 || (d.medicines && d.medicines.some((m: any) => m.name)))) {
+            if (d.patientName !== undefined) setPatientName(d.patientName);
+            if (d.patientAge !== undefined) setPatientAge(d.patientAge);
+            if (d.gender !== undefined) setGender(d.gender);
+            if (d.phone !== undefined) setPhone(d.phone);
+            if (d.totalAmount !== undefined) setTotalAmount(Number(d.totalAmount) || 0);
+            if (d.duration !== undefined) setDuration(d.duration);
+            if (Array.isArray(d.medicines) && d.medicines.length > 0) setMedicines(d.medicines);
+            if (d.selectedBranch && (!branchName || branchName === 'All Branches')) {
+              setSelectedBranch(d.selectedBranch);
+            }
+            setHasRestoredDraft(true);
+          }
+        }
+      } catch (e) {
+        console.warn('Error restoring medicine request draft:', e);
+      } finally {
+        setIsDraftLoaded(true);
+      }
+    };
+    restoreDraft();
+  }, []);
+
+  // Auto-save draft on every change
+  useEffect(() => {
+    if (!isDraftLoaded) return;
+    const hasData = Boolean(
+      patientName.trim() ||
+      phone.trim() ||
+      patientAge.trim() ||
+      duration.trim() ||
+      totalAmount > 0 ||
+      medicines.some(m => m.name && m.name.trim().length > 0)
+    );
+
+    if (hasData) {
+      const payload = {
+        patientName,
+        patientAge,
+        gender,
+        phone,
+        totalAmount,
+        duration,
+        medicines,
+        selectedBranch,
+        savedAt: new Date().toISOString()
+      };
+      AsyncStorage.setItem(MEDICINE_REQUEST_DRAFT_KEY, JSON.stringify(payload)).catch(() => { });
+    } else {
+      AsyncStorage.removeItem(MEDICINE_REQUEST_DRAFT_KEY).catch(() => { });
+    }
+  }, [isDraftLoaded, patientName, patientAge, gender, phone, totalAmount, duration, medicines, selectedBranch]);
+
+  const hasAnyData = Boolean(
+    patientName.trim() ||
+    phone.trim() ||
+    patientAge.trim() ||
+    duration.trim() ||
+    totalAmount > 0 ||
+    medicines.some(m => m.name && m.name.trim().length > 0)
+  );
+
   const addMedicine = () => {
     setMedicines(prev => [...prev, { name: '', timing: '' }]);
   };
@@ -89,16 +183,19 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     });
   };
 
-  const handleClear = () => {
+  const handleClear = async () => {
     setPatientName('');
     setPatientAge('');
     setGender('Mr.');
     setPhone('');
-    setSelectedBranch(initialBranch);
+    setSelectedBranch(branchName || currentBranch || selectedBranch || 'KPHB Branch');
     setTotalAmount(0);
     setDuration('');
-
     setMedicines([{ name: '', timing: '' }]);
+    setHasRestoredDraft(false);
+    try {
+      await AsyncStorage.removeItem(MEDICINE_REQUEST_DRAFT_KEY);
+    } catch (_) { }
   };
 
   // --- PDF HTML Generator matching Official Clinic Letterhead ---
@@ -442,11 +539,45 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} showsVerticalScrollIndicator={false}>
-      
+
+      {/* Draft Restored Banner */}
+      {hasRestoredDraft && (
+        <View style={{
+          backgroundColor: '#eff6ff',
+          borderColor: '#bfdbfe',
+          borderWidth: 1,
+          borderRadius: 10,
+          paddingHorizontal: 12,
+          paddingVertical: 9,
+          marginBottom: 12,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+            <Feather name="file-text" size={14} color="#0284c7" />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#0369a1' }}>
+              Draft Restored — your entered patient progress is preserved.
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setHasRestoredDraft(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Feather name="x" size={14} color="#64748b" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Prefix Selection Chips & Action Header */}
       <View style={styles.card}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <Text style={styles.fieldSectionTitle}>Patient Title / Prefix</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={styles.fieldSectionTitle}>Patient Title / Prefix</Text>
+            {hasAnyData && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#f0fdf4', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#bbf7d0' }}>
+                <Feather name="check" size={10} color="#16a34a" />
+                <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#15803d' }}>Draft Saved</Text>
+              </View>
+            )}
+          </View>
           <TouchableOpacity style={styles.clearBtn} onPress={handleClear} activeOpacity={0.7}>
             <Feather name="rotate-ccw" size={12} color="#64748b" />
             <Text style={styles.clearBtnText}>Clear Form</Text>
@@ -530,16 +661,29 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </View>
 
           <View style={[styles.inputGroup, { flex: 1.4 }]}>
-            <Text style={styles.inputLabel}>Branch Name (Locked)</Text>
-            <View
-              style={[styles.inputWrapper, { justifyContent: 'space-between', backgroundColor: '#f1f5f9' }]}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                <Feather name="map-pin" size={16} color="#258ec8" style={styles.inputIcon} />
-                <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{selectedBranch || initialBranch}</Text>
+            <Text style={styles.inputLabel}>Branch Name {isAdmin ? '(Select Branch)' : '(Locked)'}</Text>
+            {isAdmin ? (
+              <TouchableOpacity
+                onPress={() => setShowBranchPicker(true)}
+                style={[styles.inputWrapper, { justifyContent: 'space-between', backgroundColor: '#ffffff' }]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                  <Feather name="map-pin" size={16} color="#258ec8" style={styles.inputIcon} />
+                  <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{selectedBranch || 'Select Branch'}</Text>
+                </View>
+                <Feather name="chevron-down" size={15} color="#64748b" />
+              </TouchableOpacity>
+            ) : (
+              <View
+                style={[styles.inputWrapper, { justifyContent: 'space-between', backgroundColor: '#f1f5f9' }]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                  <Feather name="map-pin" size={16} color="#258ec8" style={styles.inputIcon} />
+                  <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '800' }}>{selectedBranch || 'Branch'}</Text>
+                </View>
+                <Feather name="lock" size={13} color="#64748b" />
               </View>
-              <Feather name="lock" size={13} color="#64748b" />
-            </View>
+            )}
           </View>
         </View>
 
@@ -687,6 +831,51 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                     activeOpacity={0.7}
                   >
                     <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>{item.label}</Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Branch Selection Modal for Admin */}
+      <Modal visible={showBranchPicker} transparent animationType="slide" onRequestClose={() => setShowBranchPicker(false)}>
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowBranchPicker(false)}>
+          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: 380 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Select Clinic Branch</Text>
+              <TouchableOpacity onPress={() => setShowBranchPicker(false)}>
+                <Feather name="x" size={20} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={BRANCH_OPTIONS}
+              keyExtractor={(item) => item}
+              renderItem={({ item }) => {
+                const isSelected = selectedBranch === item;
+                return (
+                  <TouchableOpacity
+                    style={{
+                      paddingVertical: 14,
+                      paddingHorizontal: 12,
+                      borderBottomWidth: 1,
+                      borderBottomColor: '#f1f5f9',
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      backgroundColor: isSelected ? '#f0f9ff' : 'transparent',
+                      borderRadius: 8
+                    }}
+                    onPress={() => {
+                      setSelectedBranch(item);
+                      setShowBranchPicker(false);
+                    }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#1e293b' }}>
+                      {item}
+                    </Text>
+                    {isSelected && <Feather name="check" size={16} color="#0284c7" />}
                   </TouchableOpacity>
                 );
               }}

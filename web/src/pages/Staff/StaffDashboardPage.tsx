@@ -7,6 +7,11 @@ import {
   collection, query, onSnapshot, addDoc, updateDoc, doc, orderBy, getDocs
 } from 'firebase/firestore';
 import { db, StaffAttendanceRecord, StaffLeaveRequest, StaffDailyReport } from '@app/shared';
+import {
+  createStaffPunchInNotificationInFirestore,
+  createStaffPunchOutNotificationInFirestore,
+  createStaffDailyReportNotificationInFirestore
+} from '../../utils/fcmWebTrigger';
 
 interface StaffDashboardPageProps {
   currentStaffId?: string;
@@ -53,6 +58,7 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
   const [contacts, setContacts] = useState('');
   const [gReviews, setGReviews] = useState('');
   const [videoReviews, setVideoReviews] = useState('');
+  const [reportNotes, setReportNotes] = useState('');
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [myReports, setMyReports] = useState<StaffDailyReport[]>([]);
 
@@ -235,7 +241,7 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
     });
   };
 
-  // Web Webcam / Camera Photo Capture using canvas
+  // Web Webcam / Camera Photo Capture using canvas compression
   const captureWebSelfie = (): Promise<string> => {
     return new Promise((resolve) => {
       const input = document.createElement('input');
@@ -246,7 +252,40 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
         const file = e.target?.files?.[0];
         if (file) {
           const reader = new FileReader();
-          reader.onload = (evt) => resolve(evt.target?.result as string);
+          reader.onload = (evt) => {
+            const rawUrl = evt.target?.result as string;
+            // Compress with Canvas to max 400x400 with 0.5 JPEG quality
+            const img = new window.Image();
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              const maxDim = 400;
+              let width = img.width;
+              let height = img.height;
+              if (width > height) {
+                if (width > maxDim) {
+                  height = Math.round((height * maxDim) / width);
+                  width = maxDim;
+                }
+              } else {
+                if (height > maxDim) {
+                  width = Math.round((width * maxDim) / height);
+                  height = maxDim;
+                }
+              }
+              canvas.width = width;
+              canvas.height = height;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, width, height);
+                const compressed = canvas.toDataURL('image/jpeg', 0.5);
+                resolve(compressed);
+              } else {
+                resolve(rawUrl);
+              }
+            };
+            img.onerror = () => resolve(rawUrl);
+            img.src = rawUrl;
+          };
           reader.readAsDataURL(file);
         } else {
           resolve(`data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="%23eef5fc" stroke="%23258ec8" stroke-width="4"/><text x="50" y="55" font-size="24" font-weight="bold" fill="%23258ec8" text-anchor="middle">${encodeURIComponent(staffProfile.name.slice(0, 2))}</text></svg>`);
@@ -281,6 +320,16 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
         };
 
         await addDoc(collection(db, 'attendance'), record);
+
+        // Notify HR in Firestore
+        createStaffPunchInNotificationInFirestore({
+          staffName: staffProfile.name,
+          staffId: staffProfile.id,
+          branch: staffProfile.branch,
+          punchInTime: timeStr,
+          locationAddress: loc.address
+        }).catch(() => {});
+
         alert(`Punch In Successful!\n\nPunched in at: ${timeStr}\nLocation: ${loc.address}`);
       }
     } catch (e: any) {
@@ -324,6 +373,17 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
           status: 'Completed',
           updatedAt: now.toISOString()
         });
+
+        // Notify HR in Firestore
+        createStaffPunchOutNotificationInFirestore({
+          staffName: staffProfile.name,
+          staffId: staffProfile.id,
+          branch: staffProfile.branch,
+          punchOutTime: timeStr,
+          workingHours: hours,
+          locationAddress: loc.address
+        }).catch(() => {});
+
         alert(`Punch Out Successful!\n\nTotal Hours: ${hours}\nLocation: ${loc.address}`);
       }
     } catch (e: any) {
@@ -406,8 +466,8 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
     const gRev = Number(gReviews) || 0;
     const vRev = Number(videoReviews) || 0;
 
-    if (!totalCalls && !followUps && !contacts && !gReviews && !videoReviews) {
-      alert('Please enter your daily metrics (Total Calls, Follow Ups, Contacts, Reviews).');
+    if (!totalCalls && !followUps && !contacts && !gReviews && !videoReviews && !reportNotes.trim()) {
+      alert('Please enter your daily metrics or work notes.');
       return;
     }
     setIsSubmittingReport(true);
@@ -425,15 +485,32 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
           videoReviews: vRev,
           callsCount: tCalls,
           reviewsCount: gRev,
+          tasksSummary: reportNotes.trim(),
+          notes: reportNotes.trim(),
           submittedAt: new Date().toISOString()
         };
         await addDoc(collection(db, 'staff_reports'), newRep);
+
+        // Notify HR in Firestore
+        createStaffDailyReportNotificationInFirestore({
+          staffName: staffProfile.name,
+          branch: staffProfile.branch,
+          staffId: staffProfile.id,
+          totalCalls: tCalls,
+          followUps: fUps,
+          contacts: conts,
+          gReviews: gRev,
+          videoReviews: vRev,
+          notes: reportNotes.trim(),
+        }).catch(() => {});
+
         alert('Daily work report submitted successfully to Admin & HR!');
         setTotalCalls('');
         setFollowUps('');
         setContacts('');
         setGReviews('');
         setVideoReviews('');
+        setReportNotes('');
       }
     } catch (e) {
       console.error(e);
@@ -827,6 +904,12 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
                   🎥 {todayReport.videoReviews ?? 0} Video Reviews
                 </span>
               </div>
+              {(todayReport.notes || todayReport.tasksSummary) && (
+                <div style={{ marginTop: '12px', padding: '10px 12px', background: '#ffffff', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#166534', marginBottom: '3px' }}>Notes / Remarks:</div>
+                  <div style={{ fontSize: '12.5px', color: '#334155', lineHeight: '1.4' }}>{todayReport.notes || todayReport.tasksSummary}</div>
+                </div>
+              )}
               <div style={{ fontSize: '11px', color: '#059669', marginTop: '14px', fontWeight: 700 }}>
                 Submitted at: {new Date(todayReport.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
@@ -898,6 +981,20 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
                   />
                 </div>
 
+                {/* Row 4: Work Notes / Remarks Text Box */}
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                    Work Notes / Remarks:
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={reportNotes}
+                    onChange={(e) => setReportNotes(e.target.value)}
+                    placeholder="Enter summary of today's work, notes, follow-up comments or patient updates..."
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', resize: 'vertical' }}
+                  />
+                </div>
+
                 <button
                   type="submit"
                   disabled={isSubmittingReport}
@@ -951,6 +1048,12 @@ export const StaffDashboardPage: React.FC<StaffDashboardPageProps> = ({
                         🎥 {rep.videoReviews ?? 0} Video Reviews
                       </span>
                     </div>
+                    {(rep.notes || rep.tasksSummary) && (
+                      <div style={{ marginTop: '6px', padding: '6px 10px', background: '#ffffff', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', marginBottom: '2px' }}>Notes:</div>
+                        <div style={{ fontSize: '12px', color: '#334155', lineHeight: '1.4' }}>{rep.notes || rep.tasksSummary}</div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

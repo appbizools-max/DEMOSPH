@@ -90,7 +90,7 @@ const getCanonicalDoctorName = (rawName?: string): string => {
 };
 
 const isBranchMatching = (b1: string, b2?: string): boolean => {
-  if (!b2 || b2 === 'all' || b2 === 'All Branches' || b2.toLowerCase().includes('all')) return true;
+  if (!b2 || b2 === 'all' || b2 === 'All Branches' || b2.toLowerCase().trim() === 'all branches') return true;
   const k1 = normalizeBranchKey(b1);
   const k2 = normalizeBranchKey(b2);
   if (!k1 || !k2) return false;

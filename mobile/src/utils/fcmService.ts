@@ -277,6 +277,79 @@ export async function cleanupOldNotifications(): Promise<void> {
   }
 }
 
+export async function dispatchPushNotificationToTargetRoles(payload: {
+  title: string;
+  body: string;
+  targetRoles: string[];
+  targetBranch?: string;
+  data?: Record<string, any>;
+}): Promise<void> {
+  try {
+    const activeDb = getSafeDb();
+    if (!activeDb) return;
+
+    const snap = await getDocs(collection(activeDb, 'fcm_tokens'));
+    if (snap.empty) return;
+
+    const targetBranchClean = normalizeBranchTopic(payload.targetBranch || '');
+    const tokens: string[] = [];
+
+    snap.forEach((d) => {
+      const data = d.data();
+      if (!data || !data.token) return;
+
+      const role = String(data.role || '').toLowerCase();
+      const branchClean = normalizeBranchTopic(data.branch || data.cleanBranch || '');
+
+      const isHR = role === 'admin' || role === 'hr';
+      const isTargetReception = (role === 'reception' || role.includes('reception')) && (!targetBranchClean || branchClean === targetBranchClean);
+
+      let shouldSend = false;
+      if (payload.targetRoles.includes('hr') && isHR) shouldSend = true;
+      if (payload.targetRoles.includes('admin') && role === 'admin') shouldSend = true;
+      if (payload.targetRoles.includes('reception') && isTargetReception) shouldSend = true;
+
+      // Regular staff NEVER receives booking or payment notifications
+      if (shouldSend) {
+        if (data.expoPushToken) tokens.push(data.expoPushToken);
+        if (data.token) tokens.push(data.token);
+      }
+    });
+
+    if (tokens.length === 0) return;
+
+    const uniqueTokens = Array.from(new Set(tokens));
+    const expoTokens = uniqueTokens.filter((t) => t.startsWith('ExponentPushToken[') || t.startsWith('ExpoPushToken['));
+
+    if (expoTokens.length > 0) {
+      const messages = expoTokens.map((token) => ({
+        to: token,
+        sound: 'default',
+        title: payload.title,
+        body: payload.body,
+        channelId: 'sph_appointments_channel',
+        priority: 'high',
+        data: payload.data || {},
+      }));
+
+      for (let i = 0; i < messages.length; i += 100) {
+        const chunk = messages.slice(i, i + 100);
+        await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Accept-encoding': 'gzip, deflate',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(chunk),
+        }).catch((e) => console.warn('[FCM] Expo push send notice:', e));
+      }
+    }
+  } catch (err) {
+    console.warn('[FCM] Push dispatch notice:', err);
+  }
+}
+
 export async function createBookingNotificationInFirestore(payload: {
   patientName: string;
   appointmentTime: string;
@@ -309,6 +382,13 @@ export async function createBookingNotificationInFirestore(payload: {
       status: 'pending',
     };
     await addDoc(collection(activeDb, 'notifications'), notiDoc);
+    dispatchPushNotificationToTargetRoles({
+      title: notiDoc.title,
+      body: notiDoc.body,
+      targetRoles: ['reception', 'hr', 'admin'],
+      targetBranch: cleanBranch,
+      data: notiDoc,
+    }).catch(() => { });
     cleanupOldNotifications().catch(() => { });
   } catch (e) {
     console.warn('[FCM] Error saving notification to Firestore:', e);
@@ -353,6 +433,13 @@ export async function createPaymentNotificationInFirestore(payload: {
       status: 'completed',
     };
     await addDoc(collection(activeDb, 'notifications'), notiDoc);
+    dispatchPushNotificationToTargetRoles({
+      title: notiDoc.title,
+      body: notiDoc.body,
+      targetRoles: ['reception', 'hr', 'admin'],
+      targetBranch: cleanBranch,
+      data: notiDoc,
+    }).catch(() => { });
     cleanupOldNotifications().catch(() => { });
   } catch (e) {
     console.warn('[FCM] Error saving payment notification to Firestore:', e);
@@ -607,8 +694,8 @@ export async function createFeeDiscountRequestNotificationInFirestore(payload: {
     await addDoc(collection(activeDb, 'notifications'), notiDoc);
 
     // Trigger local push notification + vibration on mobile device
-    triggerSystemPushNotification(title, body, notiDoc).catch(() => {});
-    cleanupOldNotifications().catch(() => {});
+    triggerSystemPushNotification(title, body, notiDoc).catch(() => { });
+    cleanupOldNotifications().catch(() => { });
   } catch (e) {
     console.warn('[FCM] Error saving discount request notification:', e);
   }
@@ -659,8 +746,8 @@ export async function createFeeDiscountResponseNotificationInFirestore(payload: 
     await addDoc(collection(activeDb, 'notifications'), notiDoc);
 
     // Trigger local push notification + vibration on mobile device
-    triggerSystemPushNotification(title, body, notiDoc).catch(() => {});
-    cleanupOldNotifications().catch(() => {});
+    triggerSystemPushNotification(title, body, notiDoc).catch(() => { });
+    cleanupOldNotifications().catch(() => { });
   } catch (e) {
     console.warn('[FCM] Error saving discount response notification:', e);
   }
@@ -696,8 +783,8 @@ export async function createCleaningUploadedNotificationInFirestore(payload: {
       status: 'pending',
     };
     await addDoc(collection(activeDb, 'notifications'), notiDoc);
-    triggerSystemPushNotification(title, body, notiDoc).catch(() => {});
-    cleanupOldNotifications().catch(() => {});
+    triggerSystemPushNotification(title, body, notiDoc).catch(() => { });
+    cleanupOldNotifications().catch(() => { });
   } catch (e) {
     console.warn('[FCM] Error saving cleaning uploaded notification:', e);
   }
@@ -741,8 +828,8 @@ export async function createCleaningApprovalNotificationInFirestore(payload: {
       createdAt: new Date().toISOString(),
     };
     await addDoc(collection(activeDb, 'notifications'), notiDoc);
-    triggerSystemPushNotification(title, body, notiDoc).catch(() => {});
-    cleanupOldNotifications().catch(() => {});
+    triggerSystemPushNotification(title, body, notiDoc).catch(() => { });
+    cleanupOldNotifications().catch(() => { });
   } catch (e) {
     console.warn('[FCM] Error saving cleaning approval notification:', e);
   }
@@ -750,47 +837,63 @@ export async function createCleaningApprovalNotificationInFirestore(payload: {
 
 export async function registerFCMForStaff(role: string, branch: string, staffName?: string): Promise<string | null> {
   try {
-    const messaging = getMessaging();
-    if (!messaging) return null;
+    const Notifications = getNotifications();
+    if (!Notifications) return null;
 
-    let authStatus: any = null;
-    try {
-      authStatus = await messaging().requestPermission();
-    } catch (e) {
+    // Check & request notification permissions
+    const perms = await requestAppPermissions();
+    if (!perms.notifications) {
+      console.warn('[FCM] Notification permissions not granted for staff registration');
       return null;
     }
 
-    const enabled =
-      authStatus === messaging.AuthorizationStatus?.AUTHORIZED ||
-      authStatus === messaging.AuthorizationStatus?.PROVISIONAL ||
-      authStatus === 1 ||
-      authStatus === 2;
+    let expoPushToken: string | null = null;
+    let devicePushToken: string | null = null;
 
-    if (!enabled) return null;
-
-    let token: string | null = null;
-    try {
-      token = await messaging().getToken();
-    } catch (e) {
-      return null;
+    if (typeof Notifications.getExpoPushTokenAsync === 'function') {
+      try {
+        const expoRes = await Notifications.getExpoPushTokenAsync({
+          projectId: '942c4865-7e77-443e-b3bd-50521ca257df',
+        });
+        if (expoRes && expoRes.data) {
+          expoPushToken = String(expoRes.data);
+        }
+      } catch (e2) {
+        try {
+          const fallbackRes = await Notifications.getExpoPushTokenAsync();
+          if (fallbackRes && fallbackRes.data) {
+            expoPushToken = String(fallbackRes.data);
+          }
+        } catch (_) { }
+        console.warn('[FCM] getExpoPushTokenAsync notice:', e2);
+      }
     }
 
-    if (!token) return null;
+    if (typeof Notifications.getDevicePushTokenAsync === 'function') {
+      try {
+        const devToken = await Notifications.getDevicePushTokenAsync();
+        if (devToken && devToken.data) {
+          devicePushToken = String(devToken.data);
+        }
+      } catch (e1) {
+        console.warn('[FCM] getDevicePushTokenAsync notice:', e1);
+      }
+    }
+
+    const primaryToken = expoPushToken || devicePushToken;
+    if (!primaryToken) return null;
 
     const cleanBranch = normalizeBranchTopic(branch);
 
-    if (role === 'admin' || role === 'hr') {
-      await messaging().subscribeToTopic('topic_all_branches_hr').catch(() => { });
-    } else if (role === 'reception' && cleanBranch) {
-      await messaging().subscribeToTopic(`topic_branch_${cleanBranch}`).catch(() => { });
-    }
-
     try {
       const activeDb = getSafeDb();
-      if (activeDb && token) {
-        const tokenDocRef = doc(activeDb, 'fcm_tokens', token.slice(-28));
+      if (activeDb && primaryToken) {
+        const docKey = `${role}_${cleanBranch || 'main'}_${primaryToken.slice(-16).replace(/[^a-zA-Z0-9]/g, '')}`;
+        const tokenDocRef = doc(activeDb, 'fcm_tokens', docKey);
         await setDoc(tokenDocRef, {
-          token,
+          token: primaryToken,
+          expoPushToken: expoPushToken || '',
+          devicePushToken: devicePushToken || '',
           role: role || 'reception',
           branch: branch || '',
           cleanBranch,
@@ -798,10 +901,13 @@ export async function registerFCMForStaff(role: string, branch: string, staffNam
           platform: Platform.OS,
           updatedAt: new Date().toISOString(),
         }, { merge: true }).catch(() => { });
+        console.log(`[FCM] Registered device push token for ${role} (${branch}):`, docKey, primaryToken);
       }
-    } catch (e) { }
+    } catch (e) {
+      console.warn('[FCM] Token persistence notice:', e);
+    }
 
-    return token;
+    return primaryToken;
   } catch (err) {
     console.warn('[FCM] Staff FCM registration notice:', err);
     return null;

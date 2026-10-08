@@ -1,4 +1,4 @@
-import { doc, setDoc, getSafeDb } from './firebaseSafe';
+import { doc, setDoc, getDoc, getSafeDb } from './firebaseSafe';
 import type { Firestore } from 'firebase/firestore';
 
 export interface BranchTargetResult {
@@ -11,10 +11,10 @@ export interface BranchTargetResult {
 }
 
 export const DEFAULT_BRANCH_MONTHLY_GOALS: Record<string, number> = {
-  kphb: 1200000,
-  nallagandla: 1000000,
-  dilshuknagar: 1400000,
-  chandanagar: 900000,
+  kphb: 0,
+  nallagandla: 0,
+  dilshuknagar: 0,
+  chandanagar: 0,
 };
 
 export const normalizeBranchKey = (raw: string = ''): string => {
@@ -166,8 +166,10 @@ export const calculateRealBranchRevenue = (
     }
   }
 
-  const monthlyTarget = customMonthlyTarget || DEFAULT_BRANCH_MONTHLY_GOALS[targetKey] || 1200000;
-  const remaining = Math.max(0, monthlyTarget - totalRevenue);
+  const monthlyTarget = (customMonthlyTarget !== undefined && customMonthlyTarget !== null)
+    ? Number(customMonthlyTarget)
+    : 0;
+  const remaining = monthlyTarget > 0 ? Math.max(0, monthlyTarget - totalRevenue) : 0;
   const percentage = monthlyTarget > 0 ? Math.round((totalRevenue / monthlyTarget) * 100) : 0;
 
   return {
@@ -181,7 +183,8 @@ export const calculateRealBranchRevenue = (
 };
 
 /**
- * Persists calculated dynamic branch targets to Firestore `branchTargets` collection
+ * Persists calculated dynamic branch targets to Firestore `branchTargets` collection.
+ * Does NOT overwrite Firestore monthlyTarget unless customMonthlyTarget is explicitly passed and > 0.
  */
 export const syncBranchTargetToFirestore = async (
   arg1: any,
@@ -209,22 +212,46 @@ export const syncBranchTargetToFirestore = async (
   if (!activeDb) return;
   const branchKey = normalizeBranchKey(branchName);
   const canonName = getCanonicalBranchName(branchKey);
-  const monthlyTarget = customMonthlyTarget || DEFAULT_BRANCH_MONTHLY_GOALS[branchKey] || 1200000;
-  const remaining = Math.max(0, monthlyTarget - targetReached);
-  const percentage = monthlyTarget > 0 ? Math.round((targetReached / monthlyTarget) * 100) : 0;
 
   try {
     const docRef = doc(activeDb, 'branchTargets', branchKey);
-    await setDoc(docRef, {
+    let effectiveTargetReached = targetReached;
+    let existingMonthlyTarget = 0;
+
+    try {
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const existingData = snap.data();
+        existingMonthlyTarget = Number(existingData?.monthlyTarget) || 0;
+        const existingReached = Number(existingData?.targetReached || 0);
+        if (existingReached > effectiveTargetReached) {
+          effectiveTargetReached = existingReached;
+        }
+      }
+    } catch (_) {}
+
+    const targetGoal = (customMonthlyTarget !== undefined && customMonthlyTarget !== null && Number(customMonthlyTarget) > 0)
+      ? Number(customMonthlyTarget)
+      : existingMonthlyTarget;
+
+    const remaining = targetGoal > 0 ? Math.max(0, targetGoal - effectiveTargetReached) : 0;
+    const percentage = targetGoal > 0 ? Math.round((effectiveTargetReached / targetGoal) * 100) : 0;
+
+    const updatePayload: any = {
       id: branchKey,
       branchName: canonName,
-      monthlyTarget,
-      targetReached,
+      targetReached: effectiveTargetReached,
       remaining,
       percentage,
       month: getCurrentMonthYMD(),
       updatedAt: new Date().toISOString(),
-    }, { merge: true });
+    };
+
+    if (targetGoal > 0) {
+      updatePayload.monthlyTarget = targetGoal;
+    }
+
+    await setDoc(docRef, updatePayload, { merge: true });
   } catch (err) {
     console.warn(`Error syncing branchTarget for ${branchKey}:`, err);
   }

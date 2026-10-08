@@ -5,24 +5,27 @@ import { db } from '@app/shared';
 import { TargetProgressWebUI } from '../../../components/TargetProgressWebUI';
 
 const DEFAULT_BRANCHES = [
-  { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', monthlyTarget: 1200000, targetReached: 980000, nextMonthTarget: 0 },
-  { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', monthlyTarget: 1000000, targetReached: 840000, nextMonthTarget: 0 },
-  { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', monthlyTarget: 1400000, targetReached: 1150000, nextMonthTarget: 0 },
-  { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', monthlyTarget: 900000, targetReached: 720000, nextMonthTarget: 0 },
+  { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
+  { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
+  { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
+  { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
 ];
 
 interface ManageBranchesPageProps {
   onBack?: () => void;
+  role?: string;
+  currentBranch?: string;
 }
 
-export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }) => {
+export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack, role = 'admin' }) => {
+  const isAdmin = role !== 'hr';
   const [branches, setBranches] = useState(DEFAULT_BRANCHES);
   const [editingBranch, setEditingBranch] = useState<any>(null);
   const [editingTargetType, setEditingTargetType] = useState<'current' | 'next'>('current');
   const [targetInput, setTargetInput] = useState('');
   const [activeTabMonth, setActiveTabMonth] = useState<'current' | 'next'>('current');
 
-  // Date Logic for Next Month Target Unlock (Unlocked ONLY 2 days before next month)
+  // Date Logic for Next Month Target Unlock (Unlocked ONLY 2 days before next month for HR)
   const now = new Date();
   const currentMonthName = now.toLocaleString('default', { month: 'long', year: 'numeric' });
   const nextMonthDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -50,8 +53,8 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
               if (live) {
                 return {
                   ...b,
-                  monthlyTarget: Number(live.monthlyTarget) || b.monthlyTarget,
-                  targetReached: Number(live.targetReached) || b.targetReached,
+                  monthlyTarget: Number(live.monthlyTarget) || 0,
+                  targetReached: Number(live.targetReached) || 0,
                   nextMonthTarget: live.nextMonthTarget !== undefined ? Number(live.nextMonthTarget) : 0,
                 };
               }
@@ -67,13 +70,15 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
   }, []);
 
   const handleEditClick = (b: any, targetType: 'current' | 'next') => {
-    if (targetType === 'next' && !isNextMonthUnlocked) {
-      alert(`🔒 Next month's target can only be set by Admin 2 days before ${nextMonthName} (starts on ${now.toLocaleString('default', { month: 'short' })} ${unlockDay}th).`);
+    // Admin can edit at ANY time (both current and next month)
+    // HR can only enter or change targets 2 days before month end
+    if (!isAdmin && !isNextMonthUnlocked) {
+      alert(`🔒 HR Target Setting Locked: HR can enter or change targets only 2 days before month end (starts on ${now.toLocaleString('default', { month: 'short' })} ${unlockDay}th). Admin can edit targets anytime.`);
       return;
     }
     setEditingBranch(b);
     setEditingTargetType(targetType);
-    setTargetInput(String(targetType === 'current' ? b.monthlyTarget : (b.nextMonthTarget ?? 0)));
+    setTargetInput(String(targetType === 'current' ? (b.monthlyTarget || '') : (b.nextMonthTarget || '')));
   };
 
   const handleSaveTarget = async () => {
@@ -93,7 +98,9 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
 
       if (editingTargetType === 'current') {
         updateData.monthlyTarget = num;
-        updateData.targetReached = editingBranch.targetReached;
+        updateData.targetReached = editingBranch.targetReached || 0;
+        updateData.remaining = Math.max(0, num - (editingBranch.targetReached || 0));
+        updateData.percentage = num > 0 ? Math.round(((editingBranch.targetReached || 0) / num) * 100) : 0;
       } else {
         updateData.nextMonthTarget = num;
       }
@@ -189,14 +196,14 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
               gap: '6px'
             }}
           >
-            {isNextMonthUnlocked ? <Unlock size={14} color={activeTabMonth === 'next' ? '#ffffff' : '#16a34a'} /> : <Lock size={14} color={activeTabMonth === 'next' ? '#ffffff' : '#64748b'} />}
+            {isAdmin || isNextMonthUnlocked ? <Unlock size={14} color={activeTabMonth === 'next' ? '#ffffff' : '#16a34a'} /> : <Lock size={14} color={activeTabMonth === 'next' ? '#ffffff' : '#64748b'} />}
             {nextMonthName}
           </button>
         </div>
       </div>
 
-      {/* Lock Notification Banner for Next Month */}
-      {!isNextMonthUnlocked && activeTabMonth === 'next' && (
+      {/* Lock Notification Banner / Admin Access Badge */}
+      {!isAdmin && !isNextMonthUnlocked && (
         <div style={{
           backgroundColor: '#f8fafc',
           border: '1px solid #e2e8f0',
@@ -213,9 +220,34 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
             <Lock size={18} color="#64748b" />
           </div>
           <div>
-            <h4 style={{ margin: '0 0 2px', fontSize: '0.88rem', fontWeight: 800, color: '#0f172a' }}>Next Month Target Entry Locked</h4>
+            <h4 style={{ margin: '0 0 2px', fontSize: '0.88rem', fontWeight: 800, color: '#0f172a' }}>HR Target Entry Window</h4>
             <p style={{ margin: 0, fontSize: '0.82rem', color: '#64748b' }}>
-              Setting targets for <strong>{nextMonthName}</strong> opens for Admin on <strong>{now.toLocaleString('default', { month: 'short' })} {unlockDay}th</strong> (2 days before month end).
+              Setting targets for <strong>{nextMonthName}</strong> unlocks for HR on <strong>{now.toLocaleString('default', { month: 'short' })} {unlockDay}th</strong> (2 days before month end).
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div style={{
+          backgroundColor: '#f0fdf4',
+          border: '1px solid #bbf7d0',
+          borderRadius: '12px',
+          padding: '12px 18px',
+          marginBottom: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          fontSize: '0.85rem',
+          color: '#166534'
+        }}>
+          <div style={{ background: '#dcfce7', padding: '8px', borderRadius: '8px' }}>
+            <Unlock size={18} color="#16a34a" />
+          </div>
+          <div>
+            <h4 style={{ margin: '0 0 2px', fontSize: '0.88rem', fontWeight: 800, color: '#166534' }}>Admin Unrestricted Access</h4>
+            <p style={{ margin: 0, fontSize: '0.82rem', color: '#15803d' }}>
+              You can enter, edit, and update branch targets for both current and upcoming months at <strong>any time</strong>.
             </p>
           </div>
         </div>
@@ -223,7 +255,9 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
 
       {/* BRANCH TARGET CARDS GRID */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))', gap: '20px', width: '100%', boxSizing: 'border-box' }}>
-        {branches.map((b) => (
+        {branches.map((b) => {
+          const isLockedForRole = !isAdmin && !isNextMonthUnlocked;
+          return (
           <div
             key={b.id}
             style={{
@@ -286,24 +320,24 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
                 ) : (
                   <button
                     type="button"
-                    disabled={!isNextMonthUnlocked}
+                    disabled={isLockedForRole}
                     onClick={() => handleEditClick(b, 'next')}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: '6px',
-                      backgroundColor: isNextMonthUnlocked ? '#258ec8' : '#f1f5f9',
-                      color: isNextMonthUnlocked ? '#ffffff' : '#94a3b8',
-                      border: `1px solid ${isNextMonthUnlocked ? '#258ec8' : '#cbd5e1'}`,
+                      backgroundColor: !isLockedForRole ? '#258ec8' : '#f1f5f9',
+                      color: !isLockedForRole ? '#ffffff' : '#94a3b8',
+                      border: `1px solid ${!isLockedForRole ? '#258ec8' : '#cbd5e1'}`,
                       padding: '7px 14px',
                       borderRadius: '8px',
                       fontWeight: 700,
                       fontSize: '0.8rem',
-                      cursor: isNextMonthUnlocked ? 'pointer' : 'not-allowed'
+                      cursor: !isLockedForRole ? 'pointer' : 'not-allowed'
                     }}
                   >
-                    {isNextMonthUnlocked ? <Edit3 size={14} /> : <Lock size={14} />}
-                    Set {nextMonthDate.toLocaleString('default', { month: 'short' })} Target
+                    {!isLockedForRole ? <Edit3 size={14} /> : <Lock size={14} />}
+                    {!isLockedForRole ? `Set ${nextMonthDate.toLocaleString('default', { month: 'short' })} Target` : 'Locked'}
                   </button>
                 )}
               </div>
@@ -369,7 +403,8 @@ export const ManageBranchesPage: React.FC<ManageBranchesPageProps> = ({ onBack }
               </div>
             )}
           </div>
-        ))}
+        );
+      })}
       </div>
 
       {/* EDIT TARGET MODAL */}

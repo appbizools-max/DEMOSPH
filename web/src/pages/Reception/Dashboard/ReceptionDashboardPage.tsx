@@ -4,7 +4,7 @@ import {
   ArrowRightLeft, UserX, Activity, CheckCircle2, Play, AlertCircle, Trash2,
   ArrowUp, ArrowDown, Phone, CalendarClock, X, Save, MoreVertical, MessageCircle, FileText, RotateCcw
 } from 'lucide-react';
-import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification, sendInvoiceWhatsAppNotification, CanonicalBranchId, sanitizeDoctorName } from '@app/shared';
+import { db, sendRescheduleWhatsAppNotification, sendCancellationWhatsAppNotification, sendInvoiceReceiptWhatsAppNotification, sendExperienceWhatsAppNotification, sendInvoiceWhatsAppNotification, CanonicalBranchId, sanitizeDoctorName, resolveCanonicalBranchId } from '@app/shared';
 import { collection, onSnapshot, updateDoc, deleteDoc, doc, query, where, getDocs } from 'firebase/firestore';
 import { TargetProgressWebUI } from '../../../components/TargetProgressWebUI';
 import { PatientFileUI } from '../../../components/PatientFileUI';
@@ -178,18 +178,14 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
   }, []);
 
   const DEFAULT_BRANCH_TARGETS: Record<string, { monthlyTarget: number; targetReached: number }> = {
-    kphb: { monthlyTarget: 1200000, targetReached: 980000 },
-    nallagandla: { monthlyTarget: 1000000, targetReached: 840000 },
-    dilshuknagar: { monthlyTarget: 1400000, targetReached: 1150000 },
-    chandanagar: { monthlyTarget: 900000, targetReached: 720000 },
+    kphb: { monthlyTarget: 0, targetReached: 0 },
+    nallagandla: { monthlyTarget: 0, targetReached: 0 },
+    dilshuknagar: { monthlyTarget: 0, targetReached: 0 },
+    chandanagar: { monthlyTarget: 0, targetReached: 0 },
   };
 
   const getBranchDefaultTarget = (bName: string) => {
-    const norm = (bName || '').toLowerCase();
-    if (norm.includes('kphb') || norm.includes('kukatpally')) return DEFAULT_BRANCH_TARGETS.kphb;
-    if (norm.includes('nalla') || norm.includes('nallagandla')) return DEFAULT_BRANCH_TARGETS.nallagandla;
-    if (norm.includes('chanda') || norm.includes('chnr') || norm.includes('chandanagar')) return DEFAULT_BRANCH_TARGETS.chandanagar;
-    return DEFAULT_BRANCH_TARGETS.dilshuknagar;
+    return { monthlyTarget: 0, targetReached: 0 };
   };
 
   const activeBranchName = currentBranch || 'KPHB Branch';
@@ -271,16 +267,17 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
   }, [currentBranch, appointments, packageMembersList, branchTarget.monthlyTarget]);
 
   useEffect(() => {
-    const diff = Math.abs(realBranchResult.targetReached - branchTarget.targetReached);
-    if (diff >= 1 && realBranchResult.targetReached > 0 && appointments.length > 0) {
+    // Only update and sync to Firestore if realBranchResult is GREATER than branchTarget.targetReached
+    // This protects the true monthly branch target from being overwritten by an incomplete local appointments subset
+    if (realBranchResult.targetReached > (branchTarget.targetReached || 0) && appointments.length > 0) {
       setBranchTarget(prev => ({
         ...prev,
         targetReached: realBranchResult.targetReached,
-        monthlyTarget: realBranchResult.monthlyTarget,
+        monthlyTarget: realBranchResult.monthlyTarget || prev.monthlyTarget,
       }));
       syncBranchTargetToFirestore(db, realBranchResult.branchName, realBranchResult.targetReached, realBranchResult.monthlyTarget).catch(() => { });
     }
-  }, [realBranchResult.targetReached, realBranchResult.monthlyTarget, realBranchResult.branchName, appointments.length]);
+  }, [realBranchResult.targetReached, realBranchResult.monthlyTarget, realBranchResult.branchName, branchTarget.targetReached, appointments.length]);
 
 
 
@@ -374,6 +371,12 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
           paymentMode: targetApp.paymentMode || 'UPI',
           branch: targetApp.branch || targetApp.branchName || currentBranch || 'KPHB',
           doctorName: sanitizeDoctorName(targetApp.doctorName || targetApp.doctor, targetApp.branch || targetApp.branchName || currentBranch)
+        }).then(res => {
+          const generatedPdfUrl = (res as any)?.pdfUrl;
+          if (generatedPdfUrl && db) {
+            updateDoc(doc(db, 'appointments', appId), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+            updateDoc(doc(db, 'allpatients', appId), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+          }
         }).catch(err => console.error('WhatsApp invoice flow error:', err));
       }
     } catch (err) {
@@ -413,6 +416,12 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
             paymentMode: targetApp.paymentMode || 'UPI',
             branch: targetApp.branch || targetApp.branchName || currentBranch || 'KPHB',
             doctorName: sanitizeDoctorName(targetApp.doctorName || targetApp.doctor, targetApp.branch || targetApp.branchName || currentBranch)
+          }).then(res => {
+            const generatedPdfUrl = (res as any)?.pdfUrl;
+            if (generatedPdfUrl && db) {
+              updateDoc(doc(db, 'appointments', appId), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+              updateDoc(doc(db, 'allpatients', appId), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+            }
           }).catch(err => console.error('WhatsApp invoice error on mark as paid:', err));
         }
       }
@@ -550,12 +559,22 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
   };
 
   const isMatchingBranch = (a: any) => {
-    if (!currentBranch || currentBranch === 'All Branches') return true;
-    const appBranch = a.branch || a.targetBranch || a.branchName;
-    if (!appBranch) return true;
-    const normAppBranch = String(appBranch).toLowerCase().replace(/\s*branch\s*/i, '').trim();
+    if (!currentBranch || currentBranch === 'All Branches' || currentBranch === 'all' || currentBranch.toLowerCase().trim() === 'all branches') {
+      return true;
+    }
+    const canonicalCurrent = resolveCanonicalBranchId(currentBranch);
+    if (!canonicalCurrent) return true;
+
+    const rawApp = a.branch || a.targetBranch || a.branchName || a.branchId || a.assignedBranch;
+    const canonicalApp = resolveCanonicalBranchId(rawApp) || resolveCanonicalBranchId(a.registrationId || a.regId);
+
+    if (canonicalApp) {
+      return canonicalApp === canonicalCurrent;
+    }
+    if (!rawApp) return false;
+    const normAppBranch = String(rawApp).toLowerCase().replace(/\s*branch\s*/i, '').trim();
     const normCurrentBranch = String(currentBranch).toLowerCase().replace(/\s*branch\s*/i, '').trim();
-    return normAppBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normAppBranch);
+    return normAppBranch === normCurrentBranch || normAppBranch.includes(normCurrentBranch) || normCurrentBranch.includes(normAppBranch);
   };
 
   // Deleted appointments in the last 24h for current branch (Restorable)
@@ -739,9 +758,9 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
       {/* Dynamic Real-Time Target Progress Card */}
       <div style={{ marginBottom: '20px' }}>
         <TargetProgressWebUI
-          branchName={realBranchResult.branchName}
-          monthlyTarget={realBranchResult.monthlyTarget}
-          targetReached={Math.max(realBranchResult.targetReached, branchTarget.targetReached || 0)}
+          branchName={branchTarget.branchName || realBranchResult.branchName}
+          monthlyTarget={branchTarget.monthlyTarget || realBranchResult.monthlyTarget}
+          targetReached={Math.max(branchTarget.targetReached || 0, realBranchResult.targetReached || 0)}
         />
       </div>
 
@@ -1752,7 +1771,7 @@ export const ReceptionDashboardPage: React.FC<ReceptionDashboardPageProps> = ({
         appointment={checkoutModalApp}
         onClose={() => setCheckoutModalApp(null)}
         onSuccess={() => {
-          // Keep checkout modal open to display payment success popup and allow digital invoice viewing/printing
+          setCheckoutModalApp(null);
         }}
       />
 

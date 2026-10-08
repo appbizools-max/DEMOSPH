@@ -2,8 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import { doc, updateDoc, setDoc, getDocs, collection, query, where, arrayUnion, addDoc, onSnapshot, limit } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { db, sendInvoiceWhatsAppNotification, resolveCanonicalBranchId, getBranchPhone } from '@app/shared';
-import { X, User, CheckCircle2, Circle, ArrowLeft, MessageCircle, Plus, Trash2, Package, AlertCircle, ShieldCheck, Sparkles, Clock, Calendar, FileText, Camera, Upload, Eye } from 'lucide-react';
+import {
+  db,
+  sendInvoiceWhatsAppNotification,
+  resolveCanonicalBranchId,
+  getBranchPhone,
+  createRazorpayPaymentQr,
+  checkRazorpayPaymentStatus,
+  QrCodeResult,
+  launchRazorpayCardCheckout,
+  createRazorpayCardPaymentLink
+} from '@app/shared';
+import { X, User, CheckCircle2, Circle, ArrowLeft, MessageCircle, Plus, Trash2, Package, AlertCircle, ShieldCheck, Sparkles, Clock, Calendar, FileText, Camera, Upload, Eye, QrCode, RefreshCw, Copy, Check, CreditCard, ExternalLink } from 'lucide-react';
 import { SH_LOGO_BASE64 } from '../utils/logoBase64';
 import { createPaymentNotificationInFirestore, createFeeDiscountRequestNotificationInFirestore } from '../utils/fcmWebTrigger';
 
@@ -176,8 +186,8 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
   const [medicineDuration, setMedicineDuration] = useState<string>('1 Month');
   const [medicineItems, setMedicineItems] = useState<CheckoutMedicineItem[]>([]);
 
-  // Payment Mode & Split
-  const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('Cash');
+  // Payment Mode & Split (Mandatory - No Default)
+  const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('');
   const [splitMethod1, setSplitMethod1] = useState<string>('Cash');
   const [splitMethod2, setSplitMethod2] = useState<string>('UPI');
   const [splitAmount1, setSplitAmount1] = useState<number | string>('');
@@ -376,7 +386,6 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       reader.readAsDataURL(file);
     });
   };
-
   // Upload handler for prescription images/PDFs on Web (No limit on number of pages)
   const handleWebPrescriptionUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -736,8 +745,6 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     }
   }, [appointment]);
 
-  if (!appointment) return null;
-
   const handlePresetSelect = (preset: 'consultation' | 'consultation_med' | 'split' | 'package') => {
     setPaymentTypePreset(preset);
     const currTarget = targetAmount > 0
@@ -944,7 +951,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     if (cappedVal > 0) {
       setIncludeConsultFee(true);
     }
-    if (includeMedicineFee && targetAmount > 0) {
+    if (paymentTypePreset !== 'consultation_med' && includeMedicineFee && targetAmount > 0) {
       const mPortion = Math.max(0, targetAmount - cappedVal);
       setMedicineFeeInput(mPortion);
       const count = medicineItems.length > 0 ? medicineItems.length : 1;
@@ -961,6 +968,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
   };
 
   const handleMedicineFeeChange = (val: number) => {
+    if (paymentTypePreset === 'consultation_med') return;
     const safeTarget = targetAmount > 0 ? targetAmount : val;
     const cappedVal = targetAmount > 0 ? Math.min(val, safeTarget) : val;
     setMedicineFeeInput(cappedVal);
@@ -1009,6 +1017,183 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       activeConsultFee + activeMedicineFee + activeDietFee + activeOtherCharges - effectiveDiscount
     );
   }
+
+  // Dynamic Razorpay UPI QR Code State
+  const [upiQrLoading, setUpiQrLoading] = useState<boolean>(false);
+  const [upiQrData, setUpiQrData] = useState<QrCodeResult | null>(null);
+  const [upiQrChecking, setUpiQrChecking] = useState<boolean>(false);
+  const [upiQrPaid, setUpiQrPaid] = useState<boolean>(false);
+  const [copiedLink, setCopiedLink] = useState<boolean>(false);
+
+  const generateUpiQr = async (forceAmount?: number) => {
+    const amt = typeof forceAmount === 'number' ? forceAmount : totalAmountDue;
+    if (amt <= 0) return;
+    setUpiQrLoading(true);
+    setUpiQrPaid(false);
+    try {
+      const pName = patientName || 'Patient';
+      const pPhone = patientPhone || '';
+      const bName = (appointment as any)?.branch || (appointment as any)?.branchName || 'Spiritual Homeopathy';
+      const invId = appointment?.id || `INV-${Date.now().toString().slice(-6)}`;
+      const result = await createRazorpayPaymentQr({
+        amount: amt,
+        patientName: pName,
+        phone: pPhone,
+        branch: bName,
+        invoiceId: invId,
+        description: `Consultation - ${pName}`
+      });
+      setUpiQrData(result);
+    } catch (e) {
+      console.warn('[UPI QR] Error generating:', e);
+    } finally {
+      setUpiQrLoading(false);
+    }
+  };
+
+  const handleVerifyUpiPayment = async () => {
+    if (!upiQrData?.qrId) {
+      alert('No active payment ID to check.');
+      return;
+    }
+    setUpiQrChecking(true);
+    try {
+      const res = await checkRazorpayPaymentStatus(upiQrData.qrId);
+      if (res.isPaid) {
+        setUpiQrPaid(true);
+        handleConfirmCheckout();
+      } else {
+        alert('⏳ Payment Pending\n\nPayment has not been completed yet. Please ask the patient to approve the transaction in their UPI app (GPay / PhonePe / Paytm).');
+      }
+    } catch (e) {
+      alert('Could not verify status automatically. If the patient has paid and you see the confirmation, you may proceed.');
+    } finally {
+      setUpiQrChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedPaymentMode === 'UPI / QR Code' && totalAmountDue > 0) {
+      if (!upiQrData || upiQrData.amount !== totalAmountDue) {
+        generateUpiQr(totalAmountDue);
+      }
+    }
+  }, [selectedPaymentMode, totalAmountDue]);
+
+  useEffect(() => {
+    if (selectedPaymentMode !== 'UPI / QR Code' || !upiQrData?.qrId || upiQrPaid) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await checkRazorpayPaymentStatus(upiQrData.qrId!);
+        if (res.isPaid) {
+          setUpiQrPaid(true);
+          clearInterval(interval);
+          handleConfirmCheckout();
+        }
+      } catch (_) {}
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [selectedPaymentMode, upiQrData?.qrId, upiQrPaid]);
+
+  // Card & Split Razorpay Payment States
+  const [cardPaymentId, setCardPaymentId] = useState<string>('');
+  const [cardLast4, setCardLast4] = useState<string>('');
+  const [cardAuthRef, setCardAuthRef] = useState<string>('');
+  const [cardIsProcessing, setCardIsProcessing] = useState<boolean>(false);
+  const [cardPaidSuccess, setCardPaidSuccess] = useState<boolean>(false);
+
+  // Split specific Razorpay UPI State
+  const [splitUpiQrLoading, setSplitUpiQrLoading] = useState<boolean>(false);
+  const [splitUpiQrData, setSplitUpiQrData] = useState<QrCodeResult | null>(null);
+  const [splitUpiQrPaid, setSplitUpiQrPaid] = useState<boolean>(false);
+
+  // Split amounts
+  const isSplitUpi = selectedPaymentMode === 'Split' && (splitMethod1 === 'UPI' || splitMethod2 === 'UPI');
+  const splitUpiAmount = isSplitUpi ? ((splitMethod1 === 'UPI' ? Number(splitAmount1) : Number(splitAmount2)) || 0) : 0;
+
+  const isSplitCard = selectedPaymentMode === 'Split' && (splitMethod1 === 'Card' || splitMethod2 === 'Card');
+  const splitCardAmount = isSplitCard ? ((splitMethod1 === 'Card' ? Number(splitAmount1) : Number(splitAmount2)) || 0) : 0;
+
+  const generateSplitUpiQr = async (amt: number) => {
+    if (amt <= 0) return;
+    setSplitUpiQrLoading(true);
+    setSplitUpiQrPaid(false);
+    try {
+      const pName = patientName || 'Patient';
+      const pPhone = patientPhone || '';
+      const bName = (appointment as any)?.branch || (appointment as any)?.branchName || 'Spiritual Homeopathy';
+      const invId = appointment?.id || `INV-${Date.now().toString().slice(-6)}`;
+      const result = await createRazorpayPaymentQr({
+        amount: amt,
+        patientName: pName,
+        phone: pPhone,
+        branch: bName,
+        invoiceId: invId,
+        description: `Split UPI - ${pName}`
+      });
+      setSplitUpiQrData(result);
+    } catch (e) {
+      console.warn('[Split UPI QR] error:', e);
+    } finally {
+      setSplitUpiQrLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSplitUpi && splitUpiAmount > 0) {
+      if (!splitUpiQrData || splitUpiQrData.amount !== splitUpiAmount) {
+        generateSplitUpiQr(splitUpiAmount);
+      }
+    }
+  }, [isSplitUpi, splitUpiAmount]);
+
+  useEffect(() => {
+    if (!isSplitUpi || !splitUpiQrData?.qrId || splitUpiQrPaid) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await checkRazorpayPaymentStatus(splitUpiQrData.qrId!);
+        if (res.isPaid) {
+          setSplitUpiQrPaid(true);
+          clearInterval(interval);
+        }
+      } catch (_) {}
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [isSplitUpi, splitUpiQrData?.qrId, splitUpiQrPaid]);
+
+  const handleLaunchCardCheckout = async (targetAmt?: number) => {
+    const amt = typeof targetAmt === 'number' ? targetAmt : (selectedPaymentMode === 'Card' ? totalAmountDue : splitCardAmount);
+    if (amt <= 0) {
+      alert('Please enter a valid amount for Card payment.');
+      return;
+    }
+    setCardIsProcessing(true);
+    try {
+      const pName = patientName || 'Patient';
+      const pPhone = patientPhone || '';
+      const bName = (appointment as any)?.branch || (appointment as any)?.branchName || 'Spiritual Homeopathy';
+      await launchRazorpayCardCheckout({
+        amount: amt,
+        patientName: pName,
+        phone: pPhone,
+        branch: bName,
+        invoiceId: appointment?.id,
+        onSuccess: (paymentId: string) => {
+          setCardPaymentId(paymentId);
+          setCardPaidSuccess(true);
+          setCardIsProcessing(false);
+          alert(`✅ Card Payment of ₹${amt} Successful!\n\nRazorpay Payment ID: ${paymentId}\n\nYou may now complete the checkout.`);
+        },
+        onError: (err: any) => {
+          setCardIsProcessing(false);
+          alert(`Card Payment Error: ${err?.description || 'Payment was cancelled or declined'}`);
+        }
+      });
+    } catch (e: any) {
+      setCardIsProcessing(false);
+      alert('Could not initiate card payment.');
+    }
+  };
 
   const handleSubmitDiscountRequest = async () => {
     if (!appointment || !db) return;
@@ -1065,9 +1250,9 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
         discountInput: 0,
         updatedAt: nowIso
       };
-      await updateDoc(doc(db, 'appointments', targetId), updatePayload).catch(() => {});
-      await updateDoc(doc(db, 'allpatients', targetId), updatePayload).catch(() => {});
-      await updateDoc(doc(db, 'patients', targetId), updatePayload).catch(() => {});
+      await updateDoc(doc(db, 'appointments', targetId), updatePayload).catch(() => { });
+      await updateDoc(doc(db, 'allpatients', targetId), updatePayload).catch(() => { });
+      await updateDoc(doc(db, 'patients', targetId), updatePayload).catch(() => { });
 
       // Send Push & In-App Notification to HR & Admin
       createFeeDiscountRequestNotificationInFirestore({
@@ -1078,7 +1263,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
         originalTotalAmount: currentTotalBeforeDiscount,
         reason: discountReason.trim(),
         appointmentId: targetId
-      }).catch(() => {});
+      }).catch(() => { });
 
       alert('✓ Discount request successfully submitted to HR for approval!\n\nStatus is currently PENDING. The discount will only be applied to the bill once HR reviews and approves.');
     } catch (err: any) {
@@ -1120,6 +1305,16 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       }
     }
 
+    // 2. Pending HR Discount Warning Popup
+    if (discountRequestStatus === 'pending') {
+      const proceed = window.confirm(
+        `⏳ Discount Request Pending with HR\n\nYou requested a discount of ₹${requestedDiscountAmount || '...'} which is currently pending HR approval.\n\nAre you willing to proceed with full payment now without the discount, or wait for HR action?\n\n- Click OK to PROCEED with payment now\n- Click CANCEL to WAIT for HR action`
+      );
+      if (!proceed) {
+        return;
+      }
+    }
+
     setIsLoading(true);
     const finalPaymentMode =
       totalAmountDue === 0
@@ -1152,6 +1347,9 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       hasPrescription: true,
       prescriptionVerified: true,
       prescriptionVerifiedAt: new Date().toISOString(),
+      cardPaymentId: cardPaymentId || null,
+      cardLast4: cardLast4 || null,
+      cardAuthRef: cardAuthRef || null,
       updatedAt: new Date().toISOString()
     };
 
@@ -1306,6 +1504,35 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
         await setDoc(doc(db, 'package_members', pkgDocId), newPkgData).catch(e => console.error('Error creating package member:', e));
       }
 
+      // Build structured invoice line items
+      const webInvoiceItems: any[] = [];
+      const isPkg = isPackageCoveredFully || paymentTypePreset === 'package';
+      if (!isPkg && Number(activeConsultFee) > 0) {
+        webInvoiceItems.push({ description: 'Consultation & Clinical Evaluation', amount: Number(activeConsultFee) });
+      }
+      if (includeMedicineFee && medicineItems && medicineItems.length > 0) {
+        medicineItems.forEach((m: any) => {
+          webInvoiceItems.push({
+            description: `${m.name || 'Medicine'}${m.timing ? ` [${m.timing}]` : ''}`,
+            amount: Number(m.amount || 0)
+          });
+        });
+      } else if (!isPkg && Number(activeMedicineFee) > 0) {
+        webInvoiceItems.push({
+          description: `Medicine Fee${medicineDuration ? ` (${medicineDuration})` : ''}`,
+          amount: Number(activeMedicineFee)
+        });
+      }
+      if (!isPkg && Number(activeDietFee) > 0) {
+        webInvoiceItems.push({ description: 'Diet & Nutrition Fee', amount: Number(activeDietFee) });
+      }
+      if (isPkg) {
+        webInvoiceItems.push({ description: 'Homeopathy Healthcare Package', amount: totalAmountDue });
+      }
+      if (webInvoiceItems.length === 0) {
+        webInvoiceItems.push({ description: 'Homeopathy Clinical Consultation & Care', amount: totalAmountDue });
+      }
+
       // Trigger Leonas WhatsApp Invoice / Payment Receipt Notification
       if (totalAmountDue > 0) {
         sendInvoiceWhatsAppNotification({
@@ -1315,7 +1542,14 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
           totalPaid: totalAmountDue,
           paymentMode: finalPaymentMode,
           branch: appointment.branch || 'KPHB',
-          doctorName: appointment.doctorName || appointment.doctor || 'Dr. Prashanth K Vaidya'
+          doctorName: appointment.doctorName || appointment.doctor || 'Dr. Prashanth K Vaidya',
+          items: webInvoiceItems
+        }).then(res => {
+          const generatedPdfUrl = (res as any)?.pdfUrl;
+          if (generatedPdfUrl && db) {
+            updateDoc(doc(db, 'appointments', appointment.id), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+            updateDoc(doc(db, 'allpatients', appointment.id), { invoicePdfUrl: generatedPdfUrl }).catch(() => {});
+          }
         }).catch(err => console.error('WhatsApp invoice notification error:', err));
 
         // Trigger Payment Notification in Firestore for HR (all branches) & Branch Reception
@@ -1351,13 +1585,11 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
         }
       }
 
-      // Show frontend popup modal with Patient Name, Amount Paid, and Payment Mode
-      setPaymentSuccessPopup({
-        patientName: appointment.patientName || appointment.name || 'Patient',
-        totalPaid: totalAmountDue,
-        paymentMode: finalPaymentMode,
-        completedInvoice
-      });
+      // Close checkout modal immediately so receptionist returns to dashboard
+      onClose();
+
+      // Show immediate confirmation alert confirming appointment is completed and closed
+      alert(`✅ Appointment Completed & Closed!\n\nPayment of ₹${totalAmountDue.toLocaleString('en-IN')} received successfully via ${finalPaymentMode} for ${patientName}.\n\nAppointment is now marked as Completed in Dashboard.`);
     } catch (err) {
       console.error('Error completing checkout:', err);
       alert('Failed to save payment to Firestore.');
@@ -1365,6 +1597,8 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       setIsLoading(false);
     }
   };
+
+  if (!appointment) return null;
 
   const patientName = appointment.patientName || appointment.name || 'Patient';
   const patientPhone = appointment.phone || 'N/A';
@@ -2101,13 +2335,15 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
 
                 {/* 2. Prescribed Medicines */}
                 <div style={{
-                  background: '#ffffff',
-                  border: includeMedicineFee ? '1.5px solid #93c5fd' : '1px solid #e2e8f0',
+                  background: paymentTypePreset === 'consultation_med' ? '#f8fafc' : '#ffffff',
+                  opacity: paymentTypePreset === 'consultation_med' ? 0.6 : 1,
+                  border: paymentTypePreset !== 'consultation_med' && includeMedicineFee ? '1.5px solid #93c5fd' : '1px solid #e2e8f0',
                   borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '12px'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div
                       onClick={() => {
+                        if (paymentTypePreset === 'consultation_med') return;
                         const nextInclude = !includeMedicineFee;
                         setIncludeMedicineFee(nextInclude);
                         if (nextInclude) {
@@ -2141,33 +2377,73 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                           }
                         }
                       }}
-                      style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', flex: 1 }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        cursor: paymentTypePreset === 'consultation_med' ? 'not-allowed' : 'pointer',
+                        flex: 1
+                      }}
                     >
-                      {includeMedicineFee ? <CheckCircle2 color="#258ec8" size={24} /> : <Circle color="#cbd5e1" size={24} />}
+                      {paymentTypePreset === 'consultation_med' ? (
+                        <Circle color="#94a3b8" size={24} />
+                      ) : (
+                        includeMedicineFee ? <CheckCircle2 color="#258ec8" size={24} /> : <Circle color="#cbd5e1" size={24} />
+                      )}
                       <div>
-                        <div style={{ fontSize: '14.5px', fontWeight: 800, color: '#0f172a' }}>
-                          Prescribed Medicines
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '14.5px', fontWeight: 800, color: paymentTypePreset === 'consultation_med' ? '#64748b' : '#0f172a' }}>
+                            Prescribed Medicines
+                          </span>
+                          {paymentTypePreset === 'consultation_med' && (
+                            <span style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', background: '#e2e8f0', padding: '2px 6px', borderRadius: '4px' }}>
+                              DISABLED
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: '12px', color: '#64748b', marginTop: '1px' }}>
-                          Prescribed Remedies / Pharmacy Fee
+                          {paymentTypePreset === 'consultation_med'
+                            ? 'Bundled into Consultation & Medicine Fee'
+                            : 'Prescribed Remedies / Pharmacy Fee'}
                         </div>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 10px', width: '90px' }}>
-                      <span style={{ fontSize: '14px', fontWeight: 700, color: '#258ec8', marginRight: '2px' }}>₹</span>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      background: paymentTypePreset === 'consultation_med' ? '#f1f5f9' : '#ffffff',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '8px',
+                      padding: '5px 10px',
+                      width: '90px'
+                    }}>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: paymentTypePreset === 'consultation_med' ? '#94a3b8' : '#258ec8', marginRight: '2px' }}>₹</span>
                       <input
                         type="number"
-                        placeholder="0"
-                        value={medicineFeeInput === 0 ? '' : medicineFeeInput}
+                        placeholder={paymentTypePreset === 'consultation_med' ? 'Bundled' : '0'}
+                        disabled={paymentTypePreset === 'consultation_med'}
+                        value={paymentTypePreset === 'consultation_med' ? '' : (medicineFeeInput === 0 ? '' : medicineFeeInput)}
                         onChange={e => handleMedicineFeeChange(e.target.value === '' ? 0 : Number(e.target.value) || 0)}
                         onWheel={e => e.currentTarget.blur()}
-                        style={{ width: '100%', border: 'none', outline: 'none', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: '#0f172a', appearance: 'textfield', MozAppearance: 'textfield' }}
+                        style={{
+                          width: '100%',
+                          border: 'none',
+                          outline: 'none',
+                          textAlign: 'right',
+                          fontSize: '14px',
+                          fontWeight: 700,
+                          color: paymentTypePreset === 'consultation_med' ? '#94a3b8' : '#0f172a',
+                          background: 'transparent',
+                          cursor: paymentTypePreset === 'consultation_med' ? 'not-allowed' : 'text',
+                          appearance: 'textfield',
+                          MozAppearance: 'textfield'
+                        }}
                       />
                     </div>
                   </div>
 
                   {/* Duration dropdown & Add Medicine list (Active when medicines included) */}
-                  {includeMedicineFee && (
+                  {paymentTypePreset !== 'consultation_med' && includeMedicineFee && (
                     <div style={{
                       borderTop: '1px solid #f1f5f9', paddingTop: '12px', marginTop: '2px',
                       display: 'flex', flexDirection: 'column', gap: '12px'
@@ -2487,7 +2763,15 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             )}
 
             {/* Payment Method Selector */}
-            <div style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a', marginTop: '6px' }}>Select Payment Method</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+              <span style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a' }}>Select Payment Method</span>
+              <span style={{ fontSize: '12px', fontWeight: 800, color: '#ef4444' }}>* (Mandatory)</span>
+            </div>
+            {!selectedPaymentMode && !isPackageCoveredFully && totalAmountDue > 0 && (
+              <div style={{ fontSize: '12px', color: '#d97706', fontWeight: 700, marginTop: '2px', marginBottom: '4px' }}>
+                ⚠️ Please click an option below to select how the patient is paying:
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px' }}>
               {['Cash', 'UPI / QR Code', 'Card', 'Split', 'Send Pay to app'].map((mode) => {
                 const isActive = selectedPaymentMode === mode;
@@ -2518,6 +2802,295 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                 );
               })}
             </div>
+
+            {/* Dynamic Razorpay UPI QR Code Card */}
+            {selectedPaymentMode === 'UPI / QR Code' && totalAmountDue > 0 && (
+              <div style={{
+                marginTop: '12px',
+                marginBottom: '12px',
+                background: 'linear-gradient(180deg, #f8fafc 0%, #f0f9ff 100%)',
+                borderRadius: '14px',
+                border: '1.5px solid #7dd3fc',
+                padding: '16px',
+                boxShadow: '0 4px 12px rgba(2, 132, 199, 0.08)'
+              }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  paddingBottom: '12px', borderBottom: '1px solid #e2e8f0', marginBottom: '14px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <QrCode size={20} color="#0284c7" />
+                    <span style={{ fontSize: '14px', fontWeight: 800, color: '#0369a1' }}>
+                      Razorpay Dynamic UPI QR
+                    </span>
+                  </div>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    background: '#ecfdf5', padding: '4px 10px', borderRadius: '16px',
+                    border: '1px solid #a7f3d0'
+                  }}>
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
+                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#059669', letterSpacing: '0.5px' }}>
+                      LIVE
+                    </span>
+                  </div>
+                </div>
+
+                {upiQrLoading ? (
+                  <div style={{ padding: '36px 0', textAlign: 'center' }}>
+                    <RefreshCw className="animate-spin" size={28} color="#0284c7" style={{ margin: '0 auto 10px' }} />
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#64748b' }}>
+                      Generating dynamic Razorpay QR for ₹{totalAmountDue.toLocaleString('en-IN')}...
+                    </div>
+                  </div>
+                ) : upiQrData?.imageUrl ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    {upiQrPaid ? (
+                      <div style={{
+                        background: '#dcfce7', border: '1.5px solid #86efac', borderRadius: '12px',
+                        padding: '16px', width: '100%', textAlign: 'center', marginBottom: '14px'
+                      }}>
+                        <CheckCircle2 size={36} color="#16a34a" style={{ margin: '0 auto 6px' }} />
+                        <div style={{ fontSize: '16px', fontWeight: 800, color: '#15803d' }}>
+                          Payment Received: ₹{totalAmountDue.toLocaleString('en-IN')}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#166534', marginTop: '4px' }}>
+                          Verified via Razorpay UPI. You may now complete checkout below.
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{
+                          background: '#ffffff', padding: '12px', borderRadius: '12px',
+                          border: '1px solid #cbd5e1', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                          display: 'inline-block'
+                        }}>
+                          <img
+                            src={upiQrData.imageUrl}
+                            alt="Razorpay Dynamic UPI QR"
+                            style={{ width: '200px', height: '200px', display: 'block' }}
+                          />
+                        </div>
+
+                        <div style={{ fontSize: '24px', fontWeight: 900, color: '#0f172a', marginTop: '12px' }}>
+                          ₹{totalAmountDue.toLocaleString('en-IN')}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#64748b', textAlign: 'center', marginTop: '4px' }}>
+                          Scan using Google Pay, PhonePe, Paytm, BHIM, CRED or any UPI App
+                        </div>
+                      </>
+                    )}
+
+                    <div style={{ display: 'flex', gap: '10px', marginTop: '14px', width: '100%', maxWidth: '420px' }}>
+                      <button
+                        type="button"
+                        onClick={() => generateUpiQr(totalAmountDue)}
+                        disabled={upiQrLoading}
+                        style={{
+                          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                          padding: '9px 12px', borderRadius: '8px', background: '#ffffff',
+                          border: '1px solid #bae6fd', color: '#0284c7', fontSize: '12px', fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <RefreshCw size={14} />
+                        Refresh QR
+                      </button>
+
+                      {upiQrData.paymentUrl && (
+                        <>
+                          <a
+                            href={upiQrData.paymentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                              padding: '9px 12px', borderRadius: '8px', background: '#f0f9ff',
+                              border: '1px solid #0284c7', color: '#0284c7', fontSize: '12px', fontWeight: 700,
+                              textDecoration: 'none', cursor: 'pointer'
+                            }}
+                          >
+                            <ExternalLink size={14} />
+                            Open Link
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (upiQrData.paymentUrl) {
+                                navigator.clipboard.writeText(upiQrData.paymentUrl);
+                                setCopiedLink(true);
+                                setTimeout(() => setCopiedLink(false), 2500);
+                              }
+                            }}
+                            style={{
+                              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                              padding: '9px 12px', borderRadius: '8px', background: '#ffffff',
+                              border: '1px solid #bae6fd', color: '#0284c7', fontSize: '12px', fontWeight: 700,
+                              cursor: 'pointer'
+                            }}
+                          >
+                            {copiedLink ? <Check size={14} color="#16a34a" /> : <Copy size={14} />}
+                            {copiedLink ? 'Copied!' : 'Copy Link'}
+                          </button>
+                        </>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleVerifyUpiPayment}
+                        disabled={upiQrChecking || upiQrPaid}
+                        style={{
+                          flex: 1.3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                          padding: '9px 12px', borderRadius: '8px',
+                          background: upiQrPaid ? '#16a34a' : '#0284c7',
+                          border: 'none', color: '#ffffff', fontSize: '12px', fontWeight: 800,
+                          cursor: upiQrChecking || upiQrPaid ? 'default' : 'pointer'
+                        }}
+                      >
+                        <ShieldCheck size={14} />
+                        {upiQrChecking ? 'Checking...' : upiQrPaid ? 'Verified ✓' : 'Check Status'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ padding: '20px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '12px', color: '#ef4444', fontWeight: 700 }}>
+                      Could not generate QR Code
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => generateUpiQr(totalAmountDue)}
+                      style={{
+                        marginTop: '8px', padding: '6px 14px', background: '#0284c7', color: '#ffffff',
+                        border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer'
+                      }}
+                    >
+                      Try Again
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Dedicated Razorpay Card Payment Card */}
+            {selectedPaymentMode === 'Card' && totalAmountDue > 0 && (
+              <div style={{
+                marginTop: '12px',
+                marginBottom: '12px',
+                background: 'linear-gradient(180deg, #f8fafc 0%, #f0fdf4 100%)',
+                borderRadius: '14px',
+                border: '1.5px solid #86efac',
+                padding: '16px',
+                boxShadow: '0 4px 12px rgba(22, 163, 74, 0.08)'
+              }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  paddingBottom: '12px', borderBottom: '1px solid #e2e8f0', marginBottom: '14px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <CreditCard size={20} color="#16a34a" />
+                    <span style={{ fontSize: '14px', fontWeight: 800, color: '#15803d' }}>
+                      Razorpay Card Payment Gateway
+                    </span>
+                  </div>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    background: '#ecfdf5', padding: '4px 10px', borderRadius: '16px',
+                    border: '1px solid #a7f3d0'
+                  }}>
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
+                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#059669', letterSpacing: '0.5px' }}>
+                      LIVE GATEWAY
+                    </span>
+                  </div>
+                </div>
+
+                {cardPaidSuccess ? (
+                  <div style={{
+                    background: '#dcfce7', border: '1.5px solid #86efac', borderRadius: '12px',
+                    padding: '16px', textAlign: 'center', marginBottom: '12px'
+                  }}>
+                    <CheckCircle2 size={36} color="#16a34a" style={{ margin: '0 auto 6px' }} />
+                    <div style={{ fontSize: '16px', fontWeight: 800, color: '#15803d' }}>
+                      Card Payment Approved: ₹{totalAmountDue.toLocaleString('en-IN')}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#166534', marginTop: '4px', fontWeight: 700 }}>
+                      Razorpay ID: {cardPaymentId}
+                    </div>
+                    <div style={{ fontSize: '11.5px', color: '#15803d', marginTop: '2px' }}>
+                      Verified via Razorpay. You can now complete checkout below.
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ textAlign: 'center', marginBottom: '14px' }}>
+                      <div style={{ fontSize: '24px', fontWeight: 900, color: '#0f172a' }}>
+                        ₹{totalAmountDue.toLocaleString('en-IN')}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                        Accept all Visa, MasterCard, RuPay, Maestro & Amex cards via secure Razorpay checkout
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleLaunchCardCheckout(totalAmountDue)}
+                      disabled={cardIsProcessing}
+                      style={{
+                        width: '100%', padding: '12px 16px', borderRadius: '10px',
+                        background: '#16a34a', color: '#ffffff', border: 'none',
+                        fontSize: '14px', fontWeight: 800, cursor: cardIsProcessing ? 'default' : 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                        boxShadow: '0 4px 10px rgba(22, 163, 74, 0.2)'
+                      }}
+                    >
+                      <CreditCard size={18} />
+                      {cardIsProcessing ? 'Opening Razorpay Card Checkout...' : `Pay ₹${totalAmountDue.toLocaleString('en-IN')} via Razorpay Card`}
+                    </button>
+
+                    <div style={{
+                      marginTop: '14px', paddingTop: '12px', borderTop: '1px dashed #cbd5e1',
+                      display: 'flex', flexDirection: 'column', gap: '8px'
+                    }}>
+                      <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#64748b' }}>
+                        Or Record Card Swipe (POS Machine Slip):
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '10px' }}>
+                        <div>
+                          <label style={{ fontSize: '11px', color: '#475569', fontWeight: 700 }}>Card Last 4 Digits</label>
+                          <input
+                            type="text"
+                            maxLength={4}
+                            placeholder="e.g. 1338"
+                            value={cardLast4}
+                            onChange={e => setCardLast4(e.target.value.replace(/\D/g, ''))}
+                            style={{
+                              width: '100%', padding: '6px 10px', borderRadius: '6px',
+                              border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: 700,
+                              marginTop: '2px', outline: 'none'
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '11px', color: '#475569', fontWeight: 700 }}>Auth / Slip Reference</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. EZ2026... or Bank RRN"
+                            value={cardAuthRef}
+                            onChange={e => setCardAuthRef(e.target.value)}
+                            style={{
+                              width: '100%', padding: '6px 10px', borderRadius: '6px',
+                              border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: 600,
+                              marginTop: '2px', outline: 'none'
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Split Breakdown with Any Combination (Cash+UPI, Cash+Card, UPI+Card) */}
             {selectedPaymentMode === 'Split' && (
@@ -2670,6 +3243,149 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                     </span>
                   )}
                 </div>
+
+                {/* Split Dynamic Razorpay UPI QR Card */}
+                {isSplitUpi && splitUpiAmount > 0 && (
+                  <div style={{
+                    marginTop: '4px',
+                    background: '#ffffff',
+                    borderRadius: '10px',
+                    border: '1.5px solid #7dd3fc',
+                    padding: '12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <QrCode size={16} color="#0284c7" />
+                        <span style={{ fontSize: '12px', fontWeight: 800, color: '#0369a1' }}>
+                          Split UPI QR: ₹{splitUpiAmount.toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: '#059669', background: '#ecfdf5', padding: '2px 8px', borderRadius: '12px', border: '1px solid #a7f3d0' }}>
+                        DIRECT UPI
+                      </span>
+                    </div>
+
+                    {splitUpiQrLoading ? (
+                      <div style={{ padding: '16px 0', textAlign: 'center' }}>
+                        <RefreshCw className="animate-spin" size={20} color="#0284c7" style={{ margin: '0 auto 6px' }} />
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>Generating QR for ₹{splitUpiAmount}...</span>
+                      </div>
+                    ) : splitUpiQrData?.imageUrl ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+                        {splitUpiQrPaid ? (
+                          <div style={{ background: '#dcfce7', border: '1px solid #86efac', borderRadius: '8px', padding: '10px', width: '100%', textAlign: 'center', marginBottom: '8px' }}>
+                            <CheckCircle2 size={24} color="#16a34a" style={{ margin: '0 auto 4px' }} />
+                            <div style={{ fontSize: '13px', fontWeight: 800, color: '#15803d' }}>
+                              UPI Portion Received: ₹{splitUpiAmount}
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ background: '#ffffff', padding: '6px', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '6px' }}>
+                              <img src={splitUpiQrData.imageUrl} alt="Split UPI QR" style={{ width: '140px', height: '140px', display: 'block' }} />
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#64748b', textAlign: 'center', marginBottom: '8px' }}>
+                              Scan with GPay, PhonePe, Paytm (No Redirect)
+                            </div>
+                          </>
+                        )}
+                        <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+                          <button
+                            type="button"
+                            onClick={() => generateSplitUpiQr(splitUpiAmount)}
+                            style={{ flex: 1, padding: '6px 8px', background: '#f8fafc', border: '1px solid #bae6fd', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#0284c7', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                          >
+                            <RefreshCw size={12} /> Refresh
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!splitUpiQrData?.qrId) return;
+                              const res = await checkRazorpayPaymentStatus(splitUpiQrData.qrId);
+                              if (res.isPaid) {
+                                setSplitUpiQrPaid(true);
+                                alert(`✅ UPI Split portion of ₹${splitUpiAmount} received!`);
+                              } else {
+                                alert('UPI payment not yet received.');
+                              }
+                            }}
+                            style={{ flex: 1.2, padding: '6px 8px', background: splitUpiQrPaid ? '#16a34a' : '#0284c7', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                          >
+                            <ShieldCheck size={12} /> {splitUpiQrPaid ? 'Verified ✓' : 'Check Status'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+
+                {/* Split Razorpay Card Payment Card */}
+                {isSplitCard && splitCardAmount > 0 && (
+                  <div style={{
+                    marginTop: '4px',
+                    background: '#ffffff',
+                    borderRadius: '10px',
+                    border: '1.5px solid #86efac',
+                    padding: '12px',
+                    display: 'flex',
+                    flexDirection: 'column'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <CreditCard size={16} color="#16a34a" />
+                        <span style={{ fontSize: '12px', fontWeight: 800, color: '#15803d' }}>
+                          Split Card Payment: ₹{splitCardAmount.toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: '#15803d', background: '#dcfce7', padding: '2px 8px', borderRadius: '12px', border: '1px solid #86efac' }}>
+                        RAZORPAY
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleLaunchCardCheckout(splitCardAmount)}
+                      disabled={cardIsProcessing}
+                      style={{
+                        width: '100%', padding: '9px 12px', borderRadius: '8px',
+                        background: '#16a34a', color: '#ffffff', border: 'none',
+                        fontSize: '12.5px', fontWeight: 800, cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                        marginBottom: '8px'
+                      }}
+                    >
+                      <CreditCard size={15} />
+                      {cardIsProcessing ? 'Opening Card Gateway...' : `Pay ₹${splitCardAmount.toLocaleString('en-IN')} with Card`}
+                    </button>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '8px', paddingTop: '6px', borderTop: '1px dashed #e2e8f0' }}>
+                      <div>
+                        <label style={{ fontSize: '10.5px', color: '#64748b', fontWeight: 700 }}>Card Last 4</label>
+                        <input
+                          type="text"
+                          maxLength={4}
+                          placeholder="e.g. 1338"
+                          value={cardLast4}
+                          onChange={e => setCardLast4(e.target.value.replace(/\D/g, ''))}
+                          style={{ width: '100%', padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '12px', fontWeight: 700, marginTop: '2px', outline: 'none' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10.5px', color: '#64748b', fontWeight: 700 }}>POS Auth / Slip Ref</label>
+                        <input
+                          type="text"
+                          placeholder="EZ2026... / Bank Ref"
+                          value={cardAuthRef}
+                          onChange={e => setCardAuthRef(e.target.value)}
+                          style={{ width: '100%', padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '12px', fontWeight: 600, marginTop: '2px', outline: 'none' }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2958,8 +3674,23 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                           ₹{Number(activeInvoice.consultationFee || activeInvoice.totalPaid || 0).toFixed(2)}
                         </td>
                       </tr>
-                    ) : (
+                    ) : activeInvoice.paymentTypePreset === 'consultation' ? (
+                      <tr style={{ borderBottom: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '10px 14px', color: '#334155', fontWeight: 600 }}>Consultation Fee</td>
+                        <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
+                          ₹{Number(activeInvoice.consultationFee || activeInvoice.totalPaid || 0).toFixed(2)}
+                        </td>
+                      </tr>
+                    ) : activeInvoice.paymentTypePreset === 'split' ? (
                       <>
+                        {Number(activeInvoice.consultationFee) > 0 && (
+                          <tr style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '10px 14px', color: '#334155', fontWeight: 600 }}>Consultation Fee</td>
+                            <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
+                              ₹{Number(activeInvoice.consultationFee).toFixed(2)}
+                            </td>
+                          </tr>
+                        )}
                         {activeInvoice.medicines && activeInvoice.medicines.length > 0 ? (
                           activeInvoice.medicines.map((m: any, idx: number) => {
                             const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
@@ -2988,11 +3719,24 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                             </tr>
                           )
                         )}
+                      </>
+                    ) : (
+                      <>
                         {Number(activeInvoice.consultationFee) > 0 && (
                           <tr style={{ borderBottom: '1px solid #f1f5f9' }}>
                             <td style={{ padding: '10px 14px', color: '#334155', fontWeight: 600 }}>Consultation Fee</td>
                             <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
                               ₹{Number(activeInvoice.consultationFee).toFixed(2)}
+                            </td>
+                          </tr>
+                        )}
+                        {Number(activeInvoice.medicineFee) > 0 && (
+                          <tr style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '10px 14px', color: '#334155', fontWeight: 600 }}>
+                              Medicine Fee{activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}
+                            </td>
+                            <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
+                              ₹{Number(activeInvoice.medicineFee).toFixed(2)}
                             </td>
                           </tr>
                         )}
@@ -3238,20 +3982,26 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                       </thead>
                         ${activeInvoice.paymentTypePreset === 'consultation_med'
                     ? `<tr><td>Consultation and Medicine</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee || activeInvoice.totalPaid || totalAmount).toFixed(2)}</td></tr>`
-                    : `
-                            ${activeInvoice.medicines && activeInvoice.medicines.length > 0
-                      ? activeInvoice.medicines.map((m: any, idx: number) => {
-                        const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
-                        const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
-                        const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                        return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
-                      }).join('')
-                      : (Number(activeInvoice.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}</td><td style="text-align: right;">₹${Number(activeInvoice.medicineFee).toFixed(2)}</td></tr>` : '')}
+                    : activeInvoice.paymentTypePreset === 'consultation'
+                      ? `<tr><td>Consultation Fee</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee || activeInvoice.totalPaid || totalAmount).toFixed(2)}</td></tr>`
+                      : activeInvoice.paymentTypePreset === 'split'
+                        ? `
                             ${Number(activeInvoice.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee).toFixed(2)}</td></tr>` : ''}
+                            ${activeInvoice.medicines && activeInvoice.medicines.length > 0
+                              ? activeInvoice.medicines.map((m: any, idx: number) => {
+                                const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                                const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
+                                const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
+                                return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                              }).join('')
+                              : (Number(activeInvoice.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}</td><td style="text-align: right;">₹${Number(activeInvoice.medicineFee).toFixed(2)}</td></tr>` : '')}
+                          `
+                        : `
+                            ${Number(activeInvoice.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right;">₹${Number(activeInvoice.consultationFee).toFixed(2)}</td></tr>` : ''}
+                            ${Number(activeInvoice.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}</td><td style="text-align: right;">₹${Number(activeInvoice.medicineFee).toFixed(2)}</td></tr>` : ''}
                           `}
                         ${Number(activeInvoice.dietFee) > 0 ? `<tr><td>Diet & Nutrition Fee</td><td style="text-align: right;">₹${Number(activeInvoice.dietFee).toFixed(2)}</td></tr>` : ''}
-                        ${(!activeInvoice.medicineFee && !activeInvoice.consultationFee && !activeInvoice.dietFee && activeInvoice.paymentTypePreset !== 'consultation_med') ? `<tr><td>Consultation Fee</td><td style="text-align: right;">₹${totalAmount}</td></tr>` : ''}
-                        <tr style="font-weight: bold;"><td>Payment Mode (${activeInvoice.paymentMode || 'UPI'})</td><td style="text-align: right;">₹${totalAmount}</td></tr>
+                        <tr style="font-weight: bold; background: #f8fafc; border-top: 2px solid #258ec8;"><td style="text-transform: uppercase;">Total Paid (${activeInvoice.paymentMode || 'UPI'})</td><td style="text-align: right; color: #166534; font-size: 14px;">₹${totalAmount}</td></tr>
                       </tbody>
                     </table>
                     <div style="text-align: center; margin-top: 14px; margin-bottom: 8px; color: #64748b; font-size: 11px;">

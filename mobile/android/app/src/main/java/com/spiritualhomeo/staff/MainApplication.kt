@@ -26,7 +26,7 @@ class MainApplication : Application(), ReactApplication {
             return PackageList(this).packages
           }
 
-          override fun getJSMainModuleName(): String = "index"
+          override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"
 
           override fun getUseDeveloperSupport(): Boolean = BuildConfig.DEBUG
 
@@ -34,6 +34,7 @@ class MainApplication : Application(), ReactApplication {
           override val isHermesEnabled: Boolean = BuildConfig.IS_HERMES_ENABLED
       }
   )
+
   override val reactHost: ReactHost
     get() = ReactNativeHostWrapper.createReactHost(applicationContext, reactNativeHost)
 

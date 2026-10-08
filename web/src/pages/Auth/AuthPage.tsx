@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Mail, Lock, Phone, Eye, EyeOff, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
+import { Mail, Lock, Phone, User, Eye, EyeOff, ShieldCheck, AlertCircle, Loader2 } from 'lucide-react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
 import {
@@ -39,10 +39,13 @@ export function getInstantWebAuthData(input: string): WebLoginSuccessData | null
 }
 
 export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
-  const [activeRole, setActiveRole] = useState<'otp' | 'email'>('otp');
+  const [activeRole, setActiveRole] = useState<'otp' | 'staff' | 'email'>('otp');
   const [emailOrUsername, setEmailOrUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffPassword, setStaffPassword] = useState('');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [mobileNumber, setMobileNumber] = useState('');
   const [otpCode, setOtpCode] = useState('1234');
   const [otpSent, setOtpSent] = useState(false);
@@ -209,6 +212,70 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
       onLoginSuccess(authData);
     }
     setIsLoading(false);
+  };
+
+  const handleStaffSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    setIsLoading(true);
+
+    const cleanEmail = staffEmail.trim().toLowerCase();
+    const cleanPass = staffPassword.trim();
+
+    if (!cleanEmail || !cleanPass) {
+      setErrorMessage('Please enter both staff email ID and password.');
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      if (db) {
+        const snap = await getDocs(collection(db, 'staff'));
+        let matched: any = null;
+        for (const d of snap.docs) {
+          const data = d.data();
+          const sEmail = String(data.email || '').trim().toLowerCase();
+          const fallbackEmail = `${String(data.name || '').toLowerCase().replace(/[^a-z0-9]/g, '')}@sph.com`;
+          if (sEmail === cleanEmail || fallbackEmail === cleanEmail) {
+            matched = { id: d.id, ...data };
+            break;
+          }
+        }
+
+        if (!matched) {
+          setErrorMessage(`No regular staff member found with email "${cleanEmail}". Please check your email or contact HR.`);
+          setIsLoading(false);
+          return;
+        }
+
+        const expectedPassword = String(matched.password || 'email123').trim();
+        if (cleanPass !== expectedPassword) {
+          setErrorMessage('Incorrect password for staff login. Standard default password is email123.');
+          setIsLoading(false);
+          return;
+        }
+
+        const canonical = resolveCanonicalBranchId(matched.branchId || matched.branch || matched.branchName) || 'kphb';
+        const branchItem = BRANCHES[canonical];
+        const authData: WebLoginSuccessData = {
+          role: 'staff',
+          userName: matched.name || 'Staff Member',
+          branchId: canonical,
+          branchName: branchItem ? branchItem.fullName : `${matched.branch || 'KPHB'} Branch`,
+          branchPhone: matched.mobile || matched.phone || '',
+          staffId: matched.id
+        };
+
+        if (onLoginSuccess) {
+          onLoginSuccess(authData);
+        }
+      }
+    } catch (err: any) {
+      console.error('Staff web login error:', err);
+      setErrorMessage(err.message || 'Staff login failed.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // SEND REAL 4-DIGIT SMS OTP (Truly instant UI transition, zero loading delay!)
@@ -411,21 +478,48 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '6px',
-              padding: '9px 8px',
+              gap: '5px',
+              padding: '9px 6px',
               borderRadius: '9px',
               border: 'none',
               background: activeRole === 'otp' ? '#ffffff' : 'transparent',
               color: activeRole === 'otp' ? '#258ec8' : '#64748b',
               fontWeight: activeRole === 'otp' ? 800 : 600,
-              fontSize: '12px',
+              fontSize: '11.5px',
               cursor: 'pointer',
               boxShadow: activeRole === 'otp' ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
               transition: 'all 0.15s ease'
             }}
           >
-            <Phone size={14} color={activeRole === 'otp' ? '#258ec8' : '#64748b'} />
+            <Phone size={13} color={activeRole === 'otp' ? '#258ec8' : '#64748b'} />
             Doctor / Reception
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveRole('staff');
+              setErrorMessage('');
+            }}
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '5px',
+              padding: '9px 6px',
+              borderRadius: '9px',
+              border: 'none',
+              background: activeRole === 'staff' ? '#ffffff' : 'transparent',
+              color: activeRole === 'staff' ? '#258ec8' : '#64748b',
+              fontWeight: activeRole === 'staff' ? 800 : 600,
+              fontSize: '11.5px',
+              cursor: 'pointer',
+              boxShadow: activeRole === 'staff' ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <User size={13} color={activeRole === 'staff' ? '#258ec8' : '#64748b'} />
+            Staff Login
           </button>
           <button
             type="button"
@@ -438,20 +532,20 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '6px',
-              padding: '9px 8px',
+              gap: '5px',
+              padding: '9px 6px',
               borderRadius: '9px',
               border: 'none',
               background: activeRole === 'email' ? '#ffffff' : 'transparent',
               color: activeRole === 'email' ? '#258ec8' : '#64748b',
               fontWeight: activeRole === 'email' ? 800 : 600,
-              fontSize: '12px',
+              fontSize: '11.5px',
               cursor: 'pointer',
               boxShadow: activeRole === 'email' ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
               transition: 'all 0.15s ease'
             }}
           >
-            <Mail size={14} color={activeRole === 'email' ? '#258ec8' : '#64748b'} />
+            <Mail size={13} color={activeRole === 'email' ? '#258ec8' : '#64748b'} />
             Admin / HR
           </button>
         </div>
@@ -610,6 +704,77 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             >
               {isLoading ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} color="#ffffff" />}
               {!otpSent ? 'Send Verification OTP' : 'Verify & Sign In'}
+            </button>
+          </form>
+        ) : activeRole === 'staff' ? (
+          <form onSubmit={handleStaffSignIn} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '12.5px !important', fontWeight: 700, color: '#475569', marginBottom: '8px' }}>
+                Staff Login Email ID
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', background: '#eef5fc', borderRadius: '10px', padding: '0 14px', height: '46px', border: '1px solid #e0ecf8' }}>
+                <Mail size={16} color="#64748b" style={{ marginRight: '12px' }} />
+                <input
+                  type="email"
+                  value={staffEmail}
+                  onChange={e => setStaffEmail(e.target.value)}
+                  placeholder="e.g. anil@sph.com"
+                  style={{ background: 'transparent', border: 'none', outline: 'none', width: '100%', fontSize: '13px !important', color: '#0f172a', fontWeight: 500 }}
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '12.5px !important', fontWeight: 700, color: '#475569', marginBottom: '8px' }}>
+                Staff Password
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', background: '#eef5fc', borderRadius: '10px', padding: '0 14px', height: '46px', border: '1px solid #e0ecf8', position: 'relative' }}>
+                <Lock size={16} color="#64748b" style={{ marginRight: '12px' }} />
+                <input
+                  type={showStaffPassword ? 'text' : 'password'}
+                  value={staffPassword}
+                  onChange={e => setStaffPassword(e.target.value)}
+                  placeholder="Enter staff password"
+                  style={{ background: 'transparent', border: 'none', outline: 'none', width: '100%', fontSize: '13px !important', color: '#0f172a', fontWeight: 500, paddingRight: '30px' }}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowStaffPassword(!showStaffPassword)}
+                  style={{ position: 'absolute', right: '12px', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center' }}
+                >
+                  {showStaffPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <p style={{ margin: 0, fontSize: '11.5px', color: '#64748b' }}>
+              Standard default password for all staff is <strong style={{ color: '#0f172a' }}>email123</strong>
+            </p>
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              style={{
+                background: '#258ec8',
+                color: '#ffffff',
+                border: 'none',
+                height: '46px',
+                borderRadius: '10px',
+                fontSize: '14.5px !important',
+                fontWeight: 800,
+                cursor: 'pointer',
+                marginTop: '4px',
+                boxShadow: '0 4px 14px rgba(37, 142, 200, 0.25)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px'
+              }}
+            >
+              {isLoading ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} color="#ffffff" />}
+              Sign In to Staff Portal
             </button>
           </form>
         ) : activeRole === 'email' ? (

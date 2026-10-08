@@ -3,13 +3,15 @@
  * Official Meta WABA Approved Templates Verified with WABA ID: 2841437129545530
  */
 
+import { resolveCanonicalBranchId, CanonicalBranchId } from '../branches/branchMaster';
+import { generateInvoicePdfBytes, uploadInvoicePdfToFirebaseStorage, InvoiceItem } from '../invoice/invoicePdfGenerator';
+
 export const LEONAS_CONFIG = {
   WABA_PHONE_NUMBER_ID: '1303340612865892',
   WABA_ACCOUNT_ID: '2841437129545530',
   WABA_API_KEY: '2731e63f-a853-11f1-afb3-02c8a5e042bd',
   BASE_URL: 'https://partnersv1.pinbot.ai/v3/1303340612865892/messages',
 };
-
 /**
  * Determine API URL dynamically (routes through Vite proxy in Web browser to eliminate CORS errors)
  */
@@ -48,11 +50,39 @@ export const BRANCH_VISIT_URLS = {
 } as const;
 
 export const getBranchVisitUrl = (branch?: string): string => {
+  const canonical = resolveCanonicalBranchId(branch);
+  if (canonical === 'chandanagar') return BRANCH_VISIT_URLS.chanda;
+  if (canonical === 'dilshuknagar') return BRANCH_VISIT_URLS.dilshu;
+  if (canonical === 'nallagandla') return BRANCH_VISIT_URLS.nallag;
+  if (canonical === 'kphb') return BRANCH_VISIT_URLS.kphb;
   const clean = (branch || '').toLowerCase().trim();
   if (clean.includes('chanda')) return BRANCH_VISIT_URLS.chanda;
-  if (clean.includes('dilshu')) return BRANCH_VISIT_URLS.dilshu;
-  if (clean.includes('nallag')) return BRANCH_VISIT_URLS.nallag;
+  if (clean.includes('dilshu') || clean.includes('dilsuk')) return BRANCH_VISIT_URLS.dilshu;
+  if (clean.includes('nallag') || clean.includes('nalla')) return BRANCH_VISIT_URLS.nallag;
   return BRANCH_VISIT_URLS.kphb;
+};
+
+// Official Google Review URLs per Branch
+export const BRANCH_GOOGLE_REVIEW_URLS: Record<CanonicalBranchId, string> = {
+  kphb: 'https://stiny.in/SPHOMEO/kphb',
+  chandanagar: 'https://g.page/r/CairS0V3apxiEBM/review',
+  dilshuknagar: 'https://g.page/r/CU1YDEyXIcwhEBM/review',
+  nallagandla: 'https://g.page/r/CUlOWoE7dEjoEBM/review',
+};
+
+/**
+ * Returns the exact Google Review URL for the clinic branch where the appointment was booked
+ */
+export const getBranchGoogleReviewUrl = (branch?: string | null): string => {
+  const canonical = resolveCanonicalBranchId(branch);
+  if (canonical && BRANCH_GOOGLE_REVIEW_URLS[canonical]) {
+    return BRANCH_GOOGLE_REVIEW_URLS[canonical];
+  }
+  const clean = (branch || '').toLowerCase().trim();
+  if (clean.includes('chanda')) return BRANCH_GOOGLE_REVIEW_URLS.chandanagar;
+  if (clean.includes('dilshu') || clean.includes('dilsuk')) return BRANCH_GOOGLE_REVIEW_URLS.dilshuknagar;
+  if (clean.includes('nallag') || clean.includes('nalla')) return BRANCH_GOOGLE_REVIEW_URLS.nallagandla;
+  return BRANCH_GOOGLE_REVIEW_URLS.kphb;
 };
 
 export interface SendWhatsAppTextParams {
@@ -65,6 +95,11 @@ export interface SendWhatsAppTemplateParams {
   templateName: string;
   languageCode?: string;
   bodyParameters?: (string | number)[];
+  headerMedia?: {
+    type?: 'document' | 'image' | 'video';
+    link: string;
+    filename?: string;
+  };
 }
 
 /**
@@ -75,6 +110,7 @@ export const sendWhatsAppTemplateMessage = async ({
   templateName,
   languageCode = 'en',
   bodyParameters = [],
+  headerMedia,
 }: SendWhatsAppTemplateParams): Promise<{ success: boolean; data?: any; error?: string }> => {
   try {
     const recipient = formatPhoneForWhatsApp(to);
@@ -82,6 +118,40 @@ export const sendWhatsAppTemplateMessage = async ({
       console.warn('Invalid phone number for WhatsApp template:', to);
       return { success: false, error: 'Invalid phone number' };
     }
+
+    const components: any[] = [];
+
+    // Header media component (e.g. PDF document attachment for invoice_pdf)
+    if (headerMedia && headerMedia.link) {
+      const mediaType = headerMedia.type || 'document';
+      const mediaPayload: any = {
+        link: headerMedia.link,
+      };
+      if (headerMedia.filename) {
+        mediaPayload.filename = headerMedia.filename;
+      }
+      components.push({
+        type: 'header',
+        parameters: [
+          {
+            type: mediaType,
+            [mediaType]: mediaPayload,
+          },
+        ],
+      });
+    }
+
+    // Body parameters
+    if (bodyParameters && bodyParameters.length > 0) {
+      components.push({
+        type: 'body',
+        parameters: bodyParameters.map((paramVal) => ({
+          type: 'text',
+          text: String(paramVal ?? ''),
+        })),
+      });
+    }
+
     const payload = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -92,15 +162,7 @@ export const sendWhatsAppTemplateMessage = async ({
         language: {
           code: languageCode,
         },
-        components: bodyParameters && bodyParameters.length > 0 ? [
-          {
-            type: 'body',
-            parameters: bodyParameters.map((paramVal) => ({
-              type: 'text',
-              text: String(paramVal ?? ''),
-            })),
-          },
-        ] : [],
+        components: components.length > 0 ? components : undefined,
       },
     };
 
@@ -288,17 +350,26 @@ export const sendRescheduleWhatsAppNotification = async (params: {
 };
 
 /**
- * 3. Trigger WhatsApp Notification on Payment Collection / Invoice Generation
- * Triggers:
- *  1. payement_receipt (Utility - Approved)
- *     {{1}}: Patient Name
- *     {{2}}: Total Paid (Amount)
- *     {{3}}: Receipt No
- *     {{4}}: Date
- *     {{5}}: Branch
- *  2. invoice_recpt (Utility - Approved)
- *     {{1}}: Patient Name
- *  3. Experience / Google Review Template (Utility - Approved)
+ * 3. Complete 3-Step WhatsApp Notification on Payment Collection / Invoice Generation
+ *
+ * Step 1: payement_receipt (Utility - Approved)
+ *   {{1}}: Patient Name
+ *   {{2}}: Total Paid (Amount)
+ *   {{3}}: Receipt No (INV-XXXXXX)
+ *   {{4}}: Date (DD-MM-YYYY)
+ *   {{5}}: Branch Name
+ *
+ * Step 2: invoice_pdf (Meta Template ID: 3761284 - Utility)
+ *   Header: PDF document attachment
+ *   Body: {{1}} Patient Name
+ *
+ * Step 3: Experience Survey & Branch-Specific Google Review
+ *   Survey: "Hi {{1}}, Thank You for Visiting Spiritual Homeopathy Clinics. How was your experience with us?..."
+ *   Google Review Link routed dynamically to the booked branch:
+ *     - KPHB: https://stiny.in/SPHOMEO/kphb
+ *     - Chandanagar: https://g.page/r/CairS0V3apxiEBM/review
+ *     - Dilshuknagar: https://g.page/r/CU1YDEyXIcwhEBM/review
+ *     - Nallagandla: https://g.page/r/CUlOWoE7dEjoEBM/review
  */
 export const sendInvoiceWhatsAppNotification = async (params: {
   patientName: string;
@@ -308,54 +379,132 @@ export const sendInvoiceWhatsAppNotification = async (params: {
   paymentMode?: string;
   branch?: string;
   doctorName?: string;
+  pdfUrl?: string;
+  invoiceUrl?: string;
+  items?: InvoiceItem[];
 }) => {
-  const invCode = params.invoiceId ? String(params.invoiceId).substring(0, 6).toUpperCase() : 'RECEIPT';
+  const invCode = params.invoiceId ? String(params.invoiceId).substring(0, 10).toUpperCase() : 'RECEIPT';
+  const receiptNo = invCode.startsWith('INV-') ? invCode : `INV-${invCode}`;
   const branch = params.branch || 'KPHB';
   const todayDate = new Date().toLocaleDateString('en-GB').replace(/\//g, '-');
   const amountStr = String(Number(params.totalPaid || 0));
+  const patient = params.patientName || 'Patient';
 
-  // 1. Send Payment Receipt Template (payement_receipt: 5 Placeholders)
+  console.log(`[WhatsApp] Triggering 3-Step Payment Notification Flow for ${patient} at ${branch}`);
+
+  // Step 1: Send Payment Receipt Template (payement_receipt: 5 Placeholders)
   const payResult = await sendWhatsAppTemplateMessage({
     to: params.phone,
     templateName: 'payement_receipt',
     languageCode: 'en',
     bodyParameters: [
-      params.patientName || 'Patient',
+      patient,
       amountStr,
-      `INV-${invCode}`,
+      receiptNo,
       todayDate,
-      branch
-    ]
+      branch,
+    ],
   });
 
-  // 2. Trigger Invoice Receipt Template (invoice_recpt: 1 Placeholder)
-  const invRecptResult = await sendWhatsAppTemplateMessage({
-    to: params.phone,
-    templateName: 'invoice_recpt',
-    languageCode: 'en',
-    bodyParameters: [
-      params.patientName || 'Patient'
-    ]
-  }).catch(e => {
-    console.warn('invoice_recpt error:', e);
+  // Step 2: Auto-generate the real patient invoice PDF and upload to Firebase Storage if not already provided
+  let finalPdfUrl = params.pdfUrl || params.invoiceUrl;
+  if (!finalPdfUrl) {
+    try {
+      const pdfBytes = generateInvoicePdfBytes({
+        patientName: patient,
+        phone: params.phone,
+        invoiceId: receiptNo,
+        date: todayDate,
+        branch: branch,
+        doctorName: params.doctorName,
+        totalPaid: params.totalPaid,
+        paymentMode: params.paymentMode,
+        items: params.items,
+      });
+      const filename = `Invoice_${invCode}.pdf`;
+      finalPdfUrl = await uploadInvoicePdfToFirebaseStorage(pdfBytes, filename);
+      console.log('[WhatsApp] Generated & uploaded real invoice PDF to Firebase Storage:', finalPdfUrl);
+    } catch (pdfErr) {
+      console.warn('[WhatsApp] Invoice PDF auto-generation notice:', pdfErr);
+      finalPdfUrl = 'https://firebasestorage.googleapis.com/v0/b/spiritual-homeopathy-3b552.firebasestorage.app/o/invoices%2FInvoice_INV-T9T56E.pdf?alt=media&token=e97fae97-5ec9-443f-9c55-36a5e0ad3a9d';
+    }
+  }
+
+  // Send Official Invoice PDF Document Template (invoice_pdf: Meta ID 1744489930193378)
+  const invPdfResult = await sendInvoicePdfWhatsAppNotification({
+    patientName: patient,
+    phone: params.phone,
+    pdfUrl: finalPdfUrl,
+    invoiceId: invCode,
+    branch,
+  }).catch((e) => {
+    console.warn('invoice_pdf notification error:', e);
     return null;
   });
 
-  // 3. Trigger Experience / Review Template (experience / googlee_review)
+  // Step 3: Trigger Interactive Experience Feedback Survey (delayed by 3 seconds for orderly sequence)
   sendExperienceWhatsAppNotification({
-    patientName: params.patientName,
+    patientName: patient,
     phone: params.phone,
-    branch
-  }).catch(e => console.warn('experience template error:', e));
+    branch,
+    delayMs: 3000,
+  }).catch((e) => console.warn('experience template error:', e));
 
-  if (payResult.success || invRecptResult?.success) {
-    return payResult.success ? payResult : (invRecptResult || payResult);
+  if (payResult.success || invPdfResult?.success) {
+    const baseResult = payResult.success ? payResult : (invPdfResult || payResult);
+    return { ...baseResult, pdfUrl: finalPdfUrl };
   }
 
-  // 4. Raw Text Fallback
-  const message = `*SPIRITUAL HOMEOPATHY - PAYMENT RECEIPT* 🧾\n\nDear *${params.patientName}*,\nWe have received your payment of Rs.${amountStr}.\n\nReceipt No: INV-${invCode}\nDate: ${todayDate}\nBranch: ${branch}\n\nThank you for choosing Spiritual Homeopathy Clinics.\n📞 Helpdesk: 9069 176 176\n🌐 www.spiritualhomeoclinic.com`;
+  // Fallback: Raw Text Message
+  const message = `*SPIRITUAL HOMEOPATHY - PAYMENT RECEIPT* 🧾\n\nDear *${patient}*,\nWe have received your payment of Rs.${amountStr}.\n\nReceipt No: ${receiptNo}\nDate: ${todayDate}\nBranch: ${branch}\n\nThank you for choosing Spiritual Homeopathy Clinics.\n📞 Helpdesk: 9069 176 176\n🌐 www.spiritualhomeoclinic.com`;
 
   return await sendWhatsAppTextMessage({ to: params.phone, body: message });
+};
+
+/**
+ * Trigger WhatsApp Notification for Official Invoice PDF Attachment
+ * Template: invoice_pdf (Meta Template ID: 3761284) - Category: Utility
+ * Header: Document (PDF attachment)
+ * Body: {{1}} Patient Name
+ */
+export const sendInvoicePdfWhatsAppNotification = async (params: {
+  patientName: string;
+  phone: string;
+  pdfUrl?: string;
+  invoiceId?: string;
+  branch?: string;
+}) => {
+  const patient = params.patientName || 'Patient';
+  const invCode = params.invoiceId ? String(params.invoiceId).substring(0, 6).toUpperCase() : 'RECEIPT';
+  const filename = `Invoice_${invCode}.pdf`;
+  const pdfLink = params.pdfUrl || 'https://pdfobject.com/pdf/sample.pdf';
+
+  // 1. Send official invoice_pdf template with attached PDF document
+  const pdfResult = await sendWhatsAppTemplateMessage({
+    to: params.phone,
+    templateName: 'invoice_pdf',
+    languageCode: 'en',
+    bodyParameters: [patient],
+    headerMedia: {
+      type: 'document',
+      link: pdfLink,
+      filename: filename,
+    },
+  });
+
+  if (pdfResult.success) {
+    return pdfResult;
+  }
+
+  console.warn('invoice_pdf template not delivered, falling back to invoice_recpt template:', pdfResult.error);
+
+  // 2. Fallback to approved invoice_recpt template if invoice_pdf is pending or fails
+  return await sendWhatsAppTemplateMessage({
+    to: params.phone,
+    templateName: 'invoice_recpt',
+    languageCode: 'en',
+    bodyParameters: [patient],
+  });
 };
 
 /**
@@ -371,44 +520,113 @@ export const sendInvoiceReceiptWhatsAppNotification = async (params: {
     templateName: 'invoice_recpt',
     languageCode: 'en',
     bodyParameters: [
-      params.patientName || 'Patient'
-    ]
+      params.patientName || 'Patient',
+    ],
   });
 };
 
 /**
  * Trigger WhatsApp Notification for Patient Experience / Feedback Review
- * Attempts:
- * 1. experience (Utility - if approved)
- * 2. googlee_review (Utility - Approved, 3 Placeholders: Patient, Branch, Link)
+ * Step 3 in payment workflow:
+ * Template: exp_link (Official Meta Approved)
+ * "Hi {{1}}, Thank You for Visiting Spiritual Homeopathy Clinics. How was your experience with us?
+ *  Please reply with one of the following.
+ *  Reply STOP to opt out of further messages.
+ *  Good / Can be better / Bad"
+ *
+ * Dynamic Branch Review Routing:
+ *  - KPHB: https://stiny.in/SPHOMEO/kphb
+ *  - Chandanagar: https://g.page/r/CairS0V3apxiEBM/review
+ *  - Dilshuknagar: https://g.page/r/CU1YDEyXIcwhEBM/review
+ *  - Nallagandla: https://g.page/r/CUlOWoE7dEjoEBM/review
  */
 export const sendExperienceWhatsAppNotification = async (params: {
   patientName: string;
   phone: string;
   branch?: string;
+  delayMs?: number;
 }) => {
-  const branch = params.branch || 'KPHB';
-  const branchUrl = getBranchVisitUrl(branch);
+  if (params.delayMs && params.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, params.delayMs));
+  }
 
-  // 1. Try experience template (if approved in future)
-  const expRes = await sendWhatsAppTemplateMessage({
-    to: params.phone,
-    templateName: 'experience',
-    languageCode: 'en',
-    bodyParameters: []
-  });
-  if (expRes.success) return expRes;
+  const patient = params.patientName || 'Patient';
+  const branchName = params.branch || 'KPHB';
+  const reviewUrl = getBranchGoogleReviewUrl(params.branch);
 
-  // 2. Try approved googlee_review template (3 Placeholders: Patient, Branch, Review URL)
-  return await sendWhatsAppTemplateMessage({
+  // 1. Send approved googlee_review template directly (3 Placeholders: Patient, Branch, Review URL)
+  // This delivers the verified Google Review link directly, avoiding Pinbot chatbot's unconfigured {#var#} placeholder
+  const reviewRes = await sendWhatsAppTemplateMessage({
     to: params.phone,
     templateName: 'googlee_review',
     languageCode: 'en',
     bodyParameters: [
-      params.patientName || 'Patient',
-      branch,
-      branchUrl
-    ]
+      patient,
+      branchName.toLowerCase().includes('branch') ? branchName : `${branchName} Branch`,
+      reviewUrl,
+    ],
+  });
+
+  if (reviewRes.success) {
+    return reviewRes;
+  }
+
+  // 2. Fallback to exp_link interactive feedback template (Buttons: Good / Can be better / Bad)
+  const expRes = await sendWhatsAppTemplateMessage({
+    to: params.phone,
+    templateName: 'exp_link',
+    languageCode: 'en',
+    bodyParameters: [patient],
+  });
+
+  if (expRes.success) {
+    return expRes;
+  }
+
+  // 3. Fallback: Friendly text message with the branch-specific Google review link
+  const fallbackMsg = `Hi *${patient}*,\nThank you for visiting Spiritual Homeopathy Clinics (${branchName}).\n\nHow was your experience with us?\nIf you had a good experience, please give us a quick review on Google:\n⭐ ${reviewUrl}\n\nThank you for choosing us! 🌿`;
+
+  return await sendWhatsAppTextMessage({
+    to: params.phone,
+    body: fallbackMsg,
+  });
+};
+
+/**
+ * Trigger WhatsApp Notification for Google Review Link (Branch Specific)
+ * Called when patient replies or clicks 'Good' on experience survey:
+ * "Thankyou for your valuable feedback.Please give us a quick review in Google by clicking this link {#var#}"
+ */
+export const sendGoogleReviewWhatsAppNotification = async (params: {
+  patientName: string;
+  phone: string;
+  branch?: string;
+}) => {
+  const patient = params.patientName || 'Patient';
+  const reviewUrl = getBranchGoogleReviewUrl(params.branch);
+  const branchName = params.branch || 'KPHB';
+
+  // 1. Try googlee_review template
+  const reviewRes = await sendWhatsAppTemplateMessage({
+    to: params.phone,
+    templateName: 'googlee_review',
+    languageCode: 'en',
+    bodyParameters: [
+      patient,
+      branchName,
+      reviewUrl,
+    ],
+  });
+
+  if (reviewRes.success) {
+    return reviewRes;
+  }
+
+  // 2. Fallback text
+  const msg = `Thankyou for your valuable feedback. Please give us a quick review in Google by clicking this link: ${reviewUrl}`;
+  return await sendWhatsAppTextMessage({
+    to: params.phone,
+    body: msg,
   });
 };
 

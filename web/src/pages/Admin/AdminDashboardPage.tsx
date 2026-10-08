@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, setDoc, doc, deleteDoc, updateDoc, addDoc } from 'firebase/firestore';
-import { db, resolveCanonicalBranchId, BRANCHES } from '@app/shared';
+import { db, resolveCanonicalBranchId, BRANCHES, DEFAULT_STAFF_MEMBERS } from '@app/shared';
 import {
   Building2, Users, DollarSign, Clock, TrendingUp, AlertCircle, ShieldAlert,
   UserCheck, Package, Pill, Search, Plus, Edit, Trash2, CheckCircle2, Target, Calendar,
@@ -126,62 +126,39 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     return `${hours}.${dec} hrs/day`;
   };
 
-  const DEFAULT_STAFF_SEED = [
-    { id: '1', name: 'M. Anil Kumar', role: 'Regular Staff', branch: 'KPHB', mobile: '7338260802', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹22,000' },
-    { id: '2', name: 'Begari Ashwini', role: 'Regular Staff', branch: 'Chandanagar', mobile: '6302121265', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '06:30 PM', shift: '10:00 AM - 06:30 PM', hours: '8.5 hrs/day', salary: '₹17,000' },
-    { id: '3', name: 'Vaishnavi Peri', role: 'Regular Staff', branch: 'Nallagandla', mobile: '9874563210', shiftType: 'Single Strict', loginTime: '09:30 AM', logoutTime: '07:00 PM', shift: '09:30 AM - 07:00 PM', hours: '9.5 hrs/day', salary: '₹17,000' },
-    { id: '4', name: 'Nandini Gottelli', role: 'Regular Staff', branch: 'Dilshuknagar', mobile: '9652180003', shiftType: 'Multi Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', hours: '8 hrs/day', salary: '₹15,000' },
-    { id: '5', name: 'Srikanth', role: 'Regular Staff', branch: 'KPHB', mobile: '8125384387', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:00 PM', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹18,000' },
-    { id: '6', name: 'Arun Kumar', role: 'Regular Staff', branch: 'Nallagandla', mobile: '9876543212', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '06:00 PM', shift: '10:00 AM - 06:00 PM', hours: '8 hrs/day', salary: '₹14,000' },
-    { id: '7', name: 'Aishwarya . M', role: 'Regular Staff', branch: 'KPHB', mobile: '7890123456', shiftType: 'Single Strict', loginTime: '10:00 AM', logoutTime: '08:30 PM', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
-  ];
-
-  // Staff Members State & Add/Edit Modal
-  const [staffMembers, setStaffMembers] = useState(DEFAULT_STAFF_SEED);
+  // Staff Members State & Add/Edit Modal (Instant Offline Cache + Firestore Sync)
+  const [staffMembers, setStaffMembers] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem('sph_cached_staff_members');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    return DEFAULT_STAFF_MEMBERS;
+  });
 
   useEffect(() => {
     if (!db) return;
     const staffColRef = collection(db, 'staff');
 
-    const unsubscribe = onSnapshot(staffColRef, async (snapshot) => {
-      // Ensure all seed members exist in Firestore and have up-to-date real mobile numbers
-      for (const item of DEFAULT_STAFF_SEED) {
-        const matchingDoc = snapshot.docs.find(d => 
-          d.id === item.id || 
-          (d.data().name && d.data().name.toLowerCase().replace(/[^a-z]/g, '') === item.name.toLowerCase().replace(/[^a-z]/g, ''))
-        );
-        if (!matchingDoc) {
-          try {
-            await setDoc(doc(db, 'staff', item.id), item, { merge: true });
-          } catch (e) {
-            console.warn('Seed staff item error:', e);
-          }
-        } else {
-          const docData = matchingDoc.data();
-          // Update Firestore if mobile number is different from the real personal phone number
-          if (docData.mobile !== item.mobile || docData.phone !== item.mobile) {
-            try {
-              await setDoc(doc(db, 'staff', matchingDoc.id), {
-                mobile: item.mobile,
-                phone: item.mobile
-              }, { merge: true });
-            } catch (e) {
-              console.warn('Update staff real mobile error:', e);
-            }
-          }
-        }
-      }
-
+    const unsubscribe = onSnapshot(staffColRef, (snapshot) => {
       if (!snapshot.empty) {
         const loadedStaff = snapshot.docs.map(docSnap => {
           const d = docSnap.data();
+          const cleanName = (d.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
           return {
             id: docSnap.id,
             ...d,
+            email: d.email || (cleanName ? `${cleanName}@sph.com` : ''),
+            password: d.password || 'email123',
             mobile: d.mobile || d.phone || ''
           };
-        }) as typeof DEFAULT_STAFF_SEED;
+        });
         setStaffMembers(loadedStaff);
+        try {
+          localStorage.setItem('sph_cached_staff_members', JSON.stringify(loadedStaff));
+        } catch (e) {}
       }
     }, (error) => {
       console.warn('Firestore staff listener error:', error);
@@ -227,6 +204,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
 
   const [staffFormRole, setStaffFormRole] = useState('Regular Staff');
   const [staffFormName, setStaffFormName] = useState('');
+  const [staffFormEmail, setStaffFormEmail] = useState('');
+  const [staffFormPassword, setStaffFormPassword] = useState('email123');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
   const [staffFormMobile, setStaffFormMobile] = useState('');
   const [staffFormBranch, setStaffFormBranch] = useState('');
   const [staffFormSalary, setStaffFormSalary] = useState('');
@@ -239,6 +219,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     setEditingStaffId(null);
     setStaffFormRole('Regular Staff');
     setStaffFormName('');
+    setStaffFormEmail('');
+    setStaffFormPassword('email123');
+    setShowStaffPassword(false);
     setStaffFormMobile('');
     setStaffFormBranch('');
     setStaffFormSalary('');
@@ -251,13 +234,17 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     setEditingStaffId(s.id);
     setStaffFormRole(s.role || 'Regular Staff');
     setStaffFormName(s.name);
+    const cleanName = (s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    setStaffFormEmail((s as any).email || (cleanName ? `${cleanName}@sph.com` : ''));
+    setStaffFormPassword((s as any).password || 'email123');
+    setShowStaffPassword(false);
     setStaffFormMobile(s.mobile || (s as any).phone || '');
     setStaffFormBranch(s.branch);
     setStaffFormSalary(s.salary ? s.salary.replace(/[^0-9]/g, '') : '');
     const currentShiftType = (s.shiftType as any) || 'Single Strict';
     setStaffFormShiftType(currentShiftType);
 
-    const parsedSlots = s.shift ? s.shift.split('|').map(str => {
+    const parsedSlots = s.shift ? s.shift.split('|').map((str: string) => {
       const parts = str.trim().split('-');
       return {
         loginTime: parts[0] ? parts[0].trim() : '09:00 AM',
@@ -283,6 +270,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
       name: staffFormName,
       role: staffFormRole,
       branch: staffFormBranch,
+      email: staffFormEmail.trim().toLowerCase() || (staffFormName.toLowerCase().replace(/[^a-z0-9]/g, '') + '@sph.com'),
+      password: staffFormPassword.trim() || 'email123',
       mobile: staffFormMobile,
       phone: staffFormMobile,
       salary: formattedSalary,
@@ -294,7 +283,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     };
 
     if (editingStaffId) {
-      setStaffMembers(prev => prev.map(s => s.id === editingStaffId ? { id: editingStaffId, ...staffDataToSave } : s));
+      setStaffMembers(prev => {
+        const updated = prev.map(s => s.id === editingStaffId ? { id: editingStaffId, ...staffDataToSave } : s);
+        try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+        return updated;
+      });
       if (db) {
         try {
           await setDoc(doc(db, 'staff', editingStaffId), staffDataToSave, { merge: true });
@@ -305,7 +298,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
     } else {
       const newId = Date.now().toString();
       const newStaff = { id: newId, ...staffDataToSave };
-      setStaffMembers(prev => [newStaff, ...prev]);
+      setStaffMembers(prev => {
+        const updated = [newStaff, ...prev];
+        try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+        return updated;
+      });
       if (db) {
         try {
           await setDoc(doc(db, 'staff', newId), newStaff);
@@ -319,7 +316,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
 
   const handleDeleteStaff = async (id: string, name: string) => {
     if (confirm(`Are you sure you want to delete staff member "${name}"?`)) {
-      setStaffMembers(prev => prev.filter(s => s.id !== id));
+      setStaffMembers(prev => {
+        const updated = prev.filter(s => s.id !== id);
+        try { localStorage.setItem('sph_cached_staff_members', JSON.stringify(updated)); } catch (e) {}
+        return updated;
+      });
       if (db) {
         try {
           await deleteDoc(doc(db, 'staff', id));
@@ -561,10 +562,10 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
 
   // Four Branches Configuration
   const FOUR_BRANCHES = [
-    { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', activePatients: 340, monthlyTarget: 1200000, targetDocId: 'XRrXPAWzn4fKiwT387PKBLQZg323' },
-    { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', activePatients: 280, monthlyTarget: 1000000, targetDocId: '1qj75oZZlWgN8P02OAeRNjCVMhM2' },
-    { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', activePatients: 410, monthlyTarget: 1400000, targetDocId: 't7BiooFMRDU7DcgKFGnAPnJY0Qq2' },
-    { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', activePatients: 220, monthlyTarget: 900000, targetDocId: 'xS0281lEdPc0hUFrrNRPBMeQZsD3' }
+    { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', activePatients: 340, monthlyTarget: 0, targetDocId: 'XRrXPAWzn4fKiwT387PKBLQZg323' },
+    { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', activePatients: 280, monthlyTarget: 0, targetDocId: '1qj75oZZlWgN8P02OAeRNjCVMhM2' },
+    { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', activePatients: 410, monthlyTarget: 0, targetDocId: 't7BiooFMRDU7DcgKFGnAPnJY0Qq2' },
+    { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', activePatients: 220, monthlyTarget: 0, targetDocId: 'xS0281lEdPc0hUFrrNRPBMeQZsD3' }
   ];
 
   // Daily Operations Date (Defaults to Today's date YYYY-MM-DD)
@@ -816,22 +817,30 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
       }, 150);
     };
 
-    collectionsToListen.forEach((colName) => {
-      try {
-        const colRef = collection(db, colName);
-        const unsub = onSnapshot(colRef, (snap) => {
-          rawCollectionsData[colName] = snap.docs.map(d => ({ id: d.id, ...d.data(), _sourceCol: colName }));
-          scheduleMerge();
-        }, (err) => {
-          console.warn(`Firestore listener note for ${colName}:`, err);
-        });
-        unsubs.push(unsub);
-      } catch (e) {
-        console.warn(`Firestore setup note for ${colName}:`, e);
-      }
-    });
+    let isCancelled = false;
+    // Defer heavy collections listen by 500ms to allow instant 0ms rendering for Staff and active tabs
+    const syncTimer = setTimeout(() => {
+      if (isCancelled) return;
+      collectionsToListen.forEach((colName) => {
+        try {
+          const colRef = collection(db, colName);
+          const unsub = onSnapshot(colRef, (snap) => {
+            if (isCancelled) return;
+            rawCollectionsData[colName] = snap.docs.map(d => ({ id: d.id, ...d.data(), _sourceCol: colName }));
+            scheduleMerge();
+          }, (err) => {
+            console.warn(`Firestore listener note for ${colName}:`, err);
+          });
+          unsubs.push(unsub);
+        } catch (e) {
+          console.warn(`Firestore setup note for ${colName}:`, e);
+        }
+      });
+    }, 500);
 
     return () => {
+      isCancelled = true;
+      clearTimeout(syncTimer);
       if (mergeTimer) clearTimeout(mergeTimer);
       unsubs.forEach(u => u());
     };
@@ -2111,7 +2120,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
 
         {/* TAB 2: MANAGE BRANCHES & TARGET MANAGEMENT */}
         {activeTab === 'branches' && (
-          <ManageBranchesPage />
+          <ManageBranchesPage role={role} />
         )}
 
         {/* TAB 3: GLOBAL PATIENTS & PACKAGE MEMBERS */}
@@ -2334,7 +2343,17 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
                     {staffMembers.map(s => (
                       <tr key={s.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                         <td style={{ padding: '12px 14px', fontSize: '13px !important', fontWeight: 700, color: '#0f172a' }}>
-                          {s.name}
+                          <div>{s.name}</div>
+                          {(s as any).email && (
+                            <div style={{ fontSize: '11px !important', color: '#0284c7', fontWeight: 600, marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span>✉️</span> {(s as any).email}
+                            </div>
+                          )}
+                          {(s as any).password && (
+                            <div style={{ fontSize: '10.5px !important', color: '#64748b', fontWeight: 600, marginTop: '1px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span>🔑</span> {(s as any).password}
+                            </div>
+                          )}
                         </td>
                         <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#334155', fontWeight: 600 }}>
                           {(s.mobile || (s as any).phone) ? (
@@ -2350,7 +2369,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
                         <td style={{ padding: '12px 14px', fontSize: '12.5px !important', color: '#258ec8', fontWeight: 600 }}>
                           {s.shift && s.shift.includes('|') ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                              {s.shift.split('|').map((slotStr, i) => (
+                              {s.shift.split('|').map((slotStr: string, i: number) => (
                                 <div key={i} style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                   <span style={{ fontSize: '10px !important', background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8', padding: '1px 5px', borderRadius: '4px', fontWeight: 800 }}>Shift {i + 1}</span>
                                   <span>{slotStr.trim()}</span>
@@ -2874,6 +2893,79 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ currentB
                   <option value="Dilshuknagar">Dilshuknagar</option>
                   <option value="Chandanagar">Chandanagar</option>
                 </select>
+              </div>
+
+              {/* Staff Login Credentials (Directly below Assign to Branch) */}
+              <div style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: '12px', padding: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '14px' }}>🔐</span>
+                    <span style={{ fontSize: '12.5px !important', fontWeight: 800, color: '#0f172a' }}>Staff Login Credentials</span>
+                  </div>
+                  <span style={{ fontSize: '10.5px !important', background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: '6px', fontWeight: 700 }}>
+                    Regular Staff Only
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '12px !important', fontWeight: 700, color: '#334155', marginBottom: '5px' }}>
+                      Staff Login Email ID *
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="e.g. anil@sph.com"
+                      value={staffFormEmail}
+                      onChange={e => setStaffFormEmail(e.target.value)}
+                      required
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '13px !important',
+                        color: '#0f172a',
+                        outline: 'none',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
+                      <label style={{ fontSize: '12px !important', fontWeight: 700, color: '#334155' }}>
+                        Staff Login Password *
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowStaffPassword(!showStaffPassword)}
+                        style={{ background: 'none', border: 'none', color: '#258ec8', fontSize: '11px !important', fontWeight: 700, cursor: 'pointer', padding: 0 }}
+                      >
+                        {showStaffPassword ? 'Hide' : 'Show'} Password
+                      </button>
+                    </div>
+                    <input
+                      type={showStaffPassword ? 'text' : 'password'}
+                      placeholder="Standard default: email123"
+                      value={staffFormPassword}
+                      onChange={e => setStaffFormPassword(e.target.value)}
+                      required
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        border: '1px solid #cbd5e1',
+                        fontSize: '13px !important',
+                        color: '#0f172a',
+                        outline: 'none',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                    <span style={{ fontSize: '11px !important', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                      Standard default password is <strong>email123</strong>. HR/Admin can edit ID & password at any time.
+                    </span>
+                  </div>
+                </div>
               </div>
 
               {/* Salary & Work Schedule Box */}

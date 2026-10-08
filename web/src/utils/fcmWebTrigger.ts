@@ -34,6 +34,77 @@ export async function cleanupOldNotifications(): Promise<void> {
   }
 }
 
+export async function dispatchPushNotificationToTargetRoles(payload: {
+  title: string;
+  body: string;
+  targetRoles: string[];
+  targetBranch?: string;
+  data?: Record<string, any>;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const snap = await getDocs(collection(db, 'fcm_tokens'));
+    if (snap.empty) return;
+
+    const targetBranchClean = normalizeBranchTopic(payload.targetBranch || '');
+    const tokens: string[] = [];
+
+    snap.forEach((d) => {
+      const data = d.data();
+      if (!data || !data.token) return;
+
+      const role = String(data.role || '').toLowerCase();
+      const branchClean = normalizeBranchTopic(data.branch || data.cleanBranch || '');
+
+      const isHR = role === 'admin' || role === 'hr';
+      const isTargetReception = (role === 'reception' || role.includes('reception')) && (!targetBranchClean || branchClean === targetBranchClean);
+
+      let shouldSend = false;
+      if (payload.targetRoles.includes('hr') && isHR) shouldSend = true;
+      if (payload.targetRoles.includes('admin') && role === 'admin') shouldSend = true;
+      if (payload.targetRoles.includes('reception') && isTargetReception) shouldSend = true;
+
+      // Regular staff NEVER receives booking or payment notifications
+      if (shouldSend) {
+        if (data.expoPushToken) tokens.push(data.expoPushToken);
+        if (data.token) tokens.push(data.token);
+      }
+    });
+
+    if (tokens.length === 0) return;
+
+    const uniqueTokens = Array.from(new Set(tokens));
+    const expoTokens = uniqueTokens.filter((t) => t.startsWith('ExponentPushToken[') || t.startsWith('ExpoPushToken['));
+
+    if (expoTokens.length > 0) {
+      const messages = expoTokens.map((token) => ({
+        to: token,
+        sound: 'default',
+        title: payload.title,
+        body: payload.body,
+        channelId: 'sph_appointments_channel',
+        priority: 'high',
+        data: payload.data || {},
+      }));
+
+      for (let i = 0; i < messages.length; i += 100) {
+        const chunk = messages.slice(i, i + 100);
+        await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Accept-encoding': 'gzip, deflate',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(chunk),
+        }).catch((e) => console.warn('[FCM-Web] Push send notice:', e));
+      }
+    }
+  } catch (err) {
+    console.warn('[FCM-Web] Push dispatch notice:', err);
+  }
+}
+
 /**
  * Creates an appointment booking notification document in Firestore 'notifications'
  * which triggers the Cloud Function to send FCM push notifications to Mobile devices.
@@ -70,6 +141,13 @@ export async function createBookingNotificationInFirestore(payload: {
     };
 
     await addDoc(collection(db, 'notifications'), notiDoc);
+    dispatchPushNotificationToTargetRoles({
+      title: notiDoc.title,
+      body: notiDoc.body,
+      targetRoles: ['reception', 'hr', 'admin'],
+      targetBranch: cleanBranch,
+      data: notiDoc,
+    }).catch(() => { });
 
     // Non-blocking 10-day rolling cleanup
     cleanupOldNotifications().catch(() => {});
@@ -116,6 +194,13 @@ export async function createPaymentNotificationInFirestore(payload: {
     };
 
     await addDoc(collection(db, 'notifications'), notiDoc);
+    dispatchPushNotificationToTargetRoles({
+      title: notiDoc.title,
+      body: notiDoc.body,
+      targetRoles: ['reception', 'hr', 'admin'],
+      targetBranch: cleanBranch,
+      data: notiDoc,
+    }).catch(() => { });
     cleanupOldNotifications().catch(() => {});
   } catch (e) {
     console.warn('[FCM-Web] Error saving payment notification to Firestore:', e);
@@ -193,6 +278,85 @@ export async function createStaffLogoutNotificationInFirestore(payload: {
 }
 
 /**
+ * Notifies HR when a staff member punches in
+ */
+export async function createStaffPunchInNotificationInFirestore(payload: {
+  staffName: string;
+  branch: string;
+  staffId?: string;
+  punchInTime?: string;
+  locationAddress?: string;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const cleanBranch = normalizeBranchTopic(payload.branch);
+    const staffDisplay = payload.staffName || 'Staff Member';
+    const branchDisplay = payload.branch || 'Clinic Branch';
+    const timeDisplay = payload.punchInTime || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+    const notiDoc = {
+      type: 'staff_punch_in',
+      title: '🟢 Staff Punched In',
+      body: `${staffDisplay} punched in at ${branchDisplay} (${timeDisplay})`,
+      staffName: staffDisplay,
+      staffId: payload.staffId || '',
+      branch: branchDisplay,
+      targetBranch: cleanBranch,
+      punchInTime: timeDisplay,
+      locationAddress: payload.locationAddress || '',
+      targetRoles: ['hr', 'admin'],
+      createdAt: new Date().toISOString(),
+      status: 'active',
+    };
+    await addDoc(collection(db, 'notifications'), notiDoc);
+    cleanupOldNotifications().catch(() => {});
+  } catch (e) {
+    console.warn('[FCM-Web] Error saving staff punch in notification:', e);
+  }
+}
+
+/**
+ * Notifies HR when a staff member punches out
+ */
+export async function createStaffPunchOutNotificationInFirestore(payload: {
+  staffName: string;
+  branch: string;
+  staffId?: string;
+  punchOutTime?: string;
+  workingHours?: string;
+  locationAddress?: string;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const cleanBranch = normalizeBranchTopic(payload.branch);
+    const staffDisplay = payload.staffName || 'Staff Member';
+    const branchDisplay = payload.branch || 'Clinic Branch';
+    const timeDisplay = payload.punchOutTime || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const durationText = payload.workingHours ? ` • Worked: ${payload.workingHours}` : '';
+
+    const notiDoc = {
+      type: 'staff_punch_out',
+      title: '🔴 Staff Punched Out',
+      body: `${staffDisplay} punched out from ${branchDisplay} (${timeDisplay})${durationText}`,
+      staffName: staffDisplay,
+      staffId: payload.staffId || '',
+      branch: branchDisplay,
+      targetBranch: cleanBranch,
+      punchOutTime: timeDisplay,
+      workingHours: payload.workingHours || '',
+      locationAddress: payload.locationAddress || '',
+      targetRoles: ['hr', 'admin'],
+      createdAt: new Date().toISOString(),
+      status: 'completed',
+    };
+    await addDoc(collection(db, 'notifications'), notiDoc);
+    cleanupOldNotifications().catch(() => {});
+  } catch (e) {
+    console.warn('[FCM-Web] Error saving staff punch out notification:', e);
+  }
+}
+
+/**
  * Notifies Staff and HR when a daily work report is submitted
  */
 export async function createStaffDailyReportNotificationInFirestore(payload: {
@@ -201,6 +365,10 @@ export async function createStaffDailyReportNotificationInFirestore(payload: {
   staffId?: string;
   totalCalls?: number | string;
   followUps?: number | string;
+  contacts?: number | string;
+  gReviews?: number | string;
+  videoReviews?: number | string;
+  notes?: string;
 }): Promise<void> {
   if (!db) return;
   try {
@@ -211,17 +379,25 @@ export async function createStaffDailyReportNotificationInFirestore(payload: {
 
     const callsInfo = payload.totalCalls ? ` • ${payload.totalCalls} Calls` : '';
     const followUpsInfo = payload.followUps ? `, ${payload.followUps} Follow-ups` : '';
+    const contactsInfo = payload.contacts ? `, ${payload.contacts} Contacts` : '';
+    const gReviewsInfo = payload.gReviews ? `, ${payload.gReviews} G-Reviews` : '';
+    const videoReviewsInfo = payload.videoReviews ? `, ${payload.videoReviews} Video Reviews` : '';
+    const notesSummary = payload.notes ? ` • Note: ${payload.notes.substring(0, 40)}${payload.notes.length > 40 ? '...' : ''}` : '';
 
     const notiDoc = {
       type: 'staff_report',
       title: 'Daily Report Submitted',
-      body: `${staffDisplay} submitted Daily Report for ${branchDisplay} (${timeDisplay}${callsInfo}${followUpsInfo})`,
+      body: `${staffDisplay} submitted Daily Report for ${branchDisplay} (${timeDisplay}${callsInfo}${followUpsInfo}${contactsInfo}${gReviewsInfo}${videoReviewsInfo})${notesSummary}`,
       staffName: staffDisplay,
       staffId: payload.staffId || '',
       branch: branchDisplay,
       targetBranch: cleanBranch,
       totalCalls: payload.totalCalls || 0,
       followUps: payload.followUps || 0,
+      contacts: payload.contacts || 0,
+      gReviews: payload.gReviews || 0,
+      videoReviews: payload.videoReviews || 0,
+      notes: payload.notes || '',
       targetRoles: ['hr', 'admin', 'staff'],
       createdAt: new Date().toISOString(),
       status: 'submitted',
@@ -321,4 +497,83 @@ export async function createFeeDiscountResponseNotificationInFirestore(payload: 
     console.warn('[FCM-Web] Error saving discount response notification:', e);
   }
 }
+
+/**
+ * Notifies HR / Admin when a branch uploads clinic cleaning photos
+ */
+export async function createCleaningUploadedNotificationInFirestore(payload: {
+  branch: string;
+  photoCount: number;
+  submittedBy?: string;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const cleanBranch = normalizeBranchTopic(payload.branch);
+    const branchDisplay = payload.branch || 'Branch';
+    const photoCount = payload.photoCount || 5;
+    const title = `${branchDisplay} Cleaning Photos Uploaded 📸`;
+    const body = `${photoCount} clinic cleaning photos uploaded from ${branchDisplay} for HR inspection.`;
+
+    const notiDoc = {
+      type: 'cleaning_submission',
+      title,
+      body,
+      branch: branchDisplay,
+      targetBranch: cleanBranch,
+      photoCount,
+      submittedBy: payload.submittedBy || `${branchDisplay} Receptionist`,
+      targetRoles: ['reception', 'hr', 'admin'],
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+    };
+    await addDoc(collection(db, 'notifications'), notiDoc);
+    cleanupOldNotifications().catch(() => {});
+  } catch (e) {
+    console.warn('[FCM-Web] Error saving cleaning uploaded notification:', e);
+  }
+}
+
+/**
+ * Notifies Branch Reception and HR/Admin when cleaning is Approved or Rejected
+ */
+export async function createCleaningApprovalNotificationInFirestore(payload: {
+  branch: string;
+  status: 'Approved' | 'Rejected';
+  rejectReason?: string;
+  reviewedBy?: string;
+}): Promise<void> {
+  if (!db) return;
+  try {
+    const cleanBranch = normalizeBranchTopic(payload.branch);
+    const branchDisplay = payload.branch || 'Branch';
+    const isApproved = payload.status === 'Approved';
+    const reviewer = payload.reviewedBy || 'HR';
+
+    const title = isApproved
+      ? `${branchDisplay} Cleaning Approved ✅`
+      : `${branchDisplay} Cleaning Rejected ❌`;
+
+    const body = isApproved
+      ? `Clinic cleaning approved by ${reviewer} for ${branchDisplay}. Reception is unlocked.`
+      : `Cleaning submission for ${branchDisplay} rejected by ${reviewer}: "${payload.rejectReason || 'Needs re-cleaning'}". Please re-upload photos.`;
+
+    const notiDoc = {
+      type: isApproved ? 'cleaning_approved' : 'cleaning_rejected',
+      title,
+      body,
+      branch: branchDisplay,
+      targetBranch: cleanBranch,
+      status: payload.status.toLowerCase(),
+      rejectReason: payload.rejectReason || '',
+      reviewedBy: reviewer,
+      targetRoles: ['reception', 'hr', 'admin'],
+      createdAt: new Date().toISOString(),
+    };
+    await addDoc(collection(db, 'notifications'), notiDoc);
+    cleanupOldNotifications().catch(() => {});
+  } catch (e) {
+    console.warn('[FCM-Web] Error saving cleaning approval notification:', e);
+  }
+}
+
 

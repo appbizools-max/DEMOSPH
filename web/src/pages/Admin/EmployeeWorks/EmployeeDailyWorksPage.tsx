@@ -274,7 +274,7 @@ export const EmployeeDailyWorksPage: React.FC = () => {
     let rows: any[] = [];
 
     if (viewMode === 'day') {
-      headers = ['Staff Name', 'Branch', 'Date', "Yesterday's Status", 'Total Calls', 'Follow Ups', 'Contacts', 'G-Reviews', 'Video Reviews', 'Submission Status'];
+      headers = ['Staff Name', 'Branch', 'Date', "Yesterday's Status", 'Total Calls', 'Follow Ups', 'Contacts', 'G-Reviews', 'Video Reviews', 'Work Notes', 'Submission Status'];
       rows = dayTableRows.map(r => [
         `"${r.staff.name || ''}"`,
         `"${r.staff.branch || ''}"`,
@@ -285,6 +285,7 @@ export const EmployeeDailyWorksPage: React.FC = () => {
         r.contacts,
         r.gReviews,
         r.videoReviews,
+        `"${(r.todayReport?.notes || r.todayReport?.tasksSummary || '').replace(/"/g, '""')}"`,
         r.isSubmitted ? 'Submitted' : 'Pending'
       ]);
     } else {
@@ -693,13 +694,14 @@ export const EmployeeDailyWorksPage: React.FC = () => {
                   <th style={{ padding: '10px 12px', textAlign: 'center' }}>Contacts</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center' }}>G-Reviews</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center' }}>Video Revs</th>
+                  <th style={{ padding: '10px 12px', minWidth: '170px' }}>Work Notes</th>
                   <th style={{ padding: '10px 12px', textAlign: 'center' }}>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {dayTableRows.length === 0 ? (
                   <tr>
-                    <td colSpan={10} style={{ padding: '36px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
+                    <td colSpan={11} style={{ padding: '36px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
                       No staff members found matching the selected branch / search filter.
                     </td>
                   </tr>
@@ -850,6 +852,27 @@ export const EmployeeDailyWorksPage: React.FC = () => {
                         }}>
                           {row.videoReviews}
                         </span>
+                      </td>
+
+                      {/* Work Notes */}
+                      <td style={{ padding: '11px 12px' }}>
+                        {row.isSubmitted && (row.todayReport?.notes || row.todayReport?.tasksSummary) ? (
+                          <div style={{
+                            fontSize: '11.5px',
+                            color: '#1e293b',
+                            background: '#f8fafc',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            border: '1px solid #e2e8f0',
+                            maxWidth: '280px',
+                            lineHeight: '1.4',
+                            whiteSpace: 'pre-wrap'
+                          }}>
+                            {row.todayReport?.notes || row.todayReport?.tasksSummary}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: '#cbd5e1' }}>—</span>
+                        )}
                       </td>
 
                       {/* Status / Timestamp */}

@@ -11,6 +11,7 @@ import {
   CleaningSchedule, CleaningSubmission, normalizeBranchName,
   getTodayDateString, formatDisplayDate, checkBranchLockoutStatus, compressImageFile, BRANCH_LIST
 } from '../../../utils/cleaningService';
+import { createCleaningUploadedNotificationInFirestore } from '../../../utils/fcmWebTrigger';
 
 interface CleaningPhotosPageProps {
   currentBranch?: string;
@@ -100,6 +101,9 @@ export const CleaningPhotosPage: React.FC<CleaningPhotosPageProps> = ({
   }, [schedule.assignedDate, submissions]);
 
   const activeSubmission = lockoutInfo.currentSubmission;
+  const isPendingReview = lockoutInfo.status === 'Pending' || activeSubmission?.status === 'Pending';
+  const isApproved = lockoutInfo.status === 'Approved' || activeSubmission?.status === 'Approved';
+  const isRejected = lockoutInfo.status === 'Rejected' || activeSubmission?.status === 'Rejected';
 
   // Handle image files selection (Camera / Gallery)
   const handlePhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -168,6 +172,13 @@ export const CleaningPhotosPage: React.FC<CleaningPhotosPageProps> = ({
       };
 
       await addDoc(collection(db, 'branch_cleaning_submissions'), newSubmission);
+
+      // Trigger push notification to HR & Admin
+      createCleaningUploadedNotificationInFirestore({
+        branch,
+        photoCount: selectedPhotos.length,
+        submittedBy: `${branch} Receptionist (${userName})`,
+      }).catch(err => console.warn('Cleaning upload notification notice:', err));
 
       setSelectedPhotos([]);
       setNotes('');
@@ -423,8 +434,36 @@ export const CleaningPhotosPage: React.FC<CleaningPhotosPageProps> = ({
         </div>
       </div>
 
-      {/* PHOTO UPLOAD SUBMISSION CARD (Only show if not approved or if re-uploading) */}
-      {(lockoutInfo.status !== 'Approved' || lockoutInfo.isBlocked) && (
+      {/* UNDER REVIEW NOTICE (Upload is disabled while awaiting HR/Admin review) */}
+      {isPendingReview && (
+        <div style={{
+          background: '#ffffff',
+          border: '1px solid #fde047',
+          borderRadius: '20px',
+          padding: '28px',
+          marginBottom: '28px',
+          boxShadow: '0 4px 14px rgba(202, 138, 4, 0.08)',
+          textAlign: 'center'
+        }}>
+          <div style={{ width: '60px', height: '60px', borderRadius: '30px', backgroundColor: '#fef9c3', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px auto', border: '1px solid #fde047' }}>
+            <Clock size={30} color="#ca8a04" />
+          </div>
+          <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#854d0e', margin: '0 0 6px 0' }}>
+            Cleaning Photos Under Review by HR ⏳
+          </h3>
+          <p style={{ color: '#64748b', fontSize: '13.5px', margin: '0 auto 14px auto', maxWidth: '520px', lineHeight: 1.6 }}>
+            Your clinic cleaning photos ({activeSubmission?.photos?.length || '5–7'} photos) have been submitted and are currently awaiting HR / Admin verification.
+          </p>
+          <div style={{ display: 'inline-block', padding: '8px 18px', backgroundColor: '#fefce8', borderRadius: '12px', border: '1px solid #fef08a' }}>
+            <span style={{ fontSize: '12.5px', color: '#a16207', fontWeight: 800 }}>
+              🔒 Upload is disabled while review is in progress.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* PHOTO UPLOAD SUBMISSION CARD (Only show if rejected or not yet submitted) */}
+      {!isPendingReview && !isApproved && (
         <div style={{
           background: '#ffffff',
           border: '1px solid #e2e8f0',
@@ -436,10 +475,10 @@ export const CleaningPhotosPage: React.FC<CleaningPhotosPageProps> = ({
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '18px' }}>
             <div>
               <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#0f172a', margin: 0 }}>
-                Upload Clinic Cleaning Photos (5 to 7 Photos Max)
+                {isRejected ? 'Re-upload Clinic Cleaning Photos (5 to 7 Photos)' : 'Upload Clinic Cleaning Photos (5 to 7 Photos Max)'}
               </h3>
               <p style={{ color: '#64748b', fontSize: '13px', marginTop: '4px', marginBottom: 0 }}>
-                Capture or select photos of cleaned consultation rooms, sterilization, and waiting area
+                {isRejected ? 'HR requested re-upload. Please check feedback above and upload 5 to 7 clean photos.' : 'Capture or select photos of cleaned consultation rooms, sterilization, and waiting area'}
               </p>
             </div>
 

@@ -5,19 +5,21 @@ import { getSafeDb, doc, onSnapshot, setDoc, collection } from '../../../utils/f
 import { TargetProgressUI } from '../../../components/TargetProgressUI';
 
 const DEFAULT_BRANCH_TARGETS = [
-  { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', monthlyTarget: 1200000, targetReached: 980000, nextMonthTarget: 0 },
-  { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', monthlyTarget: 1000000, targetReached: 840000, nextMonthTarget: 0 },
-  { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', monthlyTarget: 1400000, targetReached: 1150000, nextMonthTarget: 0 },
-  { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', monthlyTarget: 900000, targetReached: 720000, nextMonthTarget: 0 },
+  { id: 'kphb', name: 'KPHB Branch', phone: '+91 90301 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
+  { id: 'nallagandla', name: 'Nallagandla Branch', phone: '+91 91321 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
+  { id: 'dilshuknagar', name: 'Dilshuknagar Branch', phone: '+91 98041 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
+  { id: 'chandanagar', name: 'Chandanagar Branch', phone: '+91 95531 76176', monthlyTarget: 0, targetReached: 0, nextMonthTarget: 0 },
 ];
 
 interface ManageBranchesScreenProps {
   onBack?: () => void;
   onNavigate?: (tab: string) => void;
+  role?: string;
 }
 
-export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBack }) => {
+export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBack, role = 'admin' }) => {
   const db = getSafeDb();
+  const isAdmin = role !== 'hr';
   const [branches, setBranches] = useState(DEFAULT_BRANCH_TARGETS);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState<any>(null);
@@ -25,7 +27,7 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
   const [targetInput, setTargetInput] = useState('');
   const [activeMonthTab, setActiveMonthTab] = useState<'current' | 'next'>('current');
 
-  // Date Logic for Next Month Target Unlock (2 days before next month)
+  // Date Logic for Next Month Target Unlock (2 days before next month for HR)
   const now = new Date();
   const currentMonthName = now.toLocaleString('default', { month: 'long', year: 'numeric' });
   const nextMonthDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -54,8 +56,8 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
               if (live) {
                 return {
                   ...b,
-                  monthlyTarget: Number(live.monthlyTarget) || b.monthlyTarget,
-                  targetReached: Number(live.targetReached) || b.targetReached,
+                  monthlyTarget: Number(live.monthlyTarget) || 0,
+                  targetReached: Number(live.targetReached) || 0,
                   nextMonthTarget: live.nextMonthTarget !== undefined ? Number(live.nextMonthTarget) : 0,
                 };
               }
@@ -71,16 +73,18 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
   }, []);
 
   const handleOpenEdit = (b: any, targetType: 'current' | 'next') => {
-    if (targetType === 'next' && !isNextMonthUnlocked) {
+    // Admin can edit at ANY time (both current and next month)
+    // HR can only enter or change targets 2 days before month end
+    if (!isAdmin && !isNextMonthUnlocked) {
       Alert.alert(
         'Target Setting Locked 🔒',
-        `Next month's target can only be set by Admin 2 days before ${nextMonthName} (starts on ${now.toLocaleString('default', { month: 'short' })} ${unlockDay}th).`
+        `HR can enter or change targets only 2 days before month end (unlocks on ${now.toLocaleString('default', { month: 'short' })} ${unlockDay}th). Admin can edit targets anytime.`
       );
       return;
     }
     setSelectedBranch(b);
     setEditingTargetType(targetType);
-    setTargetInput(String(targetType === 'current' ? b.monthlyTarget : (b.nextMonthTarget ?? 0)));
+    setTargetInput(String(targetType === 'current' ? (b.monthlyTarget || '') : (b.nextMonthTarget || '')));
     setEditModalOpen(true);
   };
 
@@ -101,7 +105,9 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
 
       if (editingTargetType === 'current') {
         updateData.monthlyTarget = num;
-        updateData.targetReached = selectedBranch.targetReached;
+        updateData.targetReached = selectedBranch.targetReached || 0;
+        updateData.remaining = Math.max(0, num - (selectedBranch.targetReached || 0));
+        updateData.percentage = num > 0 ? Math.round(((selectedBranch.targetReached || 0) / num) * 100) : 0;
       } else {
         updateData.nextMonthTarget = num;
       }
@@ -127,6 +133,8 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
     }
   };
 
+  const isLockedForRole = !isAdmin && !isNextMonthUnlocked;
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 80 }} showsVerticalScrollIndicator={false}>
 
@@ -146,19 +154,28 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
           style={[styles.monthTabBtn, activeMonthTab === 'next' && styles.monthTabActive]}
           onPress={() => setActiveMonthTab('next')}
         >
-          <Feather name={isNextMonthUnlocked ? 'unlock' : 'lock'} size={14} color={activeMonthTab === 'next' ? '#ffffff' : (isNextMonthUnlocked ? '#16a34a' : '#64748b')} />
+          <Feather name={isAdmin || isNextMonthUnlocked ? 'unlock' : 'lock'} size={14} color={activeMonthTab === 'next' ? '#ffffff' : ((isAdmin || isNextMonthUnlocked) ? '#16a34a' : '#64748b')} />
           <Text style={[styles.monthTabText, activeMonthTab === 'next' && styles.monthTabTextActive]}>
             {nextMonthDate.toLocaleString('default', { month: 'short' })} Target
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Lock Info Banner - Full Width */}
-      {!isNextMonthUnlocked && activeMonthTab === 'next' && (
+      {/* Lock Info / Admin Badge Banner */}
+      {!isAdmin && !isNextMonthUnlocked && (
         <View style={styles.lockBanner}>
           <Feather name="lock" size={15} color="#64748b" style={{ marginRight: 8 }} />
           <Text style={styles.lockBannerText}>
-            Next month target unlocks on <Text style={{ fontWeight: '800', color: '#0f172a' }}>{now.toLocaleString('default', { month: 'short' })} {unlockDay}th</Text> (2 days before month end).
+            HR target setting unlocks on <Text style={{ fontWeight: '800', color: '#0f172a' }}>{now.toLocaleString('default', { month: 'short' })} {unlockDay}th</Text> (2 days before month end).
+          </Text>
+        </View>
+      )}
+
+      {isAdmin && (
+        <View style={[styles.lockBanner, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}>
+          <Feather name="shield" size={15} color="#16a34a" style={{ marginRight: 8 }} />
+          <Text style={[styles.lockBannerText, { color: '#166534' }]}>
+            Admin Access: You can enter, edit, and change branch targets at <Text style={{ fontWeight: '800' }}>any time</Text>.
           </Text>
         </View>
       )}
@@ -174,22 +191,22 @@ export const ManageBranchesScreen: React.FC<ManageBranchesScreenProps> = ({ onBa
             <TouchableOpacity
               style={[
                 styles.editBtn,
-                activeMonthTab === 'next' && !isNextMonthUnlocked && { backgroundColor: '#f1f5f9' }
+                isLockedForRole && { backgroundColor: '#f1f5f9' }
               ]}
-              disabled={activeMonthTab === 'next' && !isNextMonthUnlocked}
+              disabled={isLockedForRole}
               onPress={() => handleOpenEdit(b, activeMonthTab)}
             >
               <Feather
-                name={activeMonthTab === 'next' && !isNextMonthUnlocked ? 'lock' : 'edit-3'}
+                name={isLockedForRole ? 'lock' : 'edit-3'}
                 size={14}
-                color={activeMonthTab === 'next' && !isNextMonthUnlocked ? '#94a3b8' : (activeMonthTab === 'next' ? '#ffffff' : '#ffffff')}
+                color={isLockedForRole ? '#94a3b8' : '#ffffff'}
               />
               <Text style={[
                 styles.editBtnText,
-                activeMonthTab === 'next' && !isNextMonthUnlocked && { color: '#94a3b8' },
-                activeMonthTab === 'next' && isNextMonthUnlocked && { color: '#ffffff' }
+                isLockedForRole && { color: '#94a3b8' },
+                !isLockedForRole && { color: '#ffffff' }
               ]}>
-                {activeMonthTab === 'current' ? 'Set Target' : isNextMonthUnlocked ? 'Set Next Target' : 'Locked'}
+                {isLockedForRole ? 'Locked' : activeMonthTab === 'current' ? 'Set Target' : 'Set Next Target'}
               </Text>
             </TouchableOpacity>
           </View>

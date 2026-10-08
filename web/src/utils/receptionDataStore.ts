@@ -65,7 +65,7 @@ class ReceptionDataStore {
           }
         }
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   private scheduleSaveCache() {
@@ -80,7 +80,7 @@ class ReceptionDataStore {
           timestamp: Date.now()
         });
         localStorage.setItem(CACHE_KEY, payload);
-      } catch (_) {}
+      } catch (_) { }
     }, 1500);
   }
 
@@ -275,23 +275,16 @@ class ReceptionDataStore {
   }
 
   private scheduleMergeAndSet(immediate: boolean = false) {
-    if (immediate) {
-      if (this.batchTimer) {
-        clearTimeout(this.batchTimer);
-        this.batchTimer = null;
-      }
-      this.mergeAndSet();
-      return;
-    }
-
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
     }
 
+    // Coalesce rapid snapshot arrivals (e.g. startup bursts) into a single atomic update
+    const delay = immediate ? 25 : 120;
     this.batchTimer = setTimeout(() => {
       this.batchTimer = null;
       this.mergeAndSet();
-    }, 150);
+    }, delay);
   }
 
   public startListeners(branchName?: string) {
@@ -429,9 +422,9 @@ class ReceptionDataStore {
         const branchQueries = getBranchQueryNames(branchName);
         const qList = branchQueries.length > 0
           ? [
-              query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(150)),
-              query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(150))
-            ]
+            query(collection(db, 'patients'), where('branchName', 'in', branchQueries), limit(150)),
+            query(collection(db, 'patients'), where('branch', 'in', branchQueries), limit(150))
+          ]
           : [query(collection(db, 'patients'), limit(150))];
 
         const snaps = await Promise.all(qList.map(q => getDocs(q).catch(() => ({ docs: [] }))));

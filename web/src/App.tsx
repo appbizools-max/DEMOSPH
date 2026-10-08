@@ -157,6 +157,19 @@ export default function App() {
   const [fileReturnTab, setFileReturnTab] = useState<string>('reception_dashboard');
   const [checkoutPatientForReception, setCheckoutPatientForReception] = useState<any>(null);
 
+  // Keep-Alive Tab State Preservation for Web Reception
+  const [visitedReceptionTabs, setVisitedReceptionTabs] = useState<Set<string>>(() => new Set(['reception_dashboard']));
+
+  useEffect(() => {
+    if (activeTab && (activeTab.startsWith('reception') || activeTab === 'patient_file')) {
+      setVisitedReceptionTabs(prev => {
+        const next = new Set(prev);
+        next.add(activeTab);
+        return next;
+      });
+    }
+  }, [activeTab]);
+
   const handleNavigateWithData = (tab: string, data?: any) => {
     if (data) {
       setSelectedPatientForFile(data);
@@ -171,7 +184,7 @@ export default function App() {
     const isDashboard = activeTab === 'reception' || activeTab === 'reception_dashboard';
 
     return (
-      <>
+      <div style={{ position: 'relative', width: '100%', minHeight: '100%' }}>
         <div style={{ display: isDashboard ? 'block' : 'none' }}>
           <ReceptionDashboardPage
             currentBranch={branchName}
@@ -180,48 +193,74 @@ export default function App() {
             onClearInitialCheckout={() => setCheckoutPatientForReception(null)}
           />
         </div>
-        {!isDashboard && (
-          <>
-            {activeTab === 'reception_patient_file' && (
-              <PatientFilePage
-                initialPatient={selectedPatientForFile}
-                onBack={() => setActiveTab(fileReturnTab || 'reception_dashboard')}
-                onSubmitConsultation={(savedPatient) => {
-                  setCheckoutPatientForReception({ ...selectedPatientForFile, ...savedPatient });
-                  setActiveTab('reception_dashboard');
-                }}
-              />
-            )}
-            {activeTab === 'reception_book' && (
-              <BookAppointmentPage currentBranch={branchName} userRole={userRole} onNavigate={setActiveTab} />
-            )}
-            {activeTab === 'reception_patients' && (
-              <AllPatientsPage currentBranch={branchName} onNavigate={handleNavigateWithData} />
-            )}
-            {activeTab === 'reception_followups' && (
-              <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} branchId={branchId} />
-            )}
-            {activeTab === 'reception_medicines' && (
-              <MedicineRequestsPage currentBranch={branchName} onNavigate={setActiveTab} />
-            )}
-            {activeTab === 'reception_billing' && (
-              <ProductBillingPage />
-            )}
-            {activeTab === 'reception_noshow' && (
-              <DoctorNoShowPage currentBranch={branchName} />
-            )}
-            {activeTab === 'reception_media' && (
-              <MediaManagerPage />
-            )}
-            {activeTab === 'reception_cleaning' && (
-              <CleaningPhotosPage />
-            )}
-            {activeTab === 'reception_shiprocket' && (
-              <ShiprocketPage />
-            )}
-          </>
+
+        {visitedReceptionTabs.has('reception_book') && (
+          <div style={{ display: activeTab === 'reception_book' ? 'block' : 'none' }}>
+            <BookAppointmentPage currentBranch={branchName} userRole={userRole} onNavigate={setActiveTab} />
+          </div>
         )}
-      </>
+
+        {visitedReceptionTabs.has('reception_patients') && (
+          <div style={{ display: activeTab === 'reception_patients' ? 'block' : 'none' }}>
+            <AllPatientsPage currentBranch={branchName} onNavigate={handleNavigateWithData} />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_followups') && (
+          <div style={{ display: activeTab === 'reception_followups' ? 'block' : 'none' }}>
+            <FollowUpsPage onNavigate={handleNavigateWithData} currentBranch={branchName} branchId={branchId} />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_medicines') && (
+          <div style={{ display: activeTab === 'reception_medicines' ? 'block' : 'none' }}>
+            <MedicineRequestsPage currentBranch={branchName} userRole={userRole} onNavigate={setActiveTab} />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_billing') && (
+          <div style={{ display: activeTab === 'reception_billing' ? 'block' : 'none' }}>
+            <ProductBillingPage />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_noshow') && (
+          <div style={{ display: activeTab === 'reception_noshow' ? 'block' : 'none' }}>
+            <DoctorNoShowPage currentBranch={branchName} />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_media') && (
+          <div style={{ display: activeTab === 'reception_media' ? 'block' : 'none' }}>
+            <MediaManagerPage />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_cleaning') && (
+          <div style={{ display: activeTab === 'reception_cleaning' ? 'block' : 'none' }}>
+            <CleaningPhotosPage />
+          </div>
+        )}
+
+        {visitedReceptionTabs.has('reception_shiprocket') && (
+          <div style={{ display: activeTab === 'reception_shiprocket' ? 'block' : 'none' }}>
+            <ShiprocketPage />
+          </div>
+        )}
+
+        {(visitedReceptionTabs.has('reception_patient_file') || activeTab === 'reception_patient_file') && selectedPatientForFile && (
+          <div style={{ display: activeTab === 'reception_patient_file' ? 'block' : 'none' }}>
+            <PatientFilePage
+              initialPatient={selectedPatientForFile}
+              onBack={() => setActiveTab(fileReturnTab || 'reception_dashboard')}
+              onSubmitConsultation={(savedPatient) => {
+                setCheckoutPatientForReception({ ...selectedPatientForFile, ...savedPatient });
+                setActiveTab('reception_dashboard');
+              }}
+            />
+          </div>
+        )}
+      </div>
     );
   };
 

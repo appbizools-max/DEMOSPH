@@ -876,7 +876,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ currentTab, role = 'ad
   if (activeTab === 'branches') {
     return (
       <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-        <ManageBranchesScreen onBack={() => setActiveTab('analytics')} />
+        <ManageBranchesScreen onBack={() => setActiveTab('analytics')} role={role} />
       </View>
     );
   }

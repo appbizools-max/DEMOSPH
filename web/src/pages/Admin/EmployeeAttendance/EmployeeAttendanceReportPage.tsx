@@ -8,15 +8,6 @@ import {
 import { collection, query, onSnapshot, orderBy, doc, setDoc } from 'firebase/firestore';
 import { db, StaffAttendanceRecord, StaffLeaveRequest } from '@app/shared';
 
-const DEFAULT_STAFF = [
-  { id: '1', name: 'Anil Kumar M', branch: 'KPHB', role: 'Regular Staff', phone: '7338260802', mobile: '7338260802', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹22,000' },
-  { id: '2', name: 'Ashwini Begari', branch: 'Chandanagar', role: 'Regular Staff', phone: '6302121265', mobile: '6302121265', shift: '10:00 AM - 06:30 PM', hours: '8.5 hrs/day', salary: '₹17,000' },
-  { id: '3', name: 'Vaishnavi Peri', branch: 'Nallagandla', role: 'Regular Staff', phone: '9874563210', mobile: '9874563210', shift: '09:30 AM - 07:00 PM', hours: '9.5 hrs/day', salary: '₹17,000' },
-  { id: '4', name: 'Nandini Gottelli', branch: 'Dilshuknagar', role: 'Regular Staff', phone: '9652180003', mobile: '9652180003', shift: '10:00 AM - 02:00 PM | 04:30 PM - 08:30 PM', hours: '8 hrs/day', salary: '₹15,000' },
-  { id: '5', name: 'Srikanth', branch: 'KPHB', role: 'Regular Staff', phone: '8125384387', mobile: '8125384387', shift: '10:00 AM - 08:00 PM', hours: '10 hrs/day', salary: '₹18,000' },
-  { id: '6', name: 'Arun Kumar', branch: 'Nallagandla', role: 'Regular Staff', phone: '9876543212', mobile: '9876543212', shift: '10:00 AM - 06:00 PM', hours: '8 hrs/day', salary: '₹14,000' },
-  { id: '7', name: 'Aishwarya . M', branch: 'KPHB', role: 'Regular Staff', phone: '7890123456', mobile: '7890123456', shift: '10:00 AM - 08:30 PM', hours: '10.5 hrs/day', salary: '₹14,000' },
-];
 
 const normalizeDate = (d?: string) => {
   if (!d) return '';
@@ -114,8 +105,8 @@ export const EmployeeAttendanceReportPage: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('All');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
-  // Firestore Data
-  const [staffList, setStaffList] = useState<any[]>(DEFAULT_STAFF);
+  // Firestore Data (Purely from Firestore)
+  const [staffList, setStaffList] = useState<any[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<StaffAttendanceRecord[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<StaffLeaveRequest[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -142,27 +133,13 @@ export const EmployeeAttendanceReportPage: React.FC = () => {
     longitude?: number;
   } | null>(null);
 
-  // 1. Fetch & Auto-Sync Staff Directory from Firestore
+  // 1. Fetch Staff Directory from Firestore (Purely from Firestore)
   useEffect(() => {
     if (!db) return;
     const unsub = onSnapshot(collection(db, 'staff'), (snap) => {
       const list: any[] = [];
       snap.forEach(d => list.push({ id: d.id, ...d.data() }));
-
-      // Auto-sync missing members like Aishwarya
-      for (const stf of DEFAULT_STAFF) {
-        const found = list.find(d => d.id === stf.id || d.name?.toLowerCase() === stf.name.toLowerCase() || d.phone === stf.phone || d.mobile === stf.phone);
-        if (!found && db) {
-          try {
-            setDoc(doc(db, 'staff', stf.id), stf, { merge: true });
-            list.push(stf);
-          } catch (_) { }
-        }
-      }
-
-      if (list.length > 0) {
-        setStaffList(list);
-      }
+      setStaffList(list);
     }, (err) => console.warn('Staff listener error:', err));
 
     return () => unsub();
