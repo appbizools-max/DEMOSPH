@@ -47,6 +47,7 @@ export interface MedicineItem {
   name: string;
   timing: string;
   type?: string;
+  amount?: number | string;
 }
 
 const BRANCH_OPTIONS = [
@@ -269,16 +270,22 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     const validMedicines = (req.medicines && req.medicines.length > 0)
       ? req.medicines.filter(m => m.name && m.name.trim().length > 0)
       : [];
+    const totalAmt = Number(req.totalAmount !== undefined ? req.totalAmount : totalAmount) || 0;
     const displayMedicines = validMedicines.length > 0 ? validMedicines : (req.medicines || []);
 
     const rowsHtml = displayMedicines.map((m, idx) => `
       <tr>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; width: 52%;">
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; text-align: center;">${idx + 1}</td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0;">
           <div style="font-weight: bold; color: #1e293b; font-size: 13.5px;">${m.name || '-'}</div>
-          ${m.type ? `<div style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">Type: ${m.type}</div>` : ''}
+          ${m.amount && Number(m.amount) > 0 ? `<div style="font-size: 11px; color: #166534; font-weight: 700; margin-top: 3px;">Amount: ₹${Number(m.amount).toFixed(2)}</div>` : ''}
         </td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%; font-size: 13px;">${m.timing || '-'}</td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+          <span style="background: #e0f2fe; color: #0284c7; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 11.5px; display: inline-block; border: 1px solid #bae6fd;">
+            ${m.type || 'Pills'}
+          </span>
+        </td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 13px; font-weight: 600;">${m.timing || '-'}</td>
       </tr>
     `).join('');
 
@@ -519,19 +526,40 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
             ${durationDisplay ? `<strong>${pronoun}</strong> NEEDED TO TAKE HOMEOPATHY MEDICINE FOR <strong>${durationDisplay} ${durationDisplay === '1' ? 'MONTH' : 'MONTHS'}</strong>. ` : ''}WE RECOMMENDED THAT <strong>${title} ${patUpper}</strong> CONTINUES TO FOLLOW THE PRESCRIBED MEDICATIONS.
           </div>
 
-          <div class="med-heading">PRESCRIBED MEDICINES</div>
+          <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 24px; margin-bottom: 8px;">
+            <div class="med-heading" style="margin: 0; padding-bottom: 4px; border: none;">PRESCRIBED MEDICINES</div>
+            ${totalAmt > 0 ? `
+            <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 8px; padding: 5px 12px; display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 11px; font-weight: 700; color: #166534; text-transform: uppercase;">Total Medicine Fee:</span>
+              <span style="font-size: 14.5px; font-weight: 900; color: #15803d;">₹${Number(totalAmt).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+            ` : ''}
+          </div>
 
           <table class="med-table">
             <thead>
               <tr>
-                <th style="width: 8%; text-align: center;">#</th>
-                <th style="width: 52%;">Remedy / Medicine Name</th>
-                <th style="width: 40%;">Dosage & Timing</th>
+                <th style="width: 6%; text-align: center;">#</th>
+                <th style="width: 44%;">Remedy / Medicine Name</th>
+                <th style="width: 20%; text-align: center;">Type</th>
+                <th style="width: 30%;">Dosage & Timing</th>
               </tr>
             </thead>
             <tbody>
               ${rowsHtml}
             </tbody>
+            ${totalAmt > 0 ? `
+            <tfoot>
+              <tr style="background-color: #f8fafc; border-top: 2px solid #1d8ecd;">
+                <td colspan="3" style="padding: 11px 12px; text-align: right; font-weight: 800; font-size: 12.5px; color: #0f172a; text-transform: uppercase;">
+                  Total Medicine Amount:
+                </td>
+                <td style="padding: 11px 12px; text-align: right; font-weight: 900; font-size: 14.5px; color: #166534;">
+                  ₹${Number(totalAmt).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </td>
+              </tr>
+            </tfoot>
+            ` : ''}
           </table>
 
 

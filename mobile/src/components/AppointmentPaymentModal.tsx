@@ -395,9 +395,10 @@ export const buildOfficialInvoiceHtml = (activeInvoice: any, patientName: string
                 ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
             ? activeInvoice.medicines.map((m: any, idx: number) => {
               const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+              const typeDisplay = m.type && m.type.trim() ? ` [${m.type.trim()}]` : '';
               const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
               const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-              return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+              return `<tr><td>${medName}${typeDisplay}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
             }).join('')
             : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
               `
@@ -409,9 +410,10 @@ export const buildOfficialInvoiceHtml = (activeInvoice: any, patientName: string
                     ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
                       ? activeInvoice.medicines.map((m: any, idx: number) => {
                         const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                        const typeDisplay = m.type && m.type.trim() ? ` [${m.type.trim()}]` : '';
                         const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
                         const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                        return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                        return `<tr><td>${medName}${typeDisplay}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
                       }).join('')
                       : `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>`}
                   `
@@ -1827,7 +1829,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       if (includeMedicineFee && medicineItems && medicineItems.length > 0) {
         medicineItems.forEach((m: any) => {
           mobileInvoiceItems.push({
-            description: `${m.name || 'Medicine'}${m.timing ? ` [${m.timing}]` : ''}`,
+            description: `${m.name || 'Medicine'}${m.type && m.type.trim() ? ` [${m.type.trim()}]` : ''}${m.timing ? ` [${m.timing.trim()}]` : ''}`,
             amount: Number(m.amount || 0)
           });
         });
@@ -2178,12 +2180,13 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                     {activeInvoice.medicines && activeInvoice.medicines.length > 0 ? (
                       activeInvoice.medicines.map((m: any, idx: number) => {
                         const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                        const typeDisplay = m.type && m.type.trim() ? ` [${m.type.trim()}]` : '';
                         const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
                         const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
                         return (
                           <View key={idx} style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
                             <Text style={{ flex: 1, fontSize: 12, color: '#334155', fontWeight: '500' }}>
-                              {medName}{timingDisplay}{durationDisplay}
+                              {medName}{typeDisplay}{timingDisplay}{durationDisplay}
                             </Text>
                             <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>₹{Number(m.amount).toFixed(2)}</Text>
                           </View>
@@ -2408,9 +2411,10 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                             ${activeInvoice?.medicines && activeInvoice.medicines.length > 0
                       ? activeInvoice.medicines.map((m: any, idx: number) => {
                         const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                        const typeDisplay = m.type && m.type.trim() ? ` [${m.type.trim()}]` : '';
                         const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
                         const durationDisplay = activeInvoice?.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                        return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                        return `<tr><td>${medName}${typeDisplay}${timingDisplay}${durationDisplay}</td><td style="text-align: right; font-weight: 700;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
                       }).join('')
                       : (Number(activeInvoice?.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice?.medicineDuration ? ` (${activeInvoice?.medicineDuration})` : ''}</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.medicineFee).toFixed(2)}</td></tr>` : '')}
                             ${Number(activeInvoice?.consultationFee) > 0 ? `<tr><td>Consultation Fee</td><td style="text-align: right; font-weight: 700;">₹${Number(activeInvoice?.consultationFee).toFixed(2)}</td></tr>` : ''}

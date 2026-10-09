@@ -1528,7 +1528,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       if (includeMedicineFee && medicineItems && medicineItems.length > 0) {
         medicineItems.forEach((m: any) => {
           webInvoiceItems.push({
-            description: `${m.name || 'Medicine'}${m.timing ? ` [${m.timing}]` : ''}`,
+            description: `${m.name || 'Medicine'}${m.type && m.type.trim() ? ` [${m.type.trim()}]` : ''}${m.timing ? ` [${m.timing.trim()}]` : ''}`,
             amount: Number(m.amount || 0)
           });
         });
@@ -3749,12 +3749,13 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                         {activeInvoice.medicines && activeInvoice.medicines.length > 0 ? (
                           activeInvoice.medicines.map((m: any, idx: number) => {
                             const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                            const typeDisplay = m.type && m.type.trim() ? ` [${m.type.trim()}]` : '';
                             const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
                             const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
                             return (
                               <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                 <td style={{ padding: '10px 14px', color: '#334155', fontWeight: 600 }}>
-                                  {medName}{timingDisplay}{durationDisplay}
+                                  {medName}{typeDisplay}{timingDisplay}{durationDisplay}
                                 </td>
                                 <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
                                   ₹{Number(m.amount).toFixed(2)}
@@ -4045,9 +4046,10 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                             ${activeInvoice.medicines && activeInvoice.medicines.length > 0
                               ? activeInvoice.medicines.map((m: any, idx: number) => {
                                 const medName = m.name && m.name.trim() ? m.name.trim() : (activeInvoice.medicines.length === 1 ? 'Medicine Fee' : `Medicine ${idx + 1}`);
+                                const typeDisplay = m.type && m.type.trim() ? ` [${m.type.trim()}]` : '';
                                 const timingDisplay = m.timing && m.timing.trim() ? ` [${m.timing.trim()}]` : '';
                                 const durationDisplay = activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : '';
-                                return `<tr><td>${medName}${timingDisplay}${durationDisplay}</td><td style="text-align: right;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
+                                return `<tr><td>${medName}${typeDisplay}${timingDisplay}${durationDisplay}</td><td style="text-align: right;">₹${Number(m.amount).toFixed(2)}</td></tr>`;
                               }).join('')
                               : (Number(activeInvoice.medicineFee) > 0 ? `<tr><td>Medicine Fee${activeInvoice.medicineDuration ? ` (${activeInvoice.medicineDuration})` : ''}</td><td style="text-align: right;">₹${Number(activeInvoice.medicineFee).toFixed(2)}</td></tr>` : '')}
                           `
