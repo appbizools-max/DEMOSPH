@@ -36,6 +36,15 @@ export const MEDICINE_TYPE_OPTIONS = [
   { value: 'Other', label: 'Other' },
 ];
 
+export const DURATION_OPTIONS = [
+  '1 Month',
+  '2 Months',
+  '3 Months',
+  '4 Months',
+  '5 Months',
+  '6 Months'
+];
+
 export interface MedicineItem {
   name: string;
   timing: string;
@@ -95,9 +104,10 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   const [phone, setPhone] = useState('');
   const [totalAmount, setTotalAmount] = useState<number>(0);
   const [duration, setDuration] = useState('');
+  const [showDurationPicker, setShowDurationPicker] = useState(false);
 
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '', type: 'Pills' }
+    { name: '', timing: '', type: '' }
   ]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showTimingPicker, setShowTimingPicker] = useState(false);
@@ -181,7 +191,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   );
 
   const addMedicine = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '', type: 'Pills' }]);
+    setMedicines(prev => [...prev, { name: '', timing: '', type: '' }]);
   };
 
   const removeMedicine = (index: number) => {
@@ -205,7 +215,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     setSelectedBranch(branchName || currentBranch || selectedBranch || 'KPHB Branch');
     setTotalAmount(0);
     setDuration('');
-    setMedicines([{ name: '', timing: '', type: 'Pills' }]);
+    setMedicines([{ name: '', timing: '', type: '' }]);
     setHasRestoredDraft(false);
     try {
       await AsyncStorage.removeItem(MEDICINE_REQUEST_DRAFT_KEY);
@@ -241,7 +251,8 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     const title = resolveTitle(gender);
     const pronoun = resolvePronoun(gender);
     const patNameUpper = (patientName || 'PATIENT').toUpperCase();
-    const durationClean = (duration || '').replace(/months?/gi, '').trim();
+    const durationClean = (duration || '1 Month').replace(/months?/gi, '').trim();
+    const durationDisplay = durationClean ? (durationClean === '1' ? '1 MONTH' : `${durationClean} MONTHS`) : '1 MONTH';
     const formattedDate = new Date().toLocaleDateString('en-GB');
     const displayBranch = (selectedBranch || initialBranch).toUpperCase();
 
@@ -480,7 +491,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </div>
 
           <div class="cert-para">
-            ${durationClean ? `<strong>${pronoun}</strong> NEEDED TO TAKE HOMEOPATHY MEDICINE FOR <strong>${durationClean} MONTHS</strong>. ` : ''}WE RECOMMENDED THAT <strong>${title} ${patNameUpper}</strong> CONTINUES TO FOLLOW THE PRESCRIBED MEDICATIONS.
+            ${durationDisplay ? `<strong>${pronoun}</strong> NEEDED TO TAKE HOMEOPATHY MEDICINE FOR <strong>${durationDisplay}</strong>. ` : ''}WE RECOMMENDED THAT <strong>${title} ${patNameUpper}</strong> CONTINUES TO FOLLOW THE PRESCRIBED MEDICATIONS.
           </div>
 
           <div class="med-heading">PRESCRIBED MEDICINES</div>
@@ -722,18 +733,20 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           </View>
 
           <View style={[styles.inputGroup, { flex: 1 }]}>
-            <Text style={styles.inputLabel}>Duration (Months)</Text>
-            <View style={styles.inputWrapper}>
-              <Feather name="clock" size={16} color="#94a3b8" style={styles.inputIcon} />
-              <TextInput
-                style={styles.textInput}
-                placeholder="e.g. 1 or 2"
-                placeholderTextColor="#94a3b8"
-                value={duration}
-                onChangeText={setDuration}
-                keyboardType="numeric"
-              />
-            </View>
+            <Text style={styles.inputLabel}>Duration</Text>
+            <TouchableOpacity
+              style={[styles.inputWrapper, { justifyContent: 'space-between', paddingRight: 12 }]}
+              onPress={() => setShowDurationPicker(true)}
+              activeOpacity={0.7}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                <Feather name="clock" size={16} color="#94a3b8" style={styles.inputIcon} />
+                <Text style={{ fontSize: 13, color: duration ? '#0f172a' : '#94a3b8', fontWeight: duration ? '700' : '500' }}>
+                  {duration || '1 Month'}
+                </Text>
+              </View>
+              <Feather name="chevron-down" size={16} color="#64748b" />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -796,8 +809,8 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                   onPress={() => { setActiveTypeIndex(idx); setShowTypePicker(true); }}
                   activeOpacity={0.7}
                 >
-                  <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '700' }}>
-                    {m.type || 'Pills'}
+                  <Text style={{ fontSize: 13, color: m.type ? '#0f172a' : '#94a3b8', fontWeight: m.type ? '700' : '500' }}>
+                    {m.type || 'Select Type'}
                   </Text>
                   <Feather name="chevron-down" size={14} color="#64748b" />
                 </TouchableOpacity>
@@ -810,7 +823,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
                   onPress={() => { setActiveTimingIndex(idx); setShowTimingPicker(true); }}
                   activeOpacity={0.7}
                 >
-                  <Text style={{ fontSize: 13, color: m.timing ? '#0f172a' : '#94a3b8' }}>
+                  <Text style={{ fontSize: 13, color: m.timing ? '#0f172a' : '#94a3b8', fontWeight: m.timing ? '700' : '500' }}>
                     {m.timing || 'Select Timing'}
                   </Text>
                   <Feather name="chevron-down" size={14} color="#94a3b8" />
@@ -842,68 +855,343 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
         </Text>
       </TouchableOpacity>
 
-      {/* Medicine Type Picker Modal */}
-      <Modal visible={showTypePicker} transparent animationType="slide" onRequestClose={() => setShowTypePicker(false)}>
-        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowTypePicker(false)}>
-          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
-              <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Select Medicine Type</Text>
-              <TouchableOpacity onPress={() => setShowTypePicker(false)}>
-                <Feather name="x" size={20} color="#64748b" />
+      {/* Duration Picker Modal (Centered Pop-Up) */}
+      <Modal visible={showDurationPicker} transparent animationType="fade" onRequestClose={() => setShowDurationPicker(false)}>
+        <TouchableOpacity 
+          style={{ 
+            flex: 1, 
+            backgroundColor: 'rgba(15, 23, 42, 0.65)', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            padding: 24
+          }} 
+          activeOpacity={1} 
+          onPress={() => setShowDurationPicker(false)}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            onPress={(e) => e.stopPropagation()} 
+            style={{ 
+              backgroundColor: '#ffffff', 
+              borderRadius: 20, 
+              width: '100%', 
+              maxWidth: 340, 
+              overflow: 'hidden',
+              ...Platform.select({
+                ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 20 },
+                android: { elevation: 10 }
+              })
+            }}
+          >
+            {/* Header */}
+            <View style={{ 
+              flexDirection: 'row', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              paddingHorizontal: 18, 
+              paddingVertical: 15, 
+              borderBottomWidth: 1, 
+              borderBottomColor: '#e2e8f0',
+              backgroundColor: '#f8fafc'
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#e0f2fe', justifyContent: 'center', alignItems: 'center' }}>
+                  <Feather name="calendar" size={16} color="#0284c7" />
+                </View>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Select Duration</Text>
+              </View>
+              <TouchableOpacity 
+                onPress={() => setShowDurationPicker(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center' }}
+              >
+                <Feather name="x" size={16} color="#64748b" />
               </TouchableOpacity>
             </View>
-            <FlatList
-              data={MEDICINE_TYPE_OPTIONS}
-              keyExtractor={(item) => item.value}
-              renderItem={({ item }) => {
-                const isSelected = activeTypeIndex >= 0 && (medicines[activeTypeIndex]?.type || 'Pills') === item.value;
-                return (
-                  <TouchableOpacity
-                    style={{ paddingHorizontal: 18, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', backgroundColor: isSelected ? '#e0f2fe' : '#fff' }}
-                    onPress={() => {
-                      if (activeTypeIndex >= 0) updateMedicine(activeTypeIndex, 'type', item.value);
-                      setShowTypePicker(false);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>
-                      {item.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          </View>
+
+            {/* List */}
+            <View style={{ paddingVertical: 6, maxHeight: 360 }}>
+              <FlatList
+                data={DURATION_OPTIONS}
+                keyExtractor={(item) => item}
+                bounces={false}
+                renderItem={({ item, index }) => {
+                  const isSelected = duration ? (duration === item || duration === item.replace(' Months', '').replace(' Month', '')) : (item === '1 Month');
+                  const isLast = index === DURATION_OPTIONS.length - 1;
+                  return (
+                    <TouchableOpacity
+                      style={{ 
+                        paddingHorizontal: 18, 
+                        paddingVertical: 13, 
+                        borderBottomWidth: isLast ? 0 : 1, 
+                        borderBottomColor: '#f1f5f9', 
+                        backgroundColor: isSelected ? '#f0f9ff' : '#ffffff', 
+                        flexDirection: 'row', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center' 
+                      }}
+                      onPress={() => {
+                        setDuration(item);
+                        setShowDurationPicker(false);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        <View style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: 10,
+                          borderWidth: isSelected ? 6 : 2,
+                          borderColor: isSelected ? '#0284c7' : '#cbd5e1',
+                          backgroundColor: '#ffffff'
+                        }} />
+                        <Text style={{ 
+                          fontSize: 14.5, 
+                          fontWeight: isSelected ? '800' : '600', 
+                          color: isSelected ? '#0284c7' : '#1e293b' 
+                        }}>
+                          {item}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284c7' }}>Selected</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            </View>
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 
-      {/* Dosage Timing Picker Modal */}
-      <Modal visible={showTimingPicker} transparent animationType="slide" onRequestClose={() => setShowTimingPicker(false)}>
-        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowTimingPicker(false)}>
-          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
-              <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Select Pill Timing</Text>
-              <TouchableOpacity onPress={() => setShowTimingPicker(false)}>
-                <Feather name="x" size={20} color="#64748b" />
+      {/* Medicine Type Picker Modal (Centered Pop-Up) */}
+      <Modal visible={showTypePicker} transparent animationType="fade" onRequestClose={() => setShowTypePicker(false)}>
+        <TouchableOpacity 
+          style={{ 
+            flex: 1, 
+            backgroundColor: 'rgba(15, 23, 42, 0.65)', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            padding: 24
+          }} 
+          activeOpacity={1} 
+          onPress={() => setShowTypePicker(false)}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            onPress={(e) => e.stopPropagation()} 
+            style={{ 
+              backgroundColor: '#ffffff', 
+              borderRadius: 20, 
+              width: '100%', 
+              maxWidth: 340, 
+              overflow: 'hidden',
+              ...Platform.select({
+                ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 20 },
+                android: { elevation: 10 }
+              })
+            }}
+          >
+            {/* Header */}
+            <View style={{ 
+              flexDirection: 'row', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              paddingHorizontal: 18, 
+              paddingVertical: 15, 
+              borderBottomWidth: 1, 
+              borderBottomColor: '#e2e8f0',
+              backgroundColor: '#f8fafc'
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#e0f2fe', justifyContent: 'center', alignItems: 'center' }}>
+                  <Ionicons name="medkit-outline" size={16} color="#0284c7" />
+                </View>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Select Medicine Type</Text>
+              </View>
+              <TouchableOpacity 
+                onPress={() => setShowTypePicker(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center' }}
+              >
+                <Feather name="x" size={16} color="#64748b" />
               </TouchableOpacity>
             </View>
-            <FlatList
-              data={DOSAGE_TIMING_OPTIONS.filter(o => o.value !== '')}
-              keyExtractor={(item) => item.value}
-              renderItem={({ item }) => {
-                const isSelected = activeTimingIndex >= 0 && medicines[activeTimingIndex]?.timing === item.value;
-                return (
-                  <TouchableOpacity
-                    style={{ paddingHorizontal: 18, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', backgroundColor: isSelected ? '#e0f2fe' : '#fff' }}
-                    onPress={() => { if (activeTimingIndex >= 0) updateMedicine(activeTimingIndex, 'timing', item.value); setShowTimingPicker(false); }}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>{item.label}</Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          </View>
+
+            {/* List */}
+            <View style={{ paddingVertical: 6, maxHeight: 380 }}>
+              <FlatList
+                data={MEDICINE_TYPE_OPTIONS}
+                keyExtractor={(item) => item.value}
+                bounces={false}
+                renderItem={({ item, index }) => {
+                  const currentVal = activeTypeIndex >= 0 ? medicines[activeTypeIndex]?.type : '';
+                  const isSelected = Boolean(currentVal) && currentVal === item.value;
+                  const isLast = index === MEDICINE_TYPE_OPTIONS.length - 1;
+                  return (
+                    <TouchableOpacity
+                      style={{ 
+                        paddingHorizontal: 18, 
+                        paddingVertical: 13, 
+                        borderBottomWidth: isLast ? 0 : 1, 
+                        borderBottomColor: '#f1f5f9', 
+                        backgroundColor: isSelected ? '#f0f9ff' : '#ffffff', 
+                        flexDirection: 'row', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center' 
+                      }}
+                      onPress={() => {
+                        if (activeTypeIndex >= 0) updateMedicine(activeTypeIndex, 'type', item.value);
+                        setShowTypePicker(false);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        <View style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: 10,
+                          borderWidth: isSelected ? 6 : 2,
+                          borderColor: isSelected ? '#0284c7' : '#cbd5e1',
+                          backgroundColor: '#ffffff'
+                        }} />
+                        <Text style={{ 
+                          fontSize: 14.5, 
+                          fontWeight: isSelected ? '800' : '600', 
+                          color: isSelected ? '#0284c7' : '#1e293b' 
+                        }}>
+                          {item.label}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284c7' }}>Selected</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Dosage Timing Picker Modal (Centered Pop-Up) */}
+      <Modal visible={showTimingPicker} transparent animationType="fade" onRequestClose={() => setShowTimingPicker(false)}>
+        <TouchableOpacity 
+          style={{ 
+            flex: 1, 
+            backgroundColor: 'rgba(15, 23, 42, 0.65)', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            padding: 24
+          }} 
+          activeOpacity={1} 
+          onPress={() => setShowTimingPicker(false)}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            onPress={(e) => e.stopPropagation()} 
+            style={{ 
+              backgroundColor: '#ffffff', 
+              borderRadius: 20, 
+              width: '100%', 
+              maxWidth: 340, 
+              overflow: 'hidden',
+              ...Platform.select({
+                ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 20 },
+                android: { elevation: 10 }
+              })
+            }}
+          >
+            {/* Header */}
+            <View style={{ 
+              flexDirection: 'row', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              paddingHorizontal: 18, 
+              paddingVertical: 15, 
+              borderBottomWidth: 1, 
+              borderBottomColor: '#e2e8f0',
+              backgroundColor: '#f8fafc'
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#e0f2fe', justifyContent: 'center', alignItems: 'center' }}>
+                  <Feather name="clock" size={16} color="#0284c7" />
+                </View>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Select Dosage Timing</Text>
+              </View>
+              <TouchableOpacity 
+                onPress={() => setShowTimingPicker(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center' }}
+              >
+                <Feather name="x" size={16} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {/* List */}
+            <View style={{ paddingVertical: 6, maxHeight: 400 }}>
+              <FlatList
+                data={DOSAGE_TIMING_OPTIONS.filter(o => o.value !== '')}
+                keyExtractor={(item) => item.value}
+                bounces={false}
+                renderItem={({ item, index }) => {
+                  const currentVal = activeTimingIndex >= 0 ? medicines[activeTimingIndex]?.timing : '';
+                  const isSelected = Boolean(currentVal) && currentVal === item.value;
+                  const timingList = DOSAGE_TIMING_OPTIONS.filter(o => o.value !== '');
+                  const isLast = index === timingList.length - 1;
+                  return (
+                    <TouchableOpacity
+                      style={{ 
+                        paddingHorizontal: 18, 
+                        paddingVertical: 13, 
+                        borderBottomWidth: isLast ? 0 : 1, 
+                        borderBottomColor: '#f1f5f9', 
+                        backgroundColor: isSelected ? '#f0f9ff' : '#ffffff', 
+                        flexDirection: 'row', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center' 
+                      }}
+                      onPress={() => { 
+                        if (activeTimingIndex >= 0) updateMedicine(activeTimingIndex, 'timing', item.value); 
+                        setShowTimingPicker(false); 
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, marginRight: 8 }}>
+                        <View style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: 10,
+                          borderWidth: isSelected ? 6 : 2,
+                          borderColor: isSelected ? '#0284c7' : '#cbd5e1',
+                          backgroundColor: '#ffffff'
+                        }} />
+                        <Text style={{ 
+                          fontSize: 13.5, 
+                          fontWeight: isSelected ? '800' : '600', 
+                          color: isSelected ? '#0284c7' : '#1e293b',
+                          flexShrink: 1
+                        }}>
+                          {item.label}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284c7' }}>Selected</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            </View>
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 

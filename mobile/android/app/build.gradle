@@ -114,8 +114,8 @@ android {
         applicationId 'com.spiritualhomeo.staff'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        versionCode 13
+        versionName "1.0.3"
     }
     signingConfigs {
         debug {
@@ -124,15 +124,28 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+            } else if (file('upload-keystore.jks').exists() && project.hasProperty('MYAPP_UPLOAD_STORE_PASSWORD')) {
+                storeFile file('upload-keystore.jks')
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias (project.findProperty('MYAPP_UPLOAD_KEY_ALIAS') ?: 'upload')
+                keyPassword (project.findProperty('MYAPP_UPLOAD_KEY_PASSWORD') ?: MYAPP_UPLOAD_STORE_PASSWORD)
+            } else {
+                signingConfig signingConfigs.debug
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"

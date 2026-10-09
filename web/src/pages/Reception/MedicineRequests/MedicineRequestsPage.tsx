@@ -23,6 +23,7 @@ const DOSAGE_TIMING_OPTIONS = [
 ];
 
 export const MEDICINE_TYPE_OPTIONS = [
+  { value: '', label: 'Select Medicine Type' },
   { value: 'Pills', label: 'Pills / Globules' },
   { value: 'Tablet', label: 'Tablet' },
   { value: 'Syrup', label: 'Syrup' },
@@ -31,6 +32,15 @@ export const MEDICINE_TYPE_OPTIONS = [
   { value: 'Mother Tincture', label: 'Mother Tincture (Q)' },
   { value: 'Ointment', label: 'Ointment / Cream' },
   { value: 'Other', label: 'Other' },
+];
+
+export const DURATION_OPTIONS = [
+  '1 Month',
+  '2 Months',
+  '3 Months',
+  '4 Months',
+  '5 Months',
+  '6 Months',
 ];
 
 export interface MedicineItem {
@@ -110,7 +120,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   const [duration, setDuration] = useState('');
 
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '', type: 'Pills' }
+    { name: '', timing: '', type: '' }
   ]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -188,7 +198,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   );
 
   const handleAddMedicineRow = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '', type: 'Pills' }]);
+    setMedicines(prev => [...prev, { name: '', timing: '', type: '' }]);
   };
 
   const handleRemoveMedicineRow = (idx: number) => {
@@ -212,7 +222,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setBranch(getInitialBranch());
     setTotalAmount(0);
     setDuration('');
-    setMedicines([{ name: '', timing: '', type: 'Pills' }]);
+    setMedicines([{ name: '', timing: '', type: '' }]);
     setSaveSuccess(false);
     setHasRestoredDraft(false);
     try {
@@ -252,7 +262,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     const conditionVal = (req.condition || 'GENERAL HEALTH CONSULTATION').toUpperCase();
     const branchDisplay = (req.branchName || currentBranch || 'KPHB Branch').toUpperCase();
     
-    const rawDuration = (req.duration || '').replace(/months?/gi, '').trim();
+    const rawDuration = (req.duration || duration || '1 Month').replace(/months?/gi, '').trim();
     const durationDisplay = rawDuration;
     const formattedDate = new Date().toLocaleDateString('en-GB'); // DD/MM/YYYY e.g. 10/09/2026
 
@@ -506,7 +516,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
           </div>
 
           <div class="cert-para">
-            ${durationDisplay ? `<strong>${pronoun}</strong> NEEDED TO TAKE HOMEOPATHY MEDICINE FOR <strong>${durationDisplay} MONTHS</strong>. ` : ''}WE RECOMMENDED THAT <strong>${title} ${patUpper}</strong> CONTINUES TO FOLLOW THE PRESCRIBED MEDICATIONS.
+            ${durationDisplay ? `<strong>${pronoun}</strong> NEEDED TO TAKE HOMEOPATHY MEDICINE FOR <strong>${durationDisplay} ${durationDisplay === '1' ? 'MONTH' : 'MONTHS'}</strong>. ` : ''}WE RECOMMENDED THAT <strong>${title} ${patUpper}</strong> CONTINUES TO FOLLOW THE PRESCRIBED MEDICATIONS.
           </div>
 
           <div class="med-heading">PRESCRIBED MEDICINES</div>
@@ -886,13 +896,30 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
 
             <div>
               <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '5px' }}>Duration (Months)</label>
-              <input
-                type="text"
-                placeholder="e.g. 1 or 2"
+              <select
                 value={duration}
                 onChange={(e) => setDuration(e.target.value)}
-                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
-              />
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '13px',
+                  fontWeight: duration ? 700 : 500,
+                  color: duration ? '#0f172a' : '#64748b',
+                  boxSizing: 'border-box',
+                  outline: 'none',
+                  backgroundColor: '#ffffff',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value="">1 Month (Default)</option>
+                {DURATION_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -939,10 +966,10 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                   style={{ flex: 2, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
                 />
                 <select
-                  value={m.type || 'Pills'}
+                  value={m.type || ''}
                   onChange={(e) => handleUpdateMedicineRow(idx, 'type', e.target.value)}
                   title="Select Medicine Type"
-                  style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none', cursor: 'pointer', fontWeight: 700, color: '#0f172a' }}
+                  style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none', cursor: 'pointer', fontWeight: m.type ? 700 : 500, color: m.type ? '#0f172a' : '#64748b' }}
                 >
                   {MEDICINE_TYPE_OPTIONS.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>

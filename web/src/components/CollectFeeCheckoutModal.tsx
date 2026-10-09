@@ -791,16 +791,24 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       setMedicineFeeInput(mPortion);
       if (mPortion > 0) {
         if (medicineItems.length === 0) {
-          setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+          setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '', type: 'Pills' }]);
+        } else if (medicineItems.length === 1) {
+          setMedicineItems([{ ...medicineItems[0], amount: mPortion }]);
         } else {
-          const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
-          setMedicineItems(prev => prev.map((item, i) => ({
-            ...item,
-            amount: splitAmounts[i]
-          })));
+          const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+          if (currentSum > mPortion) {
+            let runningTotal = 0;
+            const adjusted = medicineItems.map(item => {
+              const itemAmt = Number(item.amount) || 0;
+              const allowed = Math.max(0, Math.min(itemAmt, mPortion - runningTotal));
+              runningTotal += allowed;
+              return { ...item, amount: allowed };
+            });
+            setMedicineItems(adjusted);
+          }
         }
       } else {
-        setMedicineItems([{ id: '1', name: '', amount: 0, timing: '' }]);
+        setMedicineItems([{ id: '1', name: '', amount: 0, timing: '', type: 'Pills' }]);
       }
     } else if (preset === 'package') {
       setIncludeConsultFee(false);
@@ -825,46 +833,21 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
   };
 
   const handleAddMedicineRow = () => {
-    const newCount = medicineItems.length + 1;
-    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
-    const splitAmounts = distributeAmountEvenly(targetTotal, newCount);
-
-    const updated = medicineItems.map((item, i) => ({
-      ...item,
-      amount: splitAmounts[i]
-    }));
-
+    const updated = [...medicineItems];
     updated.push({
       id: String(Date.now()),
       name: '',
-      amount: splitAmounts[newCount - 1],
-      timing: ''
+      amount: 0,
+      timing: '',
+      type: 'Pills'
     });
 
     setMedicineItems(updated);
-    setMedicineFeeInput(targetTotal);
-    if (includeConsultFee && targetAmount > 0) {
-      setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
-    }
   };
 
   const handleRemoveMedicineItem = (idx: number) => {
     const remaining = medicineItems.filter((_, i) => i !== idx);
-    if (remaining.length > 0) {
-      const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
-      const splitAmounts = distributeAmountEvenly(targetTotal, remaining.length);
-      const updated = remaining.map((item, i) => ({
-        ...item,
-        amount: splitAmounts[i]
-      }));
-      setMedicineItems(updated);
-      setMedicineFeeInput(targetTotal);
-      if (includeConsultFee && targetAmount > 0) {
-        setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
-      }
-    } else {
-      setMedicineItems([]);
-    }
+    setMedicineItems(remaining);
   };
 
   const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing' | 'type', val: any) => {
@@ -876,27 +859,20 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     }
 
     const numVal = Math.max(0, Number(val) || 0);
-    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? targetAmount : 500);
+    const allocated = Number(medicineFeeInput) > 0 ? Number(medicineFeeInput) : (targetAmount > 0 ? targetAmount : 0);
 
-    if (updated.length <= 1) {
-      const safeVal = targetAmount > 0 && includeConsultFee ? Math.min(numVal, targetAmount) : numVal;
-      updated[0] = { ...updated[0], amount: safeVal };
-      setMedicineItems(updated);
-      setMedicineFeeInput(safeVal);
-      if (includeConsultFee && targetAmount > 0) {
-        setConsultFeeInput(Math.max(0, targetAmount - safeVal));
-      }
+    // Sum of all other medicine items
+    const otherSum = updated.reduce((acc, curr, i) => i !== idx ? acc + (Number(curr.amount) || 0) : acc, 0);
+
+    if (allocated > 0) {
+      const maxAllowed = Math.max(0, allocated - otherSum);
+      const safeVal = Math.min(numVal, maxAllowed);
+      updated[idx] = { ...updated[idx], amount: safeVal };
     } else {
-      const cappedVal = Math.min(numVal, targetTotal);
-      updated[idx] = { ...updated[idx], amount: cappedVal };
-      const remainingAmount = Math.max(0, targetTotal - cappedVal);
-      const otherIndices = updated.map((_, i) => i).filter(i => i !== idx);
-      const otherSplits = distributeAmountEvenly(remainingAmount, otherIndices.length);
-      otherIndices.forEach((otherIdx, i) => {
-        updated[otherIdx] = { ...updated[otherIdx], amount: otherSplits[i] };
-      });
-      setMedicineItems(updated);
+      updated[idx] = { ...updated[idx], amount: numVal };
     }
+
+    setMedicineItems(updated);
   };
 
   const handleTargetAmountChange = (newTarget: number) => {
@@ -920,29 +896,43 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
         setIncludeConsultFee(true);
         setIncludeMedicineFee(true);
         if (mPortion > 0) {
-          const count = medicineItems.length > 0 ? medicineItems.length : 1;
-          const splitAmounts = distributeAmountEvenly(mPortion, count);
           if (medicineItems.length === 0) {
-            setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+            setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '', type: 'Pills' }]);
+          } else if (medicineItems.length === 1) {
+            setMedicineItems([{ ...medicineItems[0], amount: mPortion }]);
           } else {
-            setMedicineItems(prev => prev.map((item, i) => ({
-              ...item,
-              amount: splitAmounts[i]
-            })));
+            const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+            if (currentSum > mPortion) {
+              let runningTotal = 0;
+              const adjusted = medicineItems.map(item => {
+                const itemAmt = Number(item.amount) || 0;
+                const allowed = Math.max(0, Math.min(itemAmt, mPortion - runningTotal));
+                runningTotal += allowed;
+                return { ...item, amount: allowed };
+              });
+              setMedicineItems(adjusted);
+            }
           }
         }
       } else if (includeMedicineFee) {
         setMedicineFeeInput(newTarget);
         setConsultFeeInput(0);
-        const count = medicineItems.length > 0 ? medicineItems.length : 1;
-        const splitAmounts = distributeAmountEvenly(newTarget, count);
         if (medicineItems.length === 0) {
-          setMedicineItems([{ id: '1', name: '', amount: newTarget, timing: '' }]);
+          setMedicineItems([{ id: '1', name: '', amount: newTarget, timing: '', type: 'Pills' }]);
+        } else if (medicineItems.length === 1) {
+          setMedicineItems([{ ...medicineItems[0], amount: newTarget }]);
         } else {
-          setMedicineItems(prev => prev.map((item, i) => ({
-            ...item,
-            amount: splitAmounts[i]
-          })));
+          const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+          if (currentSum > newTarget) {
+            let runningTotal = 0;
+            const adjusted = medicineItems.map(item => {
+              const itemAmt = Number(item.amount) || 0;
+              const allowed = Math.max(0, Math.min(itemAmt, newTarget - runningTotal));
+              runningTotal += allowed;
+              return { ...item, amount: allowed };
+            });
+            setMedicineItems(adjusted);
+          }
         }
       } else {
         setConsultFeeInput(newTarget);
@@ -966,15 +956,22 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     if (paymentTypePreset !== 'consultation_med' && includeMedicineFee && targetAmount > 0) {
       const mPortion = Math.max(0, targetAmount - cappedVal);
       setMedicineFeeInput(mPortion);
-      const count = medicineItems.length > 0 ? medicineItems.length : 1;
-      const splitAmounts = distributeAmountEvenly(mPortion, count);
       if (medicineItems.length === 0) {
-        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '', type: 'Pills' }]);
+      } else if (medicineItems.length === 1) {
+        setMedicineItems([{ ...medicineItems[0], amount: mPortion }]);
       } else {
-        setMedicineItems(prev => prev.map((item, i) => ({
-          ...item,
-          amount: splitAmounts[i]
-        })));
+        const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+        if (currentSum > mPortion) {
+          let runningTotal = 0;
+          const adjusted = medicineItems.map(item => {
+            const itemAmt = Number(item.amount) || 0;
+            const allowed = Math.max(0, Math.min(itemAmt, mPortion - runningTotal));
+            runningTotal += allowed;
+            return { ...item, amount: allowed };
+          });
+          setMedicineItems(adjusted);
+        }
       }
     }
   };
@@ -990,15 +987,24 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     if (includeConsultFee && targetAmount > 0) {
       setConsultFeeInput(Math.max(0, targetAmount - cappedVal));
     }
-    const count = medicineItems.length > 0 ? medicineItems.length : 1;
-    const splitAmounts = distributeAmountEvenly(cappedVal, count);
     if (medicineItems.length === 0) {
-      setMedicineItems([{ id: '1', name: '', amount: cappedVal, timing: '' }]);
+      if (cappedVal > 0) {
+        setMedicineItems([{ id: '1', name: '', amount: cappedVal, timing: '', type: 'Pills' }]);
+      }
+    } else if (medicineItems.length === 1) {
+      setMedicineItems([{ ...medicineItems[0], amount: cappedVal }]);
     } else {
-      setMedicineItems(prev => prev.map((item, i) => ({
-        ...item,
-        amount: splitAmounts[i]
-      })));
+      const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      if (currentSum > cappedVal) {
+        let runningTotal = 0;
+        const adjusted = medicineItems.map(item => {
+          const itemAmt = Number(item.amount) || 0;
+          const allowed = Math.max(0, Math.min(itemAmt, cappedVal - runningTotal));
+          runningTotal += allowed;
+          return { ...item, amount: allowed };
+        });
+        setMedicineItems(adjusted);
+      }
     }
   };
 
@@ -2458,14 +2464,23 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                       display: 'flex', flexDirection: 'column', gap: '12px'
                     }}>
                       {/* Real-time Match & Verification Badge */}
-                      <div style={{
-                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                        background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px',
-                        padding: '8px 12px', fontSize: '12px', fontWeight: 700, color: '#1e40af'
-                      }}>
-                        <span>Prescription Target: ₹{medicineFeeInput}</span>
-                        <span>Itemized Total: ₹{medicineItems.reduce((acc, m) => acc + (Number(m.amount) || 0), 0)} (100% Matches ✓)</span>
-                      </div>
+                      {(() => {
+                        const itemizedSum = medicineItems.reduce((acc, m) => acc + (Number(m.amount) || 0), 0);
+                        const isMatch = itemizedSum === Number(medicineFeeInput);
+                        const isExceeding = itemizedSum > Number(medicineFeeInput);
+                        return (
+                          <div style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            background: isMatch ? '#f0fdf4' : (isExceeding ? '#fef2f2' : '#fffbeb'),
+                            border: `1px solid ${isMatch ? '#86efac' : (isExceeding ? '#fca5a5' : '#fde68a')}`,
+                            borderRadius: '8px', padding: '8px 12px', fontSize: '12px', fontWeight: 700,
+                            color: isMatch ? '#166534' : (isExceeding ? '#b91c1c' : '#92400e')
+                          }}>
+                            <span>Allocated Medicine: ₹{medicineFeeInput}</span>
+                            <span>Itemized: ₹{itemizedSum} {isMatch ? '(✓ Total Matches)' : (isExceeding ? '(⚠️ Exceeds Allocated)' : `(₹${Math.max(0, Number(medicineFeeInput) - itemizedSum)} Left to Allocate)`)}</span>
+                          </div>
+                        );
+                      })()}
 
                       {/* Duration Dropdown */}
                       <div style={{

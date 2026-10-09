@@ -2,7 +2,7 @@
   "expo": {
     "name": "Spiritual Homeo Staff",
     "slug": "spiritual-homeo-staff",
-    "version": "1.1",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/app_icon.png",
     "userInterfaceStyle": "dark",
@@ -12,13 +12,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.spiritualhomeo.staff",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
+      "versionCode": 13,
       "adaptiveIcon": {
         "foregroundImage": "./assets/app_icon.png",
         "backgroundColor": "#0f172a"

@@ -1145,16 +1145,24 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       setMedicineFeeInput(mPortion);
       if (mPortion > 0) {
         if (medicineItems.length === 0) {
-          setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+          setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '', type: '' }]);
+        } else if (medicineItems.length === 1) {
+          setMedicineItems([{ ...medicineItems[0], amount: mPortion }]);
         } else {
-          const splitAmounts = distributeAmountEvenly(mPortion, medicineItems.length);
-          setMedicineItems(prev => prev.map((item, i) => ({
-            ...item,
-            amount: splitAmounts[i]
-          })));
+          const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+          if (currentSum > mPortion) {
+            let runningTotal = 0;
+            const adjusted = medicineItems.map(item => {
+              const itemAmt = Number(item.amount) || 0;
+              const allowed = Math.max(0, Math.min(itemAmt, mPortion - runningTotal));
+              runningTotal += allowed;
+              return { ...item, amount: allowed };
+            });
+            setMedicineItems(adjusted);
+          }
         }
       } else {
-        setMedicineItems([{ id: '1', name: '', amount: 0, timing: '' }]);
+        setMedicineItems([{ id: '1', name: '', amount: 0, timing: '', type: '' }]);
       }
     } else if (preset === 'package') {
       setIncludeConsultFee(false);
@@ -1175,46 +1183,21 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   };
 
   const handleAddMedicineRow = () => {
-    const newCount = medicineItems.length + 1;
-    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
-    const splitAmounts = distributeAmountEvenly(targetTotal, newCount);
-
-    const updated = medicineItems.map((item, i) => ({
-      ...item,
-      amount: splitAmounts[i]
-    }));
-
+    const updated = [...medicineItems];
     updated.push({
       id: String(Date.now()),
       name: '',
-      amount: splitAmounts[newCount - 1],
-      timing: ''
+      amount: 0,
+      timing: '',
+      type: ''
     });
 
     setMedicineItems(updated);
-    setMedicineFeeInput(targetTotal);
-    if (includeConsultFee && targetAmount > 0) {
-      setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
-    }
   };
 
   const handleRemoveMedicineItem = (idx: number) => {
     const remaining = medicineItems.filter((_, i) => i !== idx);
-    if (remaining.length > 0) {
-      const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? Math.round(targetAmount / 2) : 500);
-      const splitAmounts = distributeAmountEvenly(targetTotal, remaining.length);
-      const updated = remaining.map((item, i) => ({
-        ...item,
-        amount: splitAmounts[i]
-      }));
-      setMedicineItems(updated);
-      setMedicineFeeInput(targetTotal);
-      if (includeConsultFee && targetAmount > 0) {
-        setConsultFeeInput(Math.max(0, targetAmount - targetTotal));
-      }
-    } else {
-      setMedicineItems([]);
-    }
+    setMedicineItems(remaining);
   };
 
   const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing' | 'type', val: any) => {
@@ -1226,27 +1209,20 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     }
 
     const numVal = Math.max(0, Number(val) || 0);
-    const targetTotal = medicineFeeInput > 0 ? medicineFeeInput : (targetAmount > 0 ? targetAmount : 500);
+    const allocated = Number(medicineFeeInput) > 0 ? Number(medicineFeeInput) : (targetAmount > 0 ? targetAmount : 0);
 
-    if (updated.length <= 1) {
-      const safeVal = targetAmount > 0 && includeConsultFee ? Math.min(numVal, targetAmount) : numVal;
-      updated[0] = { ...updated[0], amount: safeVal };
-      setMedicineItems(updated);
-      setMedicineFeeInput(safeVal);
-      if (includeConsultFee && targetAmount > 0) {
-        setConsultFeeInput(Math.max(0, targetAmount - safeVal));
-      }
+    // Sum of all other medicine items (cannot be exceeded)
+    const otherSum = updated.reduce((acc, curr, i) => i !== idx ? acc + (Number(curr.amount) || 0) : acc, 0);
+
+    if (allocated > 0) {
+      const maxAllowed = Math.max(0, allocated - otherSum);
+      const safeVal = Math.min(numVal, maxAllowed);
+      updated[idx] = { ...updated[idx], amount: safeVal };
     } else {
-      const cappedVal = Math.min(numVal, targetTotal);
-      updated[idx] = { ...updated[idx], amount: cappedVal };
-      const remainingAmount = Math.max(0, targetTotal - cappedVal);
-      const otherIndices = updated.map((_, i) => i).filter(i => i !== idx);
-      const otherSplits = distributeAmountEvenly(remainingAmount, otherIndices.length);
-      otherIndices.forEach((otherIdx, i) => {
-        updated[otherIdx] = { ...updated[otherIdx], amount: otherSplits[i] };
-      });
-      setMedicineItems(updated);
+      updated[idx] = { ...updated[idx], amount: numVal };
     }
+
+    setMedicineItems(updated);
   };
 
   const handleTargetAmountChange = (newTarget: number) => {
@@ -1270,29 +1246,43 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
         setIncludeConsultFee(true);
         setIncludeMedicineFee(true);
         if (mPortion > 0) {
-          const count = medicineItems.length > 0 ? medicineItems.length : 1;
-          const splitAmounts = distributeAmountEvenly(mPortion, count);
           if (medicineItems.length === 0) {
-            setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+            setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '', type: '' }]);
+          } else if (medicineItems.length === 1) {
+            setMedicineItems([{ ...medicineItems[0], amount: mPortion }]);
           } else {
-            setMedicineItems(prev => prev.map((item, i) => ({
-              ...item,
-              amount: splitAmounts[i]
-            })));
+            const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+            if (currentSum > mPortion) {
+              let runningTotal = 0;
+              const adjusted = medicineItems.map(item => {
+                const itemAmt = Number(item.amount) || 0;
+                const allowed = Math.max(0, Math.min(itemAmt, mPortion - runningTotal));
+                runningTotal += allowed;
+                return { ...item, amount: allowed };
+              });
+              setMedicineItems(adjusted);
+            }
           }
         }
       } else if (includeMedicineFee) {
         setMedicineFeeInput(newTarget);
         setConsultFeeInput(0);
-        const count = medicineItems.length > 0 ? medicineItems.length : 1;
-        const splitAmounts = distributeAmountEvenly(newTarget, count);
         if (medicineItems.length === 0) {
-          setMedicineItems([{ id: '1', name: '', amount: newTarget, timing: '' }]);
+          setMedicineItems([{ id: '1', name: '', amount: newTarget, timing: '', type: '' }]);
+        } else if (medicineItems.length === 1) {
+          setMedicineItems([{ ...medicineItems[0], amount: newTarget }]);
         } else {
-          setMedicineItems(prev => prev.map((item, i) => ({
-            ...item,
-            amount: splitAmounts[i]
-          })));
+          const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+          if (currentSum > newTarget) {
+            let runningTotal = 0;
+            const adjusted = medicineItems.map(item => {
+              const itemAmt = Number(item.amount) || 0;
+              const allowed = Math.max(0, Math.min(itemAmt, newTarget - runningTotal));
+              runningTotal += allowed;
+              return { ...item, amount: allowed };
+            });
+            setMedicineItems(adjusted);
+          }
         }
       } else {
         setConsultFeeInput(newTarget);
@@ -1316,15 +1306,22 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     if (paymentTypePreset !== 'consultation_med' && includeMedicineFee && targetAmount > 0) {
       const mPortion = Math.max(0, targetAmount - cappedVal);
       setMedicineFeeInput(mPortion);
-      const count = medicineItems.length > 0 ? medicineItems.length : 1;
-      const splitAmounts = distributeAmountEvenly(mPortion, count);
       if (medicineItems.length === 0) {
-        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '' }]);
+        setMedicineItems([{ id: '1', name: '', amount: mPortion, timing: '', type: '' }]);
+      } else if (medicineItems.length === 1) {
+        setMedicineItems([{ ...medicineItems[0], amount: mPortion }]);
       } else {
-        setMedicineItems(prev => prev.map((item, i) => ({
-          ...item,
-          amount: splitAmounts[i]
-        })));
+        const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+        if (currentSum > mPortion) {
+          let runningTotal = 0;
+          const adjusted = medicineItems.map(item => {
+            const itemAmt = Number(item.amount) || 0;
+            const allowed = Math.max(0, Math.min(itemAmt, mPortion - runningTotal));
+            runningTotal += allowed;
+            return { ...item, amount: allowed };
+          });
+          setMedicineItems(adjusted);
+        }
       }
     }
   };
@@ -1340,15 +1337,24 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     if (includeConsultFee && targetAmount > 0) {
       setConsultFeeInput(Math.max(0, targetAmount - cappedVal));
     }
-    const count = medicineItems.length > 0 ? medicineItems.length : 1;
-    const splitAmounts = distributeAmountEvenly(cappedVal, count);
     if (medicineItems.length === 0) {
-      setMedicineItems([{ id: '1', name: '', amount: cappedVal, timing: '' }]);
+      if (cappedVal > 0) {
+        setMedicineItems([{ id: '1', name: '', amount: cappedVal, timing: '', type: '' }]);
+      }
+    } else if (medicineItems.length === 1) {
+      setMedicineItems([{ ...medicineItems[0], amount: cappedVal }]);
     } else {
-      setMedicineItems(prev => prev.map((item, i) => ({
-        ...item,
-        amount: splitAmounts[i]
-      })));
+      const currentSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      if (currentSum > cappedVal) {
+        let runningTotal = 0;
+        const adjusted = medicineItems.map(item => {
+          const itemAmt = Number(item.amount) || 0;
+          const allowed = Math.max(0, Math.min(itemAmt, cappedVal - runningTotal));
+          runningTotal += allowed;
+          return { ...item, amount: allowed };
+        });
+        setMedicineItems(adjusted);
+      }
     }
   };
   const activeConsultFee = includeConsultFee ? consultFeeInput : 0;
@@ -3175,20 +3181,21 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                       {(() => {
                         const itemizedSum = medicineItems.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
                         const isMatchingMed = itemizedSum === Number(medicineFeeInput);
+                        const isExceeding = itemizedSum > Number(medicineFeeInput);
                         return (
                           <View style={{
                             flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                             paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginBottom: 10,
-                            backgroundColor: isMatchingMed ? '#f0fdf4' : '#fffbeb',
-                            borderWidth: 1, borderColor: isMatchingMed ? '#86efac' : '#fde68a'
+                            backgroundColor: isMatchingMed ? '#f0fdf4' : (isExceeding ? '#fef2f2' : '#fffbeb'),
+                            borderWidth: 1, borderColor: isMatchingMed ? '#86efac' : (isExceeding ? '#fca5a5' : '#fde68a')
                           }}>
                             <Text style={{ fontSize: 11, fontWeight: '700', color: '#475569' }}>
-                              Prescription Target: <Text style={{ color: '#0f172a', fontWeight: '800' }}>₹{medicineFeeInput}</Text>
+                              Allocated Medicine: <Text style={{ color: '#0f172a', fontWeight: '800' }}>₹{medicineFeeInput}</Text>
                               {' '}|{' '}
-                              Itemized: <Text style={{ color: isMatchingMed ? '#16a34a' : '#d97706', fontWeight: '800' }}>₹{itemizedSum}</Text>
+                              Itemized: <Text style={{ color: isMatchingMed ? '#16a34a' : (isExceeding ? '#dc2626' : '#d97706'), fontWeight: '800' }}>₹{itemizedSum}</Text>
                             </Text>
-                            <Text style={{ fontSize: 11, fontWeight: '800', color: isMatchingMed ? '#16a34a' : '#d97706' }}>
-                              {isMatchingMed ? '✓ 100% Matches' : '⚠️ Equalizing...'}
+                            <Text style={{ fontSize: 11, fontWeight: '800', color: isMatchingMed ? '#16a34a' : (isExceeding ? '#dc2626' : '#d97706') }}>
+                              {isMatchingMed ? '✓ Total Matches' : (isExceeding ? '⚠️ Exceeds Allocated' : `₹${Math.max(0, Number(medicineFeeInput) - itemizedSum)} Left to Allocate`)}
                             </Text>
                           </View>
                         );
@@ -3199,94 +3206,142 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                         <View
                           key={item.id || idx}
                           style={{
-                            flexDirection: 'row', alignItems: 'center', gap: 6,
-                            backgroundColor: '#f8fafc', padding: 8, borderRadius: 8,
-                            borderWidth: 1, borderColor: '#e2e8f0', marginBottom: 6
+                            backgroundColor: '#f8fafc',
+                            padding: 10,
+                            borderRadius: 10,
+                            borderWidth: 1,
+                            borderColor: '#e2e8f0',
+                            marginBottom: 8
                           }}
                         >
-                          <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#64748b', width: 22 }}>
-                            #{idx + 1}
-                          </Text>
-                          <TextInput
-                            placeholder="Enter Medicine Name (e.g. Arnica 30C)"
-                            placeholderTextColor="#94a3b8"
-                            value={item.name}
-                            onChangeText={(v) => handleUpdateMedicineItem(idx, 'name', v)}
-                            style={{
-                              flex: 1, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#cbd5e1',
-                              borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5, fontSize: 12,
-                              fontWeight: '600', color: '#0f172a'
-                            }}
-                          />
-                          <TouchableOpacity
-                            onPress={() => setTypePickerItemIndex(idx)}
-                            style={{
-                              backgroundColor: '#f8fafc',
-                              borderWidth: 1,
-                              borderColor: '#cbd5e1',
-                              borderRadius: 6,
-                              paddingHorizontal: 8,
-                              paddingVertical: 5,
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 4
-                            }}
-                          >
-                            <Text style={{
-                              fontSize: 11,
-                              fontWeight: '700',
-                              color: '#0f172a'
-                            }}>
-                              {item.type || 'Pills'}
-                            </Text>
-                            <Ionicons name="chevron-down" size={11} color="#64748b" />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => setTimingPickerItemIndex(idx)}
-                            style={{
-                              backgroundColor: item.timing ? '#eff6ff' : '#f8fafc',
-                              borderWidth: 1,
-                              borderColor: item.timing ? '#93c5fd' : '#cbd5e1',
-                              borderRadius: 6,
-                              paddingHorizontal: 8,
-                              paddingVertical: 5,
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 4
-                            }}
-                          >
-                            <Text style={{
-                              fontSize: 11,
-                              fontWeight: item.timing ? '800' : '600',
-                              color: item.timing ? '#1d4ed8' : '#64748b'
-                            }}>
-                              {item.timing ? item.timing : 'Select Pill Timing'}
-                            </Text>
-                            <Ionicons name="chevron-down" size={11} color={item.timing ? '#1d4ed8' : '#64748b'} />
-                          </TouchableOpacity>
-                          <View style={{
-                            flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff',
-                            borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 6, paddingHorizontal: 6,
-                            paddingVertical: 5, width: 75
-                          }}>
-                            <Text style={{ fontSize: 12, fontWeight: '700', color: '#258ec8', marginRight: 2 }}>₹</Text>
+                          {/* Row 1: Item #, Medicine Name, Delete Button */}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <View style={{ backgroundColor: '#e2e8f0', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6 }}>
+                              <Text style={{ fontSize: 11, fontWeight: '800', color: '#475569' }}>
+                                #{idx + 1}
+                              </Text>
+                            </View>
                             <TextInput
-                              keyboardType="numeric"
-                              placeholder="0"
+                              placeholder="Enter Medicine Name (e.g. Arnica 30C)"
                               placeholderTextColor="#94a3b8"
-                              value={item.amount === 0 ? '' : String(item.amount)}
-                              onChangeText={(v) => handleUpdateMedicineItem(idx, 'amount', Number(v) || 0)}
+                              value={item.name}
+                              onChangeText={(v) => handleUpdateMedicineItem(idx, 'name', v)}
                               style={{
-                                flex: 1, textAlign: 'right', fontSize: 12, fontWeight: '700', color: '#0f172a', padding: 0
+                                flex: 1,
+                                backgroundColor: '#ffffff',
+                                borderWidth: 1,
+                                borderColor: '#cbd5e1',
+                                borderRadius: 8,
+                                paddingHorizontal: 10,
+                                paddingVertical: 6,
+                                fontSize: 12.5,
+                                fontWeight: '600',
+                                color: '#0f172a'
                               }}
                             />
+                            {medicineItems.length > 1 && (
+                              <TouchableOpacity
+                                onPress={() => handleRemoveMedicineItem(idx)}
+                                style={{
+                                  backgroundColor: '#fee2e2',
+                                  padding: 6,
+                                  borderRadius: 8,
+                                  alignItems: 'center',
+                                  justifyContent: 'center'
+                                }}
+                              >
+                                <Ionicons name="trash-outline" size={16} color="#ef4444" />
+                              </TouchableOpacity>
+                            )}
                           </View>
-                          <TouchableOpacity
-                            onPress={() => handleRemoveMedicineItem(idx)}
-                            style={{ padding: 4 }}
-                          >
-                            <Ionicons name="trash-outline" size={17} color="#ef4444" />
-                          </TouchableOpacity>
+
+                          {/* Row 2: Type Dropdown, Timing Dropdown, Amount Input */}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }}>
+                            {/* Medicine Type Selector */}
+                            <TouchableOpacity
+                              onPress={() => setTypePickerItemIndex(idx)}
+                              style={{
+                                flex: 1.1,
+                                backgroundColor: '#ffffff',
+                                borderWidth: 1,
+                                borderColor: '#cbd5e1',
+                                borderRadius: 8,
+                                paddingHorizontal: 8,
+                                paddingVertical: 7,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                justifyContent: 'space-between'
+                              }}
+                            >
+                              <Text style={{
+                                fontSize: 11.5,
+                                fontWeight: '700',
+                                color: '#0f172a'
+                              }}>
+                                {item.type || 'Pills'}
+                              </Text>
+                              <Ionicons name="chevron-down" size={12} color="#64748b" />
+                            </TouchableOpacity>
+
+                            {/* Timing Selector */}
+                            <TouchableOpacity
+                              onPress={() => setTimingPickerItemIndex(idx)}
+                              style={{
+                                flex: 1.3,
+                                backgroundColor: item.timing ? '#eff6ff' : '#ffffff',
+                                borderWidth: 1,
+                                borderColor: item.timing ? '#93c5fd' : '#cbd5e1',
+                                borderRadius: 8,
+                                paddingHorizontal: 8,
+                                paddingVertical: 7,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                justifyContent: 'space-between'
+                              }}
+                            >
+                              <Text
+                                numberOfLines={1}
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: item.timing ? '800' : '600',
+                                  color: item.timing ? '#1d4ed8' : '#64748b'
+                                }}
+                              >
+                                {item.timing ? item.timing : 'Timing'}
+                              </Text>
+                              <Ionicons name="chevron-down" size={12} color={item.timing ? '#1d4ed8' : '#64748b'} />
+                            </TouchableOpacity>
+
+                            {/* Amount Input */}
+                            <View style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              backgroundColor: '#ffffff',
+                              borderWidth: 1,
+                              borderColor: '#cbd5e1',
+                              borderRadius: 8,
+                              paddingHorizontal: 8,
+                              paddingVertical: 5,
+                              width: 82
+                            }}>
+                              <Text style={{ fontSize: 12, fontWeight: '700', color: '#258ec8', marginRight: 2 }}>₹</Text>
+                              <TextInput
+                                keyboardType="numeric"
+                                placeholder="0"
+                                placeholderTextColor="#94a3b8"
+                                value={item.amount === 0 ? '' : String(item.amount)}
+                                onChangeText={(v) => handleUpdateMedicineItem(idx, 'amount', Number(v) || 0)}
+                                style={{
+                                  flex: 1,
+                                  textAlign: 'right',
+                                  fontSize: 12.5,
+                                  fontWeight: '700',
+                                  color: '#0f172a',
+                                  padding: 0
+                                }}
+                              />
+                            </View>
+                          </View>
                         </View>
                       ))}
                     </View>
