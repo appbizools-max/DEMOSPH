@@ -67,7 +67,19 @@ export interface CheckoutMedicineItem {
   name: string;
   amount: number;
   timing?: string;
+  type?: string;
 }
+
+export const CHECKOUT_MEDICINE_TYPE_OPTIONS = [
+  'Pills',
+  'Tablet',
+  'Syrup',
+  'Powder',
+  'Drops',
+  'Mother Tincture',
+  'Ointment',
+  'Other'
+];
 
 export const DOSAGE_TIMING_OPTIONS = [
   { value: '', label: 'Select Pill Timing' },
@@ -855,7 +867,7 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
     }
   };
 
-  const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing', val: any) => {
+  const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing' | 'type', val: any) => {
     const updated = [...medicineItems];
     if (field !== 'amount') {
       updated[idx] = { ...updated[idx], [field]: val };
@@ -1073,12 +1085,13 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
   };
 
   useEffect(() => {
+    if (discountRequestStatus === 'pending') return;
     if (selectedPaymentMode === 'UPI / QR Code' && totalAmountDue > 0) {
       if (!upiQrData || upiQrData.amount !== totalAmountDue) {
         generateUpiQr(totalAmountDue);
       }
     }
-  }, [selectedPaymentMode, totalAmountDue]);
+  }, [selectedPaymentMode, totalAmountDue, discountRequestStatus]);
 
   useEffect(() => {
     if (selectedPaymentMode !== 'UPI / QR Code' || !upiQrData?.qrId || upiQrPaid) return;
@@ -1305,14 +1318,10 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
       }
     }
 
-    // 2. Pending HR Discount Warning Popup
+    // 2. Pending HR Discount Block (Cannot skip or complete payment while pending HR approval)
     if (discountRequestStatus === 'pending') {
-      const proceed = window.confirm(
-        `⏳ Discount Request Pending with HR\n\nYou requested a discount of ₹${requestedDiscountAmount || '...'} which is currently pending HR approval.\n\nAre you willing to proceed with full payment now without the discount, or wait for HR action?\n\n- Click OK to PROCEED with payment now\n- Click CANCEL to WAIT for HR action`
-      );
-      if (!proceed) {
-        return;
-      }
+      alert(`⛔ Cannot Complete Payment\n\nA discount request of ₹${requestedDiscountAmount || '...'} is currently pending HR approval.\n\nPayment cannot be completed until HR accepts or rejects this discount request.`);
+      return;
     }
 
     setIsLoading(true);
@@ -2526,6 +2535,20 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                             }}
                           />
                           <select
+                            value={item.type || 'Pills'}
+                            onChange={e => handleUpdateMedicineItem(idx, 'type', e.target.value)}
+                            title="Select Medicine Type"
+                            style={{
+                              padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1',
+                              fontSize: '12px', fontWeight: 700, backgroundColor: '#ffffff',
+                              color: '#0f172a', outline: 'none', cursor: 'pointer'
+                            }}
+                          >
+                            {CHECKOUT_MEDICINE_TYPE_OPTIONS.map(t => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </select>
+                          <select
                             value={item.timing || ''}
                             onChange={e => handleUpdateMedicineItem(idx, 'timing', e.target.value)}
                             title="Select Pill Timing"
@@ -2643,8 +2666,8 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                       <div style={{ color: '#78350f', fontSize: '12px', lineHeight: 1.4 }}>
                         <strong>Reason:</strong> {discountReason || 'No reason specified'}
                       </div>
-                      <div style={{ marginTop: '8px', fontSize: '11px', color: '#92400e', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        🔒 Discount is locked and will NOT deduct from total amount until approved by HR.
+                      <div style={{ marginTop: '8px', fontSize: '11px', color: '#dc2626', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        ⛔ Payment is locked until HR accepts or rejects this discount request.
                       </div>
                     </div>
                   )}
@@ -2836,7 +2859,17 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
                   </div>
                 </div>
 
-                {upiQrLoading ? (
+                {discountRequestStatus === 'pending' ? (
+                  <div style={{ padding: '28px 16px', textAlign: 'center', backgroundColor: '#fffbeb', borderRadius: '10px', border: '1px solid #fef3c7' }}>
+                    <div style={{ fontSize: '28px', marginBottom: '8px' }}>⏳</div>
+                    <div style={{ fontSize: '14px', fontWeight: 800, color: '#92400e', marginBottom: '4px' }}>
+                      Discount Request Pending with HR
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#b45309', maxWidth: '380px', margin: '0 auto', lineHeight: '1.5' }}>
+                      QR generation and payment collection are locked until HR accepts or rejects the ₹{requestedDiscountAmount} discount request.
+                    </div>
+                  </div>
+                ) : upiQrLoading ? (
                   <div style={{ padding: '36px 0', textAlign: 'center' }}>
                     <RefreshCw className="animate-spin" size={28} color="#0284c7" style={{ margin: '0 auto 10px' }} />
                     <div style={{ fontSize: '13px', fontWeight: 700, color: '#64748b' }}>
@@ -3441,16 +3474,21 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             </button>
             <button
               onClick={handleConfirmCheckout}
-              disabled={isLoading}
+              disabled={isLoading || discountRequestStatus === 'pending'}
               style={{
                 flex: 1, padding: '12px 24px', borderRadius: '8px', border: 'none',
-                background: !hasPrescription
-                  ? 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)'
-                  : totalAmountDue === 0 ? '#059669' : '#16a34a',
-                color: '#fff', fontWeight: 800, fontSize: '14px', cursor: 'pointer',
-                boxShadow: !hasPrescription
-                  ? '0 4px 14px rgba(239, 68, 68, 0.35)'
-                  : '0 4px 12px rgba(22, 163, 74, 0.25)',
+                background: discountRequestStatus === 'pending'
+                  ? '#d97706'
+                  : !hasPrescription
+                    ? 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)'
+                    : totalAmountDue === 0 ? '#059669' : '#16a34a',
+                color: '#fff', fontWeight: 800, fontSize: '14px',
+                cursor: discountRequestStatus === 'pending' ? 'not-allowed' : 'pointer',
+                boxShadow: discountRequestStatus === 'pending'
+                  ? '0 4px 14px rgba(217, 119, 6, 0.35)'
+                  : !hasPrescription
+                    ? '0 4px 14px rgba(239, 68, 68, 0.35)'
+                    : '0 4px 12px rgba(22, 163, 74, 0.25)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -3459,15 +3497,17 @@ export const CollectFeeCheckoutModal: React.FC<CollectFeeCheckoutModalProps> = (
             >
               {isLoading
                 ? 'Processing...'
-                : !hasPrescription
-                  ? '⚠️ Upload Prescription to Collect Fee (Mandatory)'
-                  : isPackageCoveredFully
-                    ? 'Confirm Package Visit (₹0) ✓'
-                    : existingActivePackage && Number(existingActivePackage.remainingAmount) > 0 && paymentTypePreset === 'package'
-                      ? `Collect Package Due (₹${totalAmountDue.toLocaleString('en-IN')}) & Update Log ✓`
-                      : paymentTypePreset === 'package'
-                        ? `Enroll Package & Collect Advance (₹${totalAmountDue.toLocaleString('en-IN')}) ✓`
-                        : `Confirm Payment (₹${totalAmountDue.toLocaleString('en-IN')}) & Generate Invoice ✓`}
+                : discountRequestStatus === 'pending'
+                  ? `⏳ Awaiting HR Discount Approval (Payment Locked)`
+                  : !hasPrescription
+                    ? '⚠️ Upload Prescription to Collect Fee (Mandatory)'
+                    : isPackageCoveredFully
+                      ? 'Confirm Package Visit (₹0) ✓'
+                      : existingActivePackage && Number(existingActivePackage.remainingAmount) > 0 && paymentTypePreset === 'package'
+                        ? `Collect Package Due (₹${totalAmountDue.toLocaleString('en-IN')}) & Update Log ✓`
+                        : paymentTypePreset === 'package'
+                          ? `Enroll Package & Collect Advance (₹${totalAmountDue.toLocaleString('en-IN')}) ✓`
+                          : `Confirm Payment (₹${totalAmountDue.toLocaleString('en-IN')}) & Generate Invoice ✓`}
             </button>
           </div>
         </div>

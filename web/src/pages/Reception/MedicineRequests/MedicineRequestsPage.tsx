@@ -22,9 +22,21 @@ const DOSAGE_TIMING_OPTIONS = [
   { value: 'SOS', label: 'SOS (As Needed)' },
 ];
 
+export const MEDICINE_TYPE_OPTIONS = [
+  { value: 'Pills', label: 'Pills / Globules' },
+  { value: 'Tablet', label: 'Tablet' },
+  { value: 'Syrup', label: 'Syrup' },
+  { value: 'Powder', label: 'Powder' },
+  { value: 'Drops', label: 'Drops / Liquid Dilution' },
+  { value: 'Mother Tincture', label: 'Mother Tincture (Q)' },
+  { value: 'Ointment', label: 'Ointment / Cream' },
+  { value: 'Other', label: 'Other' },
+];
+
 export interface MedicineItem {
   name: string;
   timing: string;
+  type?: string;
 }
 
 const BRANCH_OPTIONS = [
@@ -98,7 +110,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   const [duration, setDuration] = useState('');
 
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '' }
+    { name: '', timing: '', type: 'Pills' }
   ]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -176,7 +188,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
   );
 
   const handleAddMedicineRow = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '' }]);
+    setMedicines(prev => [...prev, { name: '', timing: '', type: 'Pills' }]);
   };
 
   const handleRemoveMedicineRow = (idx: number) => {
@@ -200,7 +212,7 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     setBranch(getInitialBranch());
     setTotalAmount(0);
     setDuration('');
-    setMedicines([{ name: '', timing: '' }]);
+    setMedicines([{ name: '', timing: '', type: 'Pills' }]);
     setSaveSuccess(false);
     setHasRestoredDraft(false);
     try {
@@ -252,7 +264,10 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
     const rowsHtml = displayMedicines.map((m, idx) => `
       <tr>
         <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; font-size: 13.5px; width: 52%;">${m.name || '-'}</td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; width: 52%;">
+          <div style="font-weight: bold; color: #1e293b; font-size: 13.5px;">${m.name || '-'}</div>
+          ${m.type ? `<div style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">Type: ${m.type}</div>` : ''}
+        </td>
         <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%; font-size: 13px;">${m.timing || '-'}</td>
       </tr>
     `).join('');
@@ -923,6 +938,16 @@ export const MedicineRequestsPage: React.FC<MedicineRequestsPageProps> = ({ curr
                   onChange={(e) => handleUpdateMedicineRow(idx, 'name', e.target.value)}
                   style={{ flex: 2, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none' }}
                 />
+                <select
+                  value={m.type || 'Pills'}
+                  onChange={(e) => handleUpdateMedicineRow(idx, 'type', e.target.value)}
+                  title="Select Medicine Type"
+                  style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff', outline: 'none', cursor: 'pointer', fontWeight: 700, color: '#0f172a' }}
+                >
+                  {MEDICINE_TYPE_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
                 <select
                   value={m.timing}
                   onChange={(e) => handleUpdateMedicineRow(idx, 'timing', e.target.value)}

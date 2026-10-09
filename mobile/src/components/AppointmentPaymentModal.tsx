@@ -233,7 +233,19 @@ export interface CheckoutMedicineItem {
   name: string;
   amount: number;
   timing?: string;
+  type?: string;
 }
+
+export const CHECKOUT_MEDICINE_TYPE_OPTIONS = [
+  'Pills',
+  'Tablet',
+  'Syrup',
+  'Powder',
+  'Drops',
+  'Mother Tincture',
+  'Ointment',
+  'Other'
+];
 
 export const DOSAGE_TIMING_OPTIONS = [
   { value: '', label: 'Select Pill Timing' },
@@ -484,6 +496,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   const [medicineDuration, setMedicineDuration] = useState<string>('1 Month');
   const [medicineItems, setMedicineItems] = useState<CheckoutMedicineItem[]>([]);
   const [timingPickerItemIndex, setTimingPickerItemIndex] = useState<number | null>(null);
+  const [typePickerItemIndex, setTypePickerItemIndex] = useState<number | null>(null);
 
   // Payment Mode (Mandatory - No Default)
   const [selectedPaymentMode, setSelectedPaymentMode] = useState<string>('');
@@ -1204,7 +1217,7 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
     }
   };
 
-  const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing', val: any) => {
+  const handleUpdateMedicineItem = (idx: number, field: 'name' | 'amount' | 'timing' | 'type', val: any) => {
     const updated = [...medicineItems];
     if (field !== 'amount') {
       updated[idx] = { ...updated[idx], [field]: val };
@@ -1412,12 +1425,13 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
   };
 
   useEffect(() => {
+    if (discountRequestStatus === 'pending') return;
     if (selectedPaymentMode === 'UPI / QR Code' && totalAmountDue > 0) {
       if (!upiQrData || upiQrData.amount !== totalAmountDue) {
         generateUpiQr(totalAmountDue);
       }
     }
-  }, [selectedPaymentMode, totalAmountDue]);
+  }, [selectedPaymentMode, totalAmountDue, discountRequestStatus]);
 
   useEffect(() => {
     if (selectedPaymentMode !== 'UPI / QR Code' || !upiQrData?.qrId || upiQrPaid) return;
@@ -1958,25 +1972,12 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
       }
     }
 
-    // 2. Pending HR Discount Warning Popup
+    // 2. Pending HR Discount Block (Cannot skip or complete payment while pending HR approval)
     if (discountRequestStatus === 'pending') {
       Alert.alert(
-        '⏳ Discount Request Pending with HR',
-        `You have requested a discount of ₹${requestedDiscountAmount || '...'} which is currently pending HR approval.\n\nAre you willing to proceed with full payment now without the discount, or wait for HR action?`,
-        [
-          {
-            text: 'Wait for HR Action',
-            style: 'cancel',
-            onPress: () => { }
-          },
-          {
-            text: 'Proceed Anyway',
-            style: 'destructive',
-            onPress: () => {
-              executeCheckoutProcess();
-            }
-          }
-        ]
+        '⛔ Cannot Complete Payment',
+        `A discount request of ₹${requestedDiscountAmount || '...'} is currently pending HR approval.\n\nPayment cannot be completed until HR accepts or rejects this discount request.`,
+        [{ text: 'OK' }]
       );
       return;
     }
@@ -3218,6 +3219,29 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                             }}
                           />
                           <TouchableOpacity
+                            onPress={() => setTypePickerItemIndex(idx)}
+                            style={{
+                              backgroundColor: '#f8fafc',
+                              borderWidth: 1,
+                              borderColor: '#cbd5e1',
+                              borderRadius: 6,
+                              paddingHorizontal: 8,
+                              paddingVertical: 5,
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 4
+                            }}
+                          >
+                            <Text style={{
+                              fontSize: 11,
+                              fontWeight: '700',
+                              color: '#0f172a'
+                            }}>
+                              {item.type || 'Pills'}
+                            </Text>
+                            <Ionicons name="chevron-down" size={11} color="#64748b" />
+                          </TouchableOpacity>
+                          <TouchableOpacity
                             onPress={() => setTimingPickerItemIndex(idx)}
                             style={{
                               backgroundColor: item.timing ? '#eff6ff' : '#f8fafc',
@@ -3337,8 +3361,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                       <Text style={{ fontSize: 11.5, color: '#78350f', lineHeight: 16 }}>
                         <Text style={{ fontWeight: '700' }}>Reason: </Text>{discountReason || 'No note specified'}
                       </Text>
-                      <Text style={{ fontSize: 10.5, color: '#92400e', fontStyle: 'italic', marginTop: 6 }}>
-                        🔒 Amount is locked and will NOT deduct from total until approved by HR.
+                      <Text style={{ fontSize: 10.5, color: '#dc2626', fontWeight: '700', marginTop: 6 }}>
+                        ⛔ Payment is locked until HR accepts or rejects this request.
                       </Text>
                     </View>
                   )}
@@ -3503,7 +3527,17 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                   </View>
                 </View>
 
-                {upiQrLoading ? (
+                {discountRequestStatus === 'pending' ? (
+                  <View style={{ paddingVertical: 24, paddingHorizontal: 16, alignItems: 'center', backgroundColor: '#fffbeb', borderRadius: 10, borderWidth: 1, borderColor: '#fef3c7' }}>
+                    <Ionicons name="time-outline" size={32} color="#d97706" />
+                    <Text style={{ marginTop: 8, fontSize: 13, fontWeight: '800', color: '#92400e', textAlign: 'center' }}>
+                      Discount Request Pending with HR
+                    </Text>
+                    <Text style={{ marginTop: 4, fontSize: 11.5, color: '#b45309', textAlign: 'center', lineHeight: 16 }}>
+                      QR generation and payment are paused until HR accepts or rejects the ₹{requestedDiscountAmount} discount request.
+                    </Text>
+                  </View>
+                ) : upiQrLoading ? (
                   <View style={{ paddingVertical: 28, alignItems: 'center' }}>
                     <ActivityIndicator size="large" color="#0284c7" />
                     <Text style={{ marginTop: 8, fontSize: 12, fontWeight: '700', color: '#64748b' }}>
@@ -4027,7 +4061,8 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
             <TouchableOpacity
               style={[
                 styles.confirmFooterBtn,
-                !hasPrescription && { backgroundColor: '#dc2626' }
+                discountRequestStatus === 'pending' && { backgroundColor: '#d97706' },
+                (!hasPrescription && discountRequestStatus !== 'pending') && { backgroundColor: '#dc2626' }
               ]}
               onPress={handleConfirmCheckout}
               disabled={isSubmitting || isUploadingPrescription}
@@ -4036,14 +4071,29 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
                 <ActivityIndicator color="#ffffff" size="small" />
               ) : (
                 <View style={{ alignItems: 'center' }}>
-                  {!hasPrescription && (
-                    <Text style={{ color: '#fee2e2', fontSize: 10, fontWeight: '800', marginBottom: 2 }}>
-                      ⚠️ UPLOAD PRESCRIPTION REQUIRED
+                  {discountRequestStatus === 'pending' ? (
+                    <>
+                      <Text style={{ color: '#fef3c7', fontSize: 10, fontWeight: '800', marginBottom: 2 }}>
+                        ⏳ HR APPROVAL PENDING
+                      </Text>
+                      <Text style={styles.confirmFooterBtnText}>
+                        Awaiting HR Discount Approval (Payment Locked)
+                      </Text>
+                    </>
+                  ) : !hasPrescription ? (
+                    <>
+                      <Text style={{ color: '#fee2e2', fontSize: 10, fontWeight: '800', marginBottom: 2 }}>
+                        ⚠️ UPLOAD PRESCRIPTION REQUIRED
+                      </Text>
+                      <Text style={styles.confirmFooterBtnText}>
+                        Upload Prescription to Collect Fee (Mandatory)
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={styles.confirmFooterBtnText}>
+                      Confirm Payment & Generate Invoice ✓
                     </Text>
                   )}
-                  <Text style={styles.confirmFooterBtnText}>
-                    {hasPrescription ? 'Confirm Payment & Generate Invoice ✓' : 'Upload Prescription to Collect Fee (Mandatory)'}
-                  </Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -4129,6 +4179,56 @@ export const AppointmentPaymentModal: React.FC<AppointmentPaymentModalProps> = (
             >
               <Text style={styles.successDoneBtnText}>Done & Return to Dashboard</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Medicine Type Picker Modal */}
+      {typePickerItemIndex !== null && (
+        <View style={{
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)',
+          justifyContent: 'center', alignItems: 'center', padding: 20, zIndex: 9999
+        }}>
+          <View style={{
+            width: '100%', maxWidth: 360, backgroundColor: '#ffffff',
+            borderRadius: 16, padding: 16, elevation: 10
+          }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>
+                Select Medicine Type
+              </Text>
+              <TouchableOpacity onPress={() => setTypePickerItemIndex(null)} style={{ padding: 4 }}>
+                <Ionicons name="close" size={20} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 320 }}>
+              {CHECKOUT_MEDICINE_TYPE_OPTIONS.map((t) => {
+                const isSelected = typePickerItemIndex !== null && (medicineItems[typePickerItemIndex]?.type || 'Pills') === t;
+                return (
+                  <TouchableOpacity
+                    key={t}
+                    onPress={() => {
+                      if (typePickerItemIndex !== null) {
+                        handleUpdateMedicineItem(typePickerItemIndex, 'type', t);
+                      }
+                      setTypePickerItemIndex(null);
+                    }}
+                    style={{
+                      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                      paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10,
+                      backgroundColor: isSelected ? '#eff6ff' : '#f8fafc', marginBottom: 6,
+                      borderWidth: 1, borderColor: isSelected ? '#258ec8' : '#e2e8f0'
+                    }}
+                  >
+                    <Text style={{ fontSize: 13, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>
+                      {t}
+                    </Text>
+                    {isSelected && <Ionicons name="checkmark-circle" size={18} color="#0284c7" />}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
           </View>
         </View>
       )}

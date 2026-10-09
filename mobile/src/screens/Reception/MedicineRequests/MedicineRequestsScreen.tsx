@@ -25,9 +25,21 @@ const DOSAGE_TIMING_OPTIONS = [
   { value: 'SOS', label: 'SOS (As Needed)' },
 ];
 
+export const MEDICINE_TYPE_OPTIONS = [
+  { value: 'Pills', label: 'Pills / Globules' },
+  { value: 'Tablet', label: 'Tablet' },
+  { value: 'Syrup', label: 'Syrup' },
+  { value: 'Powder', label: 'Powder' },
+  { value: 'Drops', label: 'Drops / Liquid Dilution' },
+  { value: 'Mother Tincture', label: 'Mother Tincture (Q)' },
+  { value: 'Ointment', label: 'Ointment / Cream' },
+  { value: 'Other', label: 'Other' },
+];
+
 export interface MedicineItem {
   name: string;
   timing: string;
+  type?: string;
 }
 const BRANCH_OPTIONS = [
   'KPHB Branch',
@@ -85,11 +97,13 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   const [duration, setDuration] = useState('');
 
   const [medicines, setMedicines] = useState<MedicineItem[]>([
-    { name: '', timing: '' }
+    { name: '', timing: '', type: 'Pills' }
   ]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showTimingPicker, setShowTimingPicker] = useState(false);
   const [activeTimingIndex, setActiveTimingIndex] = useState(-1);
+  const [showTypePicker, setShowTypePicker] = useState(false);
+  const [activeTypeIndex, setActiveTypeIndex] = useState(-1);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
 
   // Persistent Draft State
@@ -167,7 +181,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
   );
 
   const addMedicine = () => {
-    setMedicines(prev => [...prev, { name: '', timing: '' }]);
+    setMedicines(prev => [...prev, { name: '', timing: '', type: 'Pills' }]);
   };
 
   const removeMedicine = (index: number) => {
@@ -191,7 +205,7 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     setSelectedBranch(branchName || currentBranch || selectedBranch || 'KPHB Branch');
     setTotalAmount(0);
     setDuration('');
-    setMedicines([{ name: '', timing: '' }]);
+    setMedicines([{ name: '', timing: '', type: 'Pills' }]);
     setHasRestoredDraft(false);
     try {
       await AsyncStorage.removeItem(MEDICINE_REQUEST_DRAFT_KEY);
@@ -237,7 +251,10 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
     const rowsHtml = displayMedicines.map((m, idx) => `
       <tr>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: 700; color: #1e293b; width: 8%; text-align: center;">${idx + 1}</td>
-        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #1e293b; width: 52%; font-size: 13.5px;">${m.name || '-'}</td>
+        <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; width: 52%;">
+          <div style="font-weight: bold; color: #1e293b; font-size: 13.5px;">${m.name || '-'}</div>
+          ${m.type ? `<div style="font-size: 11px; color: #0284c7; font-weight: 700; margin-top: 2px;">Type: ${m.type}</div>` : ''}
+        </td>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%; font-size: 13px;">${m.timing || '-'}</td>
       </tr>
     `).join('');
@@ -771,18 +788,34 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
               />
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.subInputLabel}>Dosage & Timing</Text>
-              <TouchableOpacity
-                style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 }]}
-                onPress={() => { setActiveTimingIndex(idx); setShowTimingPicker(true); }}
-                activeOpacity={0.7}
-              >
-                <Text style={{ fontSize: 13, color: m.timing ? '#0f172a' : '#94a3b8' }}>
-                  {m.timing || 'Select Pill Timing'}
-                </Text>
-                <Feather name="chevron-down" size={14} color="#94a3b8" />
-              </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <View style={[styles.inputGroup, { flex: 1 }]}>
+                <Text style={styles.subInputLabel}>Type (Tablet, Syrup...)</Text>
+                <TouchableOpacity
+                  style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 }]}
+                  onPress={() => { setActiveTypeIndex(idx); setShowTypePicker(true); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{ fontSize: 13, color: '#0f172a', fontWeight: '700' }}>
+                    {m.type || 'Pills'}
+                  </Text>
+                  <Feather name="chevron-down" size={14} color="#64748b" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.inputGroup, { flex: 1.2 }]}>
+                <Text style={styles.subInputLabel}>Dosage & Timing</Text>
+                <TouchableOpacity
+                  style={[styles.remedyInput, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 }]}
+                  onPress={() => { setActiveTimingIndex(idx); setShowTimingPicker(true); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{ fontSize: 13, color: m.timing ? '#0f172a' : '#94a3b8' }}>
+                    {m.timing || 'Select Timing'}
+                  </Text>
+                  <Feather name="chevron-down" size={14} color="#94a3b8" />
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         ))}
@@ -808,6 +841,41 @@ export const MobileMedicineRequestsScreen: React.FC<MobileMedicineRequestsScreen
           {isGenerating ? 'Generating PDF...' : 'Generate & Print Letterhead PDF'}
         </Text>
       </TouchableOpacity>
+
+      {/* Medicine Type Picker Modal */}
+      <Modal visible={showTypePicker} transparent animationType="slide" onRequestClose={() => setShowTypePicker(false)}>
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowTypePicker(false)}>
+          <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%', paddingBottom: 30 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
+              <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Select Medicine Type</Text>
+              <TouchableOpacity onPress={() => setShowTypePicker(false)}>
+                <Feather name="x" size={20} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={MEDICINE_TYPE_OPTIONS}
+              keyExtractor={(item) => item.value}
+              renderItem={({ item }) => {
+                const isSelected = activeTypeIndex >= 0 && (medicines[activeTypeIndex]?.type || 'Pills') === item.value;
+                return (
+                  <TouchableOpacity
+                    style={{ paddingHorizontal: 18, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', backgroundColor: isSelected ? '#e0f2fe' : '#fff' }}
+                    onPress={() => {
+                      if (activeTypeIndex >= 0) updateMedicine(activeTypeIndex, 'type', item.value);
+                      setShowTypePicker(false);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Dosage Timing Picker Modal */}
       <Modal visible={showTimingPicker} transparent animationType="slide" onRequestClose={() => setShowTimingPicker(false)}>

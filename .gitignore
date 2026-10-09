@@ -12,3 +12,5 @@ build/
 android/.gradle/
 mobile/android/.gradle/
 *.jks
+*.p8
+

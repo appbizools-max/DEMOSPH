@@ -30,11 +30,22 @@ interface DoctorDashboardPageProps {
 }
 interface MedicineItem {
   medicineName: string;
+  medicineType?: string;
   dosage: string;
   frequency: string;
   timing: string;
   duration: string;
 }
+export const DOCTOR_MEDICINE_TYPES = [
+  'Pills',
+  'Tablet',
+  'Syrup',
+  'Powder',
+  'Drops',
+  'Mother Tincture',
+  'Ointment',
+  'Other'
+];
 export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
   doctorCategory = 'Head Doctor',
   doctorName = 'Dr. Prashanth K Vaidya',
@@ -51,9 +62,9 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({
   const [chiefComplaints, setChiefComplaints] = useState('');
   const [medicalHistory, setMedicalHistory] = useState('');
   const [typedPrescriptions, setTypedPrescriptions] = useState<MedicineItem[]>([
-    { medicineName: 'Allium Cepa 30C', dosage: '4 pills', frequency: '1-0-1', timing: 'Before Food', duration: '15 Days' }
+    { medicineName: 'Allium Cepa 30C', medicineType: 'Pills', dosage: '4 pills', frequency: '1-0-1', timing: 'Before Food', duration: '15 Days' }
   ]);
-  const [newMed, setNewMed] = useState<MedicineItem>({ medicineName: '', dosage: '4 pills', frequency: '1-0-1', timing: 'Before Food', duration: '15 Days' });
+  const [newMed, setNewMed] = useState<MedicineItem>({ medicineName: '', medicineType: 'Pills', dosage: '4 pills', frequency: '1-0-1', timing: 'Before Food', duration: '15 Days' });
   const [followUpInterval, setFollowUpInterval] = useState('15 Days');
   const [followUpDate, setFollowUpDate] = useState('');
   const [consultationFee, setConsultationFee] = useState<number>(500);

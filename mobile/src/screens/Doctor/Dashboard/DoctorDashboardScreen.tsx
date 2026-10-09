@@ -11,11 +11,23 @@ interface DoctorDashboardProps {
 }
 interface MedicineItem {
   medicineName: string;
+  medicineType?: string;
   dosage: string;
   frequency: string;
   timing: string;
   duration: string;
 }
+
+const DOCTOR_MEDICINE_TYPES = [
+  'Pills',
+  'Tablet',
+  'Syrup',
+  'Powder',
+  'Drops',
+  'Mother Tincture',
+  'Ointment',
+  'Other'
+];
 
 // Resolve genuine UHID / Registration ID
 const resolvePatientRegId = (data: any, pool?: any[]): string => {
@@ -198,6 +210,8 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
     { medicineName: 'Allium Cepa 30C', dosage: '4 pills', frequency: '1-0-1', timing: 'Before Food', duration: '15 Days' }
   ]);
   const [newMedName, setNewMedName] = useState('');
+  const [newMedType, setNewMedType] = useState('Pills');
+  const [showMedTypeModal, setShowMedTypeModal] = useState(false);
   const [newDosage, setNewDosage] = useState('4 pills');
   const [followUpInterval, setFollowUpInterval] = useState('15 Days');
   const [followUpDate, setFollowUpDate] = useState('');
@@ -392,7 +406,8 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
     if (!newMedName.trim()) return;
     setTypedPrescriptions([...typedPrescriptions, {
       medicineName: newMedName,
-      dosage: newDosage,
+      medicineType: newMedType || 'Pills',
+      dosage: newDosage || (newMedType === 'Syrup' ? '5ml' : newMedType === 'Tablet' ? '1 Tab' : '4 pills'),
       frequency: '1-0-1',
       timing: 'Before Food',
       duration: '15 Days'
@@ -693,18 +708,74 @@ export const DoctorDashboardScreen: React.FC<DoctorDashboardProps> = ({
               {/* Prescriptions */}
               <Text style={{ fontSize: 12, fontWeight: '800', color: '#258ec8', marginBottom: 6 }}>PRESCRIBED REMEDIES</Text>
               {typedPrescriptions.map((med, idx) => (
-                <View key={idx} style={{ backgroundColor: '#f8fafc', padding: 8, borderRadius: 6, marginBottom: 6, borderWidth: 1, borderColor: '#e2e8f0' }}>
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>{idx + 1}. {med.medicineName} ({med.dosage})</Text>
-                  <Text style={{ fontSize: 11, color: '#64748b' }}>{med.frequency} • {med.timing} • {med.duration}</Text>
+                <View key={idx} style={{ backgroundColor: '#f8fafc', padding: 8, borderRadius: 6, marginBottom: 6, borderWidth: 1, borderColor: '#e2e8f0', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#0f172a' }}>{idx + 1}. {med.medicineName}</Text>
+                      <View style={{ backgroundColor: '#e0f2fe', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                        <Text style={{ fontSize: 10, fontWeight: '800', color: '#0284c7' }}>{med.medicineType || 'Pills'}</Text>
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{med.dosage} • {med.frequency} • {med.timing} • {med.duration}</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setTypedPrescriptions(typedPrescriptions.filter((_, i) => i !== idx))} style={{ padding: 4 }}>
+                    <Ionicons name="trash-outline" size={15} color="#ef4444" />
+                  </TouchableOpacity>
                 </View>
               ))}
 
-              <View style={{ flexDirection: 'row', gap: 6, marginBottom: 16, marginTop: 4 }}>
-                <TextInput value={newMedName} onChangeText={setNewMedName} placeholder="Add Remedy Name..." style={{ flex: 2, borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 8, padding: 8, fontSize: 12 }} />
-                <TouchableOpacity onPress={handleAddMedicine} style={{ backgroundColor: '#258ec8', paddingHorizontal: 14, borderRadius: 8, justifyContent: 'center' }}>
+              <View style={{ flexDirection: 'row', gap: 6, marginBottom: 16, marginTop: 4, alignItems: 'center' }}>
+                <TextInput
+                  value={newMedName}
+                  onChangeText={setNewMedName}
+                  placeholder="Add Remedy Name..."
+                  style={{ flex: 2, borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 8, padding: 8, fontSize: 12, backgroundColor: '#ffffff' }}
+                />
+                <TouchableOpacity
+                  onPress={() => setShowMedTypeModal(true)}
+                  style={{ borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: '#ffffff', flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                >
+                  <Text style={{ fontSize: 11.5, fontWeight: '700', color: '#0f172a' }}>{newMedType}</Text>
+                  <Ionicons name="chevron-down" size={12} color="#64748b" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleAddMedicine} style={{ backgroundColor: '#258ec8', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, justifyContent: 'center' }}>
                   <Text style={{ color: '#fff', fontWeight: '800', fontSize: 12 }}>+ Add</Text>
                 </TouchableOpacity>
               </View>
+
+              {/* Medicine Type Picker Modal for Doctor */}
+              <Modal visible={showMedTypeModal} transparent animationType="slide" onRequestClose={() => setShowMedTypeModal(false)}>
+                <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowMedTypeModal(false)}>
+                  <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '55%', paddingBottom: 25 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}>
+                      <Text style={{ fontSize: 15, fontWeight: '800', color: '#0f172a' }}>Select Medicine Type</Text>
+                      <TouchableOpacity onPress={() => setShowMedTypeModal(false)}>
+                        <Ionicons name="close" size={20} color="#64748b" />
+                      </TouchableOpacity>
+                    </View>
+                    <FlatList
+                      data={DOCTOR_MEDICINE_TYPES}
+                      keyExtractor={(item) => item}
+                      renderItem={({ item }) => {
+                        const isSelected = newMedType === item;
+                        return (
+                          <TouchableOpacity
+                            style={{ paddingHorizontal: 18, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', backgroundColor: isSelected ? '#e0f2fe' : '#fff' }}
+                            onPress={() => {
+                              setNewMedType(item);
+                              setShowMedTypeModal(false);
+                            }}
+                          >
+                            <Text style={{ fontSize: 13.5, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#0284c7' : '#334155' }}>
+                              {item}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      }}
+                    />
+                  </View>
+                </TouchableOpacity>
+              </Modal>
 
               {/* Follow-up & Fees */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
